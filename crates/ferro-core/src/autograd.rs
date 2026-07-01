@@ -100,6 +100,12 @@ impl Tensor {
     /// Reverse-mode autodiff seeded with ones (call on a scalar loss). Populates
     /// `.grad()` on every leaf/intermediate with `requires_grad = true`.
     pub fn backward(&self) {
+        assert!(
+            self.numel() == 1,
+            "backward() requires a scalar output (single element), got shape {:?}; \
+             reduce with .sum() or .mean() first",
+            self.shape()
+        );
         let mut topo = Vec::new();
         build_topo(self, &mut HashSet::new(), &mut topo);
         self.set_grad(Tensor::ones(self.shape()));

@@ -86,6 +86,13 @@ fn reused_leaf_accumulates() {
 }
 
 #[test]
+#[should_panic(expected = "scalar output")]
+fn backward_on_non_scalar_panics() {
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
+    a.mul(&a).unwrap().backward();
+}
+
+#[test]
 fn linear_regression_converges() {
     // Fit y = x @ w_true + b_true with plain SGD; loss must drop sharply.
     let rng = Rng::new(42);
