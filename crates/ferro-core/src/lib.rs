@@ -4,6 +4,7 @@
 
 mod autograd;
 pub mod error;
+pub mod interop;
 pub mod nn;
 pub mod ops;
 pub mod ops_ext;
