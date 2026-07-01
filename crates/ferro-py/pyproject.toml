@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ferro"
+version = "0.0.1"
+description = "Python bindings for the ferro Rust tensor + autograd runtime"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+module-name = "ferro"

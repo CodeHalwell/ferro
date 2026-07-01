@@ -1,0 +1,17 @@
+[package]
+name = "ferro-py"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/codehalwell/flare"
+
+[lib]
+name = "ferro"
+crate-type = ["cdylib"]
+
+[dependencies]
+ferro-core = { path = "../ferro-core" }
+
+[dependencies.pyo3]
+version = "0.24"
+features = ["extension-module", "abi3-py311"]
