@@ -7,10 +7,12 @@ pub mod error;
 pub mod nn;
 pub mod ops;
 pub mod optim;
+pub mod params;
 pub mod rng;
 pub mod shape;
 pub mod tensor;
 
 pub use error::{Error, Result};
+pub use params::Param;
 pub use rng::Rng;
 pub use tensor::{Storage, Tensor};

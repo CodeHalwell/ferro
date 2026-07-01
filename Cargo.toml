@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/ferro-core"]
+# ferro-py is built standalone via maturin (it pulls PyO3); excluding it keeps
+# `cargo test -p ferro-core` from resolving Python-binding dependencies.
+exclude = ["crates/ferro-py"]
 
 [workspace.package]
 version = "0.0.1"

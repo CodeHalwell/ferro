@@ -1,0 +1,91 @@
+use ferro_core::optim::{Adam, Sgd};
+use ferro_core::{Param, Rng, Tensor};
+
+/// MSE between predictions and targets as a differentiable scalar loss.
+fn mse(pred: &Tensor, target: &Tensor) -> Tensor {
+    let diff = pred.sub(target).unwrap();
+    diff.mul(&diff).unwrap().mean()
+}
+
+/// Build a linear-regression problem `y = X @ w_true` with a random design
+/// matrix. Returns (X, y, w_true) with `w_true` shaped `[in, 1]`.
+fn linreg_problem(rows: usize, cols: usize, rng: &Rng) -> (Tensor, Tensor, Vec<f32>) {
+    let x = Tensor::randn(&[rows, cols], rng);
+    let w_true: Vec<f32> = (0..cols).map(|_| rng.normal()).collect();
+    let wt = Tensor::from_vec(w_true.clone(), &[cols, 1]).unwrap();
+    let y = x.matmul(&wt).unwrap().detach_copy();
+    (x, y, w_true)
+}
+
+#[test]
+fn sgd_fits_linear_regression() {
+    let rng = Rng::new(0);
+    let (x, y, w_true) = linreg_problem(64, 3, &rng);
+    let w = Param::new(Tensor::randn(&[3, 1], &rng));
+    let mut opt = Sgd::new(vec![w.clone()], 0.1);
+
+    let initial = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
+    for _ in 0..400 {
+        let loss = mse(&x.matmul(&w.tensor()).unwrap(), &y);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    let final_loss = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
+    assert!(final_loss < initial * 1e-3, "loss {final_loss} vs initial {initial}");
+
+    let learned = w.tensor().to_vec();
+    for (i, &t) in w_true.iter().enumerate() {
+        assert!((learned[i] - t).abs() < 1e-2, "w[{i}] {} vs {t}", learned[i]);
+    }
+}
+
+#[test]
+fn sgd_momentum_fits_linear_regression() {
+    let rng = Rng::new(1);
+    let (x, y, w_true) = linreg_problem(64, 3, &rng);
+    let w = Param::new(Tensor::randn(&[3, 1], &rng));
+    let mut opt = Sgd::new(vec![w.clone()], 0.05).with_momentum(0.9);
+
+    let initial = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
+    for _ in 0..400 {
+        let loss = mse(&x.matmul(&w.tensor()).unwrap(), &y);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    let final_loss = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
+    assert!(final_loss < initial * 1e-3, "loss {final_loss} vs initial {initial}");
+
+    let learned = w.tensor().to_vec();
+    for (i, &t) in w_true.iter().enumerate() {
+        assert!((learned[i] - t).abs() < 1e-2, "w[{i}] {} vs {t}", learned[i]);
+    }
+}
+
+#[test]
+fn adam_minimizes_quadratic() {
+    let rng = Rng::new(2);
+    let target = Tensor::from_vec(vec![1.5, -2.0, 0.75, 3.25], &[4]).unwrap();
+    let w = Param::new(Tensor::randn(&[4], &rng));
+    let mut opt = Adam::new(vec![w.clone()], 0.1);
+
+    for _ in 0..500 {
+        let loss = mse(&w.tensor(), &target);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    let learned = w.tensor().to_vec();
+    for (i, t) in target.to_vec().iter().enumerate() {
+        assert!((learned[i] - t).abs() < 1e-3, "w[{i}] {} vs {t}", learned[i]);
+    }
+}
+
+#[test]
+fn step_skips_param_without_grad() {
+    let w = Param::new(Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap());
+    let mut opt = Sgd::new(vec![w.clone()], 0.5);
+    opt.step();
+    assert_eq!(w.tensor().to_vec(), vec![1.0, 2.0]);
+}
