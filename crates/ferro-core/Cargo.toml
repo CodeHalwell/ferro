@@ -1,0 +1,10 @@
+[package]
+name = "ferro-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Intentionally zero dependencies: the core tensor/autograd runtime is pure Rust
+# so it stays trivially portable and auditable. Device backends (BLAS, CUDA) and
+# Python bindings live in sibling crates that may take dependencies.
+[dependencies]
