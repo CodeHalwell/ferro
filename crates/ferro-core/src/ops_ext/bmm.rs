@@ -1,1 +1,88 @@
-//! `bmm` operator. Stub owned by the ops_ext wave; fill via the log.rs pattern.
+//! `bmm` batched matrix multiply. self (b,m,k) @ other (b,k,n) -> (b,m,n).
+//! Backward per batch: dA = dC @ B^T, dB = A^T @ dC.
+
+use crate::error::{Error, Result};
+use crate::tensor::Tensor;
+
+// C[b] = A[b] @ B[b] over flat row-major buffers.
+fn batched_matmul(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    let mut c = vec![0.0f32; batch * m * n];
+    for bi in 0..batch {
+        let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
+        for i in 0..m {
+            for p in 0..k {
+                let av = a[ao + i * k + p];
+                for j in 0..n {
+                    c[co + i * n + j] += av * b[bo + p * n + j];
+                }
+            }
+        }
+    }
+    c
+}
+
+impl Tensor {
+    pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
+        if self.ndim() != 3 || other.ndim() != 3 {
+            return Err(Error::Unsupported { op: "bmm", msg: "inputs must be rank 3".into() });
+        }
+        let (a_shape, b_shape) = (self.shape(), other.shape());
+        let (batch, m, k) = (a_shape[0], a_shape[1], a_shape[2]);
+        let n = b_shape[2];
+        if b_shape[0] != batch || b_shape[1] != k {
+            return Err(Error::ShapeMismatch {
+                op: "bmm",
+                lhs: a_shape.to_vec(),
+                rhs: b_shape.to_vec(),
+            });
+        }
+
+        let a_data = self.to_vec();
+        let b_data = other.to_vec();
+        let c_data = batched_matmul(&a_data, &b_data, batch, m, k, n);
+        let out = Tensor::from_vec(c_data, &[batch, m, n])?;
+
+        let a = self.clone();
+        let b = other.clone();
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            let g_data = g.to_vec();
+            let a_data = a.to_vec();
+            let b_data = b.to_vec();
+
+            // dA[b] = dC[b] @ B[b]^T  -> (m,k)
+            let mut da = vec![0.0f32; batch * m * k];
+            for bi in 0..batch {
+                let (go, bo, ao) = (bi * m * n, bi * k * n, bi * m * k);
+                for i in 0..m {
+                    for p in 0..k {
+                        let mut s = 0.0f32;
+                        for j in 0..n {
+                            s += g_data[go + i * n + j] * b_data[bo + p * n + j];
+                        }
+                        da[ao + i * k + p] = s;
+                    }
+                }
+            }
+
+            // dB[b] = A[b]^T @ dC[b]  -> (k,n)
+            let mut db = vec![0.0f32; batch * k * n];
+            for bi in 0..batch {
+                let (go, ao, bo) = (bi * m * n, bi * m * k, bi * k * n);
+                for p in 0..k {
+                    for j in 0..n {
+                        let mut s = 0.0f32;
+                        for i in 0..m {
+                            s += a_data[ao + i * k + p] * g_data[go + i * n + j];
+                        }
+                        db[bo + p * n + j] = s;
+                    }
+                }
+            }
+
+            vec![
+                Tensor::from_vec(da, &[batch, m, k]).unwrap(),
+                Tensor::from_vec(db, &[batch, k, n]).unwrap(),
+            ]
+        }))
+    }
+}
