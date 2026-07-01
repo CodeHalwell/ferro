@@ -1,7 +1,9 @@
+mod dlpack;
+
 use ferro_core::{Rng, Tensor as CoreTensor};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyList, PyTuple};
 
 fn map_err(e: ferro_core::Error) -> PyErr {
     PyValueError::new_err(e.to_string())
@@ -150,10 +152,35 @@ impl PyTensor {
     fn __repr__(&self) -> String {
         format!("Tensor(shape={:?}, data={:?})", self.inner.shape(), self.inner.to_vec())
     }
+
+    /// DLPack producer. `stream` is accepted for protocol compatibility but
+    /// ignored: this is a synchronous CPU tensor.
+    #[pyo3(signature = (stream=None))]
+    fn __dlpack__<'py>(
+        &self,
+        py: Python<'py>,
+        stream: Option<Bound<'py, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let _ = stream;
+        let (data, shape) = self.inner.to_contiguous();
+        dlpack::export_capsule(py, data, shape)
+    }
+
+    /// DLPack device: (kDLCPU, 0).
+    fn __dlpack_device__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
+        dlpack::dlpack_device(py)
+    }
+}
+
+/// Consume any object exposing `__dlpack__` into a new ferro Tensor (copy).
+#[pyfunction]
+fn from_dlpack(obj: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
+    dlpack::import_from_dlpack(obj).map(PyTensor::wrap)
 }
 
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
+    m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     Ok(())
 }
