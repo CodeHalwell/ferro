@@ -20,6 +20,11 @@ pub(crate) enum Op {
     Neg(Tensor),
     Reshape(Tensor, Vec<usize>),
     Transpose(Tensor, usize, usize),
+    /// Extensibility escape hatch: a self-contained op carrying its own inputs
+    /// and vector-Jacobian-product closure (grads returned in input order). New
+    /// ops use this via `Tensor::record_fn` and live in their own files instead
+    /// of growing this enum.
+    Fn(Vec<Tensor>, Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>),
 }
 
 impl Op {
@@ -36,6 +41,7 @@ impl Op {
             | Op::Neg(a)
             | Op::Reshape(a, _)
             | Op::Transpose(a, _, _) => vec![a],
+            Op::Fn(inputs, _) => inputs.iter().collect(),
         }
     }
 
@@ -80,6 +86,7 @@ impl Op {
             Op::Neg(_) => vec![raw_unary(g, |x| -x)],
             Op::Reshape(_, in_shape) => vec![Tensor::from_vec(g.to_vec(), in_shape).unwrap()],
             Op::Transpose(_, d0, d1) => vec![g.transpose_view(*d0, *d1).unwrap()],
+            Op::Fn(_, f) => f(g),
         }
     }
 }

@@ -292,6 +292,23 @@ impl Tensor {
         }
         self
     }
+
+    /// Extensible autograd hook for ops defined outside the core `Op` enum.
+    /// `inputs` are the differentiable operands; `backward` maps the output
+    /// gradient to one gradient per input (same order). Recorded only when some
+    /// input requires grad. `self` must be a freshly-created, uniquely-owned
+    /// output (as returned by the raw kernels).
+    pub fn record_fn<F>(mut self, inputs: Vec<Tensor>, backward: F) -> Tensor
+    where
+        F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
+    {
+        if inputs.iter().any(|t| t.requires_grad()) {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
+            inner.requires_grad = true;
+            inner.op = Some(Op::Fn(inputs, Box::new(backward)));
+        }
+        self
+    }
 }
 
 // --- raw (detached) compute kernels --------------------------------------

@@ -6,11 +6,13 @@ mod autograd;
 pub mod error;
 pub mod nn;
 pub mod ops;
+pub mod ops_ext;
 pub mod optim;
 pub mod params;
 pub mod rng;
 pub mod shape;
 pub mod tensor;
+pub mod testkit;
 
 pub use error::{Error, Result};
 pub use params::Param;
