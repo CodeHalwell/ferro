@@ -144,6 +144,27 @@ impl PyTensor {
         self.inner.bmm(&other.inner).map(PyTensor::wrap).map_err(map_err)
     }
 
+    fn index_select(&self, dim: usize, indices: Vec<usize>) -> PyResult<PyTensor> {
+        self.inner.index_select(dim, &indices).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn squeeze(&self, dim: usize) -> PyResult<PyTensor> {
+        self.inner.squeeze(dim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn unsqueeze(&self, dim: usize) -> PyResult<PyTensor> {
+        self.inner.unsqueeze(dim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (weight, stride=1, padding=0))]
+    fn conv2d(&self, weight: &PyTensor, stride: usize, padding: usize) -> PyResult<PyTensor> {
+        self.inner.conv2d(&weight.inner, stride, padding).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn max_pool2d(&self, kernel: usize, stride: usize) -> PyResult<PyTensor> {
+        self.inner.max_pool2d(kernel, stride).map(PyTensor::wrap).map_err(map_err)
+    }
+
     fn sum(&self) -> PyTensor {
         PyTensor::wrap(self.inner.sum())
     }
@@ -243,9 +264,23 @@ fn from_dlpack(obj: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
     dlpack::import_from_dlpack(obj).map(PyTensor::wrap)
 }
 
+#[pyfunction]
+fn cat(tensors: Vec<PyTensor>, dim: usize) -> PyResult<PyTensor> {
+    let inners: Vec<CoreTensor> = tensors.iter().map(|t| t.inner.clone()).collect();
+    CoreTensor::cat(&inners, dim).map(PyTensor::wrap).map_err(map_err)
+}
+
+#[pyfunction]
+#[pyo3(name = "where")]
+fn where_(cond: &PyTensor, a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
+    CoreTensor::where_cond(&cond.inner, &a.inner, &b.inner).map(PyTensor::wrap).map_err(map_err)
+}
+
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
+    m.add_function(wrap_pyfunction!(cat, m)?)?;
+    m.add_function(wrap_pyfunction!(where_, m)?)?;
     Ok(())
 }

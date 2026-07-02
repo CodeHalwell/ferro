@@ -3,7 +3,10 @@
 Run inside the ferro-py venv: python examples/ops_vs_torch.py
 """
 
+import math
+
 import torch
+import torch.nn.functional as F
 
 import ferro
 
@@ -40,6 +43,22 @@ def check_unary(name, data, ferro_op, torch_op):
     tx = tt(data, SHAPE, requires_grad=True)
     torch_op(tx).sum().backward()
     check(f"{name} grad", fx.grad, tx.grad)
+
+
+def check_conv2d(name, in_shape, w_shape, stride, padding):
+    xin = [((i * 7) % 9 - 4) * 0.25 for i in range(math.prod(in_shape))]
+    win = [((i * 5) % 7 - 3) * 0.5 for i in range(math.prod(w_shape))]
+    fx = ft(xin, in_shape, requires_grad=True)
+    fw = ft(win, w_shape, requires_grad=True)
+    fy = fx.conv2d(fw, stride=stride, padding=padding)
+    tx = tt(xin, in_shape, requires_grad=True)
+    tw = tt(win, w_shape, requires_grad=True)
+    ty = F.conv2d(tx, tw, stride=stride, padding=padding)
+    check(f"{name} value", fy, ty)
+    fy.sum().backward()
+    ty.sum().backward()
+    check(f"{name} grad input", fx.grad, tx.grad)
+    check(f"{name} grad weight", fw.grad, tw.grad)
 
 
 def main():
@@ -99,6 +118,77 @@ def main():
     ta.bmm(tb).sum().backward()
     check("bmm grad A", fa.grad, ta.grad)
     check("bmm grad B", fb.grad, tb.grad)
+
+    # cat: dim 0 and 1, value + grads on both inputs. Squaring the output
+    # makes the grad per-element (2*value) instead of all-ones.
+    cat_b = [0.25, 1.75, -0.5, -3.0, 2.0, 0.75]
+    for dim in (0, 1):
+        fa = ft(MIX, SHAPE, requires_grad=True)
+        fb = ft(cat_b, SHAPE, requires_grad=True)
+        fc = ferro.cat([fa, fb], dim)
+        ta = tt(MIX, SHAPE, requires_grad=True)
+        tb = tt(cat_b, SHAPE, requires_grad=True)
+        tc = torch.cat([ta, tb], dim)
+        check(f"cat value dim={dim}", fc, tc)
+        (fc * fc).sum().backward()
+        (tc * tc).sum().backward()
+        check(f"cat grad a dim={dim}", fa.grad, ta.grad)
+        check(f"cat grad b dim={dim}", fb.grad, tb.grad)
+
+    # index_select: duplicate indices must accumulate grad.
+    for dim, idx in [(0, [1, 0, 1]), (1, [2, 2, 0])]:
+        fx = ft(MIX, SHAPE, requires_grad=True)
+        fy = fx.index_select(dim, idx)
+        tx = tt(MIX, SHAPE, requires_grad=True)
+        ty = torch.index_select(tx, dim, torch.tensor(idx))
+        check(f"index_select value dim={dim}", fy, ty)
+        (fy * fy).sum().backward()
+        (ty * ty).sum().backward()
+        check(f"index_select grad dim={dim}", fx.grad, tx.grad)
+
+    # where: grads route to a where the mask is set, to b elsewhere.
+    mask = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0]
+    fa = ft(MIX, SHAPE, requires_grad=True)
+    fb = ft(POS, SHAPE, requires_grad=True)
+    fo = ferro.where(ft(mask, SHAPE), fa, fb)
+    ta = tt(MIX, SHAPE, requires_grad=True)
+    tb = tt(POS, SHAPE, requires_grad=True)
+    to = torch.where(tt(mask, SHAPE).bool(), ta, tb)
+    check("where value", fo, to)
+    (fo * fo).sum().backward()
+    (to * to).sum().backward()
+    check("where grad a", fa.grad, ta.grad)
+    check("where grad b", fb.grad, tb.grad)
+
+    # squeeze / unsqueeze: shapes, then a grad roundtrip through both.
+    assert ft(MIX, SHAPE).unsqueeze(0).shape == [1, 2, 3]
+    assert ft(MIX, SHAPE).unsqueeze(2).shape == [2, 3, 1]
+    assert ft(MIX, SHAPE).unsqueeze(1).squeeze(1).shape == [2, 3]
+    print("OK squeeze/unsqueeze shapes")
+    fx = ft(MIX, SHAPE, requires_grad=True)
+    (fx.unsqueeze(0).squeeze(0) * ft(w_data, SHAPE)).sum().backward()
+    tx = tt(MIX, SHAPE, requires_grad=True)
+    (tx.unsqueeze(0).squeeze(0) * tt(w_data, SHAPE)).sum().backward()
+    check("squeeze/unsqueeze grad", fx.grad, tx.grad)
+
+    # conv2d: value + input and weight grads vs F.conv2d.
+    check_conv2d("conv2d s1 p0", [1, 1, 4, 4], [1, 1, 3, 3], stride=1, padding=0)
+    check_conv2d("conv2d s2 p1", [1, 1, 5, 5], [1, 1, 3, 3], stride=2, padding=1)
+    check_conv2d("conv2d multichannel", [2, 2, 4, 4], [3, 2, 2, 2], stride=1, padding=0)
+
+    # max_pool2d: (i*5)%32 is a permutation of 0..31, so every value is
+    # distinct and the argmax (hence the grad) is unambiguous. k=3 s=1 has
+    # overlapping windows, so grads accumulate.
+    pool_in = [(((i * 5) % 32) - 16) * 0.5 for i in range(32)]
+    for kernel, stride in [(2, 2), (3, 1)]:
+        fx = ft(pool_in, [1, 2, 4, 4], requires_grad=True)
+        fy = fx.max_pool2d(kernel, stride)
+        tx = tt(pool_in, [1, 2, 4, 4], requires_grad=True)
+        ty = F.max_pool2d(tx, kernel, stride)
+        check(f"max_pool2d value k={kernel} s={stride}", fy, ty)
+        fy.sum().backward()
+        ty.sum().backward()
+        check(f"max_pool2d grad k={kernel} s={stride}", fx.grad, tx.grad)
 
     # Error mapping: core errors surface as ValueError.
     try:
