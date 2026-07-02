@@ -94,6 +94,56 @@ impl PyTensor {
         PyTensor::wrap(self.inner.exp())
     }
 
+    fn log(&self) -> PyTensor {
+        PyTensor::wrap(self.inner.log())
+    }
+
+    fn tanh(&self) -> PyTensor {
+        PyTensor::wrap(self.inner.tanh())
+    }
+
+    fn sqrt(&self) -> PyTensor {
+        PyTensor::wrap(self.inner.sqrt())
+    }
+
+    fn abs(&self) -> PyTensor {
+        PyTensor::wrap(self.inner.abs())
+    }
+
+    fn pow(&self, p: f32) -> PyTensor {
+        PyTensor::wrap(self.inner.powf(p))
+    }
+
+    fn clamp(&self, min: f32, max: f32) -> PyTensor {
+        PyTensor::wrap(self.inner.clamp(min, max))
+    }
+
+    fn max(&self) -> PyResult<PyTensor> {
+        self.inner.max().map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (dim, keepdim=false))]
+    fn sum_dim(&self, dim: usize, keepdim: bool) -> PyResult<PyTensor> {
+        self.inner.sum_dim(dim, keepdim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (dim, keepdim=false))]
+    fn mean_dim(&self, dim: usize, keepdim: bool) -> PyResult<PyTensor> {
+        self.inner.mean_dim(dim, keepdim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn softmax(&self, dim: usize) -> PyResult<PyTensor> {
+        self.inner.softmax(dim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn log_softmax(&self, dim: usize) -> PyResult<PyTensor> {
+        self.inner.log_softmax(dim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn bmm(&self, other: &PyTensor) -> PyResult<PyTensor> {
+        self.inner.bmm(&other.inner).map(PyTensor::wrap).map_err(map_err)
+    }
+
     fn sum(&self) -> PyTensor {
         PyTensor::wrap(self.inner.sum())
     }
