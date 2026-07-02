@@ -3,19 +3,27 @@
 //! Backward is the softmax Jacobian-vector product:
 //! `dx_i = y_i * (g_i - sum_k g_k * y_k)`.
 
+use crate::error::{Error, Result};
 use crate::tensor::Tensor;
 
 impl Tensor {
-    pub fn softmax(&self, dim: usize) -> Tensor {
+    pub fn softmax(&self, dim: usize) -> Result<Tensor> {
+        let ndim = self.ndim();
+        if dim >= ndim {
+            return Err(Error::InvalidShape { op: "softmax", msg: format!("dim {dim} out of range for rank {ndim}") });
+        }
         let shape = self.shape().to_vec();
         let x = self.to_vec();
         let y_data = softmax_forward(&x, &shape, dim);
         let out = Tensor::from_vec(y_data, &shape).unwrap();
+        if !self.requires_grad() {
+            return Ok(out);
+        }
         let y = out.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        Ok(out.record_fn(vec![self.clone()], move |g| {
             let dx = softmax_backward(&g.to_vec(), &y.to_vec(), &shape, dim);
             vec![Tensor::from_vec(dx, &shape).unwrap()]
-        })
+        }))
     }
 }
 

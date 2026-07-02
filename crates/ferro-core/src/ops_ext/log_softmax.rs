@@ -3,10 +3,15 @@
 //! `y_i = x_i - lse`. Backward: with `sm_i = exp(y_i)` (softmax), the gradient is
 //! `dx_i = g_i - sm_i * sum_k g_k`, computed per slice over `dim`.
 
+use crate::error::{Error, Result};
 use crate::tensor::Tensor;
 
 impl Tensor {
-    pub fn log_softmax(&self, dim: usize) -> Tensor {
+    pub fn log_softmax(&self, dim: usize) -> Result<Tensor> {
+        let ndim = self.ndim();
+        if dim >= ndim {
+            return Err(Error::InvalidShape { op: "log_softmax", msg: format!("dim {dim} out of range for rank {ndim}") });
+        }
         let shape = self.shape().to_vec();
         let x = self.to_vec();
         let n = shape[dim];
@@ -32,12 +37,15 @@ impl Tensor {
             }
         }
 
-        let out = Tensor::from_vec(y.clone(), &shape).unwrap();
-        // Save softmax = exp(log_softmax output) as a detached tensor.
-        let sm = Tensor::from_vec(y.iter().map(|&v| v.exp()).collect(), &shape)
-            .unwrap()
-            .detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        if !self.requires_grad() {
+            return Tensor::from_vec(y, &shape);
+        }
+        // Save softmax = exp(log_softmax output) for the backward; from_vec
+        // already yields a fresh detached leaf.
+        let sm_data: Vec<f32> = y.iter().map(|&v| v.exp()).collect();
+        let out = Tensor::from_vec(y, &shape).unwrap();
+        let sm = Tensor::from_vec(sm_data, &shape).unwrap();
+        Ok(out.record_fn(vec![self.clone()], move |g| {
             let gv = g.to_vec();
             let smv = sm.to_vec();
             let mut dx = vec![0.0f32; gv.len()];
@@ -55,6 +63,6 @@ impl Tensor {
                 }
             }
             vec![Tensor::from_vec(dx, &shape).unwrap()]
-        })
+        }))
     }
 }

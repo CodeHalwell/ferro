@@ -11,6 +11,13 @@ fn clamp_values() {
 }
 
 #[test]
+fn clamp_min_gt_max() {
+    // torch semantics: min > max yields max everywhere, no panic.
+    let a = Tensor::from_vec(vec![-1.0, 0.5, 3.0], &[3]).unwrap();
+    assert_eq!(a.clamp(2.0, 1.0).to_vec(), vec![1.0, 1.0, 1.0]);
+}
+
+#[test]
 fn clamp_grad() {
     let a = Tensor::from_vec(vec![0.2, 0.4, 0.6, 0.8], &[2, 2]).unwrap();
     grad_check(&[a], |t| t[0].clamp(0.0, 1.0).sum());

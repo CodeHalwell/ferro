@@ -4,7 +4,7 @@ use ferro_core::Tensor;
 #[test]
 fn log_softmax_values() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 0.5, -1.0, 2.0], &[2, 3]).unwrap();
-    let y = a.log_softmax(1).to_vec();
+    let y = a.log_softmax(1).unwrap().to_vec();
 
     // exp(log_softmax) rows sum to 1.
     for r in 0..2 {
@@ -30,13 +30,13 @@ fn log_softmax_grad() {
     let a = Tensor::from_vec(vec![0.3, -1.2, 0.7, 2.0, -0.5, 1.1], &[2, 3]).unwrap();
 
     // Plain sum: exercises the -softmax * sum_g term (sum_g != 0).
-    grad_check(&[a.clone()], |t| t[0].log_softmax(1).sum());
+    grad_check(&[a.clone()], |t| t[0].log_softmax(1).unwrap().sum());
 
     // Weighted by input.
     grad_check(&[a.clone()], |t| {
-        t[0].log_softmax(1).mul(&t[0]).unwrap().sum()
+        t[0].log_softmax(1).unwrap().mul(&t[0]).unwrap().sum()
     });
 
     // Along dim 0.
-    grad_check(&[a], |t| t[0].log_softmax(0).sum());
+    grad_check(&[a], |t| t[0].log_softmax(0).unwrap().sum());
 }
