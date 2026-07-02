@@ -1,49 +1,70 @@
-use crate::autograd::Op;
 use crate::error::Result;
 use crate::shape::numel;
-use crate::tensor::{raw_binary, raw_matmul, raw_unary, Tensor};
+use crate::tensor::{raw_binary, raw_matmul, raw_unary, unbroadcast, Tensor};
 
-/// Forward ops: compute the value with a detached raw kernel, then (only when a
-/// gradient is needed) attach the autograd node that knows how to differentiate.
+/// Forward ops: compute the value with a detached raw kernel, then attach the
+/// backward closure via `record_fn` (a no-op when no input requires grad).
 impl Tensor {
     pub fn add(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary("add", self, other, |a, b| a + b)?;
-        let rg = self.requires_grad() || other.requires_grad();
-        Ok(out.record(rg, || Op::Add(self.clone(), other.clone())))
+        let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            vec![unbroadcast(g, &sa), unbroadcast(g, &sb)]
+        }))
     }
 
     pub fn sub(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary("sub", self, other, |a, b| a - b)?;
-        let rg = self.requires_grad() || other.requires_grad();
-        Ok(out.record(rg, || Op::Sub(self.clone(), other.clone())))
+        let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            let neg = raw_unary(g, |x| -x);
+            vec![unbroadcast(g, &sa), unbroadcast(&neg, &sb)]
+        }))
     }
 
     pub fn mul(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary("mul", self, other, |a, b| a * b)?;
-        let rg = self.requires_grad() || other.requires_grad();
-        Ok(out.record(rg, || Op::Mul(self.clone(), other.clone())))
+        let (a, b) = (self.clone(), other.clone());
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            let ga = raw_binary("mul_bw", g, &b, |x, y| x * y).unwrap();
+            let gb = raw_binary("mul_bw", g, &a, |x, y| x * y).unwrap();
+            vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
+        }))
     }
 
     pub fn div(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary("div", self, other, |a, b| a / b)?;
-        let rg = self.requires_grad() || other.requires_grad();
-        Ok(out.record(rg, || Op::Div(self.clone(), other.clone())))
+        let (a, b) = (self.clone(), other.clone());
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            let ga = raw_binary("div_bw", g, &b, |x, y| x / y).unwrap();
+            let ga_num = raw_binary("div_bw", g, &a, |x, y| x * y).unwrap();
+            let gb = raw_binary("div_bw", &ga_num, &b, |x, y| -x / (y * y)).unwrap();
+            vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
+        }))
     }
 
     pub fn matmul(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_matmul(self, other)?;
-        let rg = self.requires_grad() || other.requires_grad();
-        Ok(out.record(rg, || Op::Matmul(self.clone(), other.clone())))
+        let (a, b) = (self.clone(), other.clone());
+        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            // C = A @ B  =>  dA = dC @ B^T,  dB = A^T @ dC
+            let da = raw_matmul(g, &b.transpose_view(0, 1).unwrap()).unwrap();
+            let db = raw_matmul(&a.transpose_view(0, 1).unwrap(), g).unwrap();
+            vec![da, db]
+        }))
     }
 
     pub fn neg(&self) -> Tensor {
         let out = raw_unary(self, |x| -x);
-        out.record(self.requires_grad(), || Op::Neg(self.clone()))
+        out.record_fn(vec![self.clone()], |g| vec![raw_unary(g, |x| -x)])
     }
 
     pub fn relu(&self) -> Tensor {
         let out = raw_unary(self, |x| x.max(0.0));
-        out.record(self.requires_grad(), || Op::Relu(self.clone()))
+        let a = self.clone();
+        out.record_fn(vec![self.clone()], move |g| {
+            vec![raw_binary("relu_bw", g, &a, |gg, aa| if aa > 0.0 { gg } else { 0.0 }).unwrap()]
+        })
     }
 
     pub fn exp(&self) -> Tensor {
@@ -51,8 +72,10 @@ impl Tensor {
         if !self.requires_grad() {
             return out;
         }
-        let saved = out.detach_copy();
-        out.record(true, || Op::Exp(self.clone(), saved))
+        let y = out.detach_copy();
+        out.record_fn(vec![self.clone()], move |g| {
+            vec![raw_binary("exp_bw", g, &y, |x, yy| x * yy).unwrap()]
+        })
     }
 
     pub fn sigmoid(&self) -> Tensor {
@@ -60,19 +83,24 @@ impl Tensor {
         if !self.requires_grad() {
             return out;
         }
-        let saved = out.detach_copy();
-        out.record(true, || Op::Sigmoid(self.clone(), saved))
+        let y = out.detach_copy();
+        out.record_fn(vec![self.clone()], move |g| {
+            vec![raw_binary("sigmoid_bw", g, &y, |x, yy| x * yy * (1.0 - yy)).unwrap()]
+        })
     }
 
     pub fn sum(&self) -> Tensor {
         let total: f32 = self.to_vec().iter().sum();
         let out = Tensor::scalar(total);
-        out.record(self.requires_grad(), || Op::Sum(self.clone(), self.shape().to_vec()))
+        let in_shape = self.shape().to_vec();
+        out.record_fn(vec![self.clone()], move |g| vec![Tensor::full(&in_shape, g.item())])
     }
 
     pub fn mean(&self) -> Tensor {
         let v = self.to_vec();
-        let out = Tensor::scalar(v.iter().sum::<f32>() / numel(self.shape()).max(1) as f32);
-        out.record(self.requires_grad(), || Op::Mean(self.clone(), self.shape().to_vec()))
+        let n = numel(self.shape()).max(1) as f32;
+        let out = Tensor::scalar(v.iter().sum::<f32>() / n);
+        let in_shape = self.shape().to_vec();
+        out.record_fn(vec![self.clone()], move |g| vec![Tensor::full(&in_shape, g.item() / n)])
     }
 }

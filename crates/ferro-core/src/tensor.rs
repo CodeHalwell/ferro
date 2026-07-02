@@ -290,10 +290,13 @@ impl Tensor {
             shape.to_vec(),
             default_strides(shape),
             base.0.offset,
-            self.0.requires_grad,
+            false,
             None,
         );
-        Ok(out.record(self.0.requires_grad, || Op::Reshape(self.clone(), self.0.shape.clone())))
+        let in_shape = self.0.shape.clone();
+        Ok(out.record_fn(vec![self.clone()], move |g| {
+            vec![Tensor::from_vec(g.to_vec(), &in_shape).unwrap()]
+        }))
     }
 
     /// Detached transpose view (swaps two dims' shape/stride, shares storage).
@@ -314,7 +317,7 @@ impl Tensor {
 
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
         let out = self.transpose_view(d0, d1)?;
-        Ok(out.record(self.0.requires_grad, || Op::Transpose(self.clone(), d0, d1)))
+        Ok(out.record_fn(vec![self.clone()], move |g| vec![g.transpose_view(d0, d1).unwrap()]))
     }
 
     /// A detached, contiguous copy that shares no autograd history or storage.
@@ -322,21 +325,11 @@ impl Tensor {
         Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap()
     }
 
-    /// Attach an autograd op to a freshly-computed output when grad is needed.
-    pub(crate) fn record(mut self, requires_grad: bool, op: impl FnOnce() -> Op) -> Tensor {
-        if requires_grad {
-            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
-            inner.requires_grad = true;
-            inner.op = Some(op());
-        }
-        self
-    }
-
-    /// Extensible autograd hook for ops defined outside the core `Op` enum.
-    /// `inputs` are the differentiable operands; `backward` maps the output
-    /// gradient to one gradient per input (same order). Recorded only when some
-    /// input requires grad. `self` must be a freshly-created, uniquely-owned
-    /// output (as returned by the raw kernels).
+    /// The single autograd recording hook: `inputs` are the differentiable
+    /// operands; `backward` maps the output gradient to one gradient per input
+    /// (same order; the engine asserts arity and shapes). Recorded only when
+    /// some input requires grad. `self` must be a freshly-created, uniquely-
+    /// owned output (as returned by the raw kernels).
     pub fn record_fn<F>(mut self, inputs: Vec<Tensor>, backward: F) -> Tensor
     where
         F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
@@ -344,7 +337,7 @@ impl Tensor {
         if inputs.iter().any(|t| t.requires_grad()) {
             let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
             inner.requires_grad = true;
-            inner.op = Some(Op::Fn(inputs, Box::new(backward)));
+            inner.op = Some(Op::new(inputs, Box::new(backward)));
         }
         self
     }
