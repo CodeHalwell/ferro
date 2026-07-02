@@ -88,3 +88,10 @@ impl Module for Sequential {
         self.layers.iter().flat_map(|l| l.parameters()).collect()
     }
 }
+
+/// Cross-entropy loss for `[batch, classes]` logits against one-hot targets of
+/// the same shape: mean over the batch of -sum(target * log_softmax(logits)).
+/// Composed from autograd ops, so the gradient flows without a custom backward.
+pub fn cross_entropy(logits: &Tensor, targets_one_hot: &Tensor) -> Result<Tensor> {
+    Ok(logits.log_softmax(1)?.mul(targets_one_hot)?.sum_dim(1, false)?.neg().mean())
+}

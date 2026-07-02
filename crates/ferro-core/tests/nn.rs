@@ -1,4 +1,5 @@
-use ferro_core::nn::{Linear, Module, Relu, Sequential};
+use ferro_core::nn::{cross_entropy, Linear, Module, Relu, Sequential};
+use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
 fn mlp(rng: &Rng) -> Sequential {
@@ -7,6 +8,42 @@ fn mlp(rng: &Rng) -> Sequential {
         Box::new(Relu),
         Box::new(Linear::new(4, 1, rng)),
     ])
+}
+
+#[test]
+fn cross_entropy_value_and_grad() {
+    // Uniform logits over 2 classes: loss is exactly ln(2).
+    let logits = Tensor::zeros(&[2, 2]);
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]).unwrap();
+    let loss = cross_entropy(&logits, &targets).unwrap();
+    assert!((loss.item() - 2f32.ln()).abs() < 1e-5, "expected ln2, got {}", loss.item());
+
+    let logits = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
+    let t = Tensor::from_vec(vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0], &[2, 3]).unwrap();
+    grad_check(&[logits], |l| cross_entropy(&l[0], &t).unwrap());
+}
+
+#[test]
+fn cross_entropy_training_separates_classes() {
+    // A linear classifier driven by cross_entropy must fit a separable toy set.
+    let rng = Rng::new(7);
+    let x = Tensor::from_vec(vec![2.0, 0.1, 1.8, -0.2, -2.1, 0.0, -1.7, 0.3], &[4, 2]).unwrap();
+    let targets = Tensor::from_vec(vec![1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0], &[4, 2]).unwrap();
+    let layer = Linear::new(2, 2, &rng);
+    let mut opt = ferro_core::optim::Sgd::new(layer.parameters(), 0.5);
+    let mut first = 0.0;
+    let mut last = 0.0;
+    for step in 0..100 {
+        let loss = cross_entropy(&layer.forward(&x).unwrap(), &targets).unwrap();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+        if step == 0 {
+            first = loss.item();
+        }
+        last = loss.item();
+    }
+    assert!(last < 0.05 && last < first * 0.2, "loss did not converge: {first} -> {last}");
 }
 
 #[test]
