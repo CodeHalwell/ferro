@@ -24,19 +24,29 @@ What works today (in `ferro-core`, pure Rust, zero dependencies):
 - Reverse-mode autograd: each forward op records a detached graph node; a scalar
   `backward()` runs a topological reverse pass, accumulating gradients for reused
   leaves and reducing broadcasted gradients via `unbroadcast`.
-- Ops with backward support: `add`, `sub`, `mul`, `div`, `matmul`, `sum`,
-  `mean`, `relu`, `exp`, `sigmoid`, `neg`, `reshape`, `transpose`.
+- Ops with backward support, core: `add`, `sub`, `mul`, `div`, `matmul`, `sum`,
+  `mean`, `relu`, `exp`, `sigmoid`, `neg`, `reshape`, `transpose`; extended
+  (one file per op in `ops_ext/`, recorded via the `record_fn` closure hook):
+  `log`, `tanh`, `sqrt`, `abs`, `powf`, `clamp`, `max`, `sum_dim`, `mean_dim`,
+  `softmax`, `log_softmax`, `bmm`.
+- Repeated `backward()` follows torch retain_graph semantics (leaf grads
+  accumulate, interior grads recomputed); the engine asserts gradient arity and
+  shape from custom ops, and both the topological sort and graph teardown are
+  iterative, so very deep graphs (100k+ ops) neither overflow the stack in
+  backward nor on drop.
 - A small deterministic PRNG (`Rng`, splitmix64-seeded xorshift128+) for weight
   init and tests, with no external `rand` dependency.
-- Gradient-checked against central differences, and a linear-regression training
-  loop that converges with plain SGD (see `crates/ferro-core/tests/autograd.rs`).
-
-In progress (present in-tree, evolving, not yet load-bearing for the MVP
-guarantees above):
-
-- `nn` module: `Module` trait, `Linear`, `Relu`, `Sigmoid`, `Sequential`.
-- `optim` module: `Sgd` (with momentum), `Adam`.
-- `ferro-py`: PyO3-based Python bindings (built standalone via `maturin`).
+- Every op is gradient-checked against central differences via
+  `testkit::grad_check`, and a linear-regression training loop converges with
+  plain SGD (see `crates/ferro-core/tests/`).
+- `nn` module: `Module` trait, `Linear` (He init), `Relu`, `Sigmoid`,
+  `Sequential`; a 2-layer MLP trains.
+- `optim` module: `Sgd` (with momentum), bias-corrected `Adam`.
+- `ferro-py`: PyO3 Python bindings (built standalone via `maturin`) - training
+  from Python on the Rust backend works end to end.
+- DLPack interop: ferro tensors exchange with numpy and torch in all four
+  directions (`np.from_dlpack` / `torch.from_dlpack` / `ferro.from_dlpack`),
+  which is how ferro kernels are validated against torch numerically.
 
 Storage is f32-only for now, kept behind a `Storage` enum so more dtypes can be
 added without disturbing the tensor/view/autograd machinery.
@@ -62,16 +72,19 @@ rust_backend/
     ferro-core/           # pure-Rust tensor + autograd runtime (zero deps)
       src/
         tensor.rs         # Tensor, Storage, views, raw compute kernels
-        ops.rs            # forward ops that record autograd nodes
+        ops.rs            # core forward ops that record autograd nodes
+        ops_ext/          # extended ops, one file per op (record_fn pattern)
         autograd.rs       # Op graph node, backward, topological pass
         shape.rs          # strides, numel, broadcasting rules
         params.rs         # Param: trainable parameter slot
         rng.rs            # small deterministic PRNG
-        nn.rs             # (in progress) Module, Linear, Sequential
-        optim.rs          # (in progress) Sgd, Adam
+        nn.rs             # Module, Linear, Relu/Sigmoid, Sequential
+        optim.rs          # Sgd (momentum), Adam
+        testkit.rs        # public finite-difference grad_check
+        interop.rs        # contiguous buffer surface for DLPack
         error.rs          # Error / Result
-      tests/autograd.rs   # gradient checks + training loop
-    ferro-py/             # (in progress) PyO3 Python bindings, built via maturin
+      tests/              # per-op gradient checks + training loops
+    ferro-py/             # PyO3 Python bindings + DLPack, built via maturin
   docs/
     ARCHITECTURE.md       # crate + Tensor/autograd design
     ROADMAP.md            # MVP -> "replace the C++ backend" plan
@@ -81,23 +94,19 @@ rust_backend/
 
 ## How to add a new op
 
-The pattern is small and consistent. Using an elementwise or reduction op as a
-model:
+New ops are self-contained: one file in `ops_ext/`, one test file, no shared
+code touched. `ops_ext/log.rs` is the worked reference:
 
-1. Add a detached compute kernel (no autograd) or reuse an existing one in
-   `tensor.rs`. Elementwise ops go through `raw_binary` / `raw_unary`;
-   reductions and matmul have their own `raw_*` helpers. These are the same
-   kernels the backward pass calls, so keep them autograd-free.
-2. Add a forward method on `Tensor` in `ops.rs` that computes the value with the
-   raw kernel, then calls `out.record(requires_grad, || Op::YourOp(...))` to
-   attach the autograd node only when a gradient is needed. If backward needs the
-   output (as `exp` / `sigmoid` do), stash a `detach_copy()` snapshot in the `Op`
-   to avoid a reference cycle.
-3. Add an `Op::YourOp(...)` variant in `autograd.rs`, list its inputs in
-   `Op::inputs()`, and implement its vector-Jacobian product in `Op::backward()`.
-   Reduce broadcasted gradients back to input shape with `unbroadcast`.
-4. Add a gradient check in `tests/autograd.rs` using `grad_check`, which compares
-   autograd against central differences.
+1. Create `ops_ext/your_op.rs` with an `impl Tensor` block. Compute the value
+   with a detached raw kernel (`raw_unary` / `raw_binary` / `raw_sum_dim` from
+   `tensor.rs`, or your own loop over `to_vec()`).
+2. Attach autograd with `out.record_fn(vec![inputs...], move |g| vec![grads...])`
+   - a closure returning one gradient per input, in order. If backward needs the
+   output, capture `let y = out.detach_copy();` (never the live output - that
+   would create a reference cycle). The engine asserts arity and gradient shapes.
+3. Register the module in `ops_ext/mod.rs`.
+4. Add `tests/op_your_op.rs` with a value test and a
+   `ferro_core::testkit::grad_check` finite-difference check.
 
 See `docs/ARCHITECTURE.md` for the full design, and `docs/DISPATCHER.md` /
 `docs/DLPACK.md` for where this is headed.
