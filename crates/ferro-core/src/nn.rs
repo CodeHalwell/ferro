@@ -64,6 +64,38 @@ impl Module for Sigmoid {
     }
 }
 
+/// Layer normalization over the last dim of a `[batch, dim]` input (2-D only
+/// for now): `(x - mean) / sqrt(var + eps) * gamma + beta` with learnable
+/// per-feature `gamma`/`beta`. Composed from autograd ops, so the gradient
+/// flows without a custom backward.
+pub struct LayerNorm {
+    gamma: Param,
+    beta: Param,
+    eps: f32,
+}
+
+impl LayerNorm {
+    pub fn new(dim: usize) -> LayerNorm {
+        let gamma = Param::new(Tensor::ones(&[dim]));
+        let beta = Param::new(Tensor::zeros(&[dim]));
+        LayerNorm { gamma, beta, eps: 1e-5 }
+    }
+}
+
+impl Module for LayerNorm {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let mu = x.mean_dim(1, true)?;
+        let centered = x.sub(&mu)?;
+        let var = centered.mul(&centered)?.mean_dim(1, true)?;
+        let norm = centered.div(&var.add(&Tensor::scalar(self.eps))?.sqrt())?;
+        norm.mul(&self.gamma.tensor())?.add(&self.beta.tensor())
+    }
+
+    fn parameters(&self) -> Vec<Param> {
+        vec![self.gamma.clone(), self.beta.clone()]
+    }
+}
+
 /// Runs its layers in order, threading the output of each into the next.
 pub struct Sequential {
     layers: Vec<Box<dyn Module>>,

@@ -1,4 +1,4 @@
-use ferro_core::nn::{cross_entropy, Linear, Module, Relu, Sequential};
+use ferro_core::nn::{cross_entropy, LayerNorm, Linear, Module, Relu, Sequential};
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
@@ -108,6 +108,66 @@ fn training_loop_decreases_loss() {
             p.set(Tensor::from_vec(updated, &shape).unwrap());
             p.zero_grad();
         }
+    }
+
+    assert!(last_loss < first_loss * 0.5, "loss did not decrease: {first_loss} -> {last_loss}");
+}
+
+#[test]
+fn layernorm_normalizes() {
+    let ln = LayerNorm::new(4);
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, -0.5, 0.7, 2.3, -1.1], &[2, 4]).unwrap();
+    let out = ln.forward(&x).unwrap();
+    assert_eq!(out.shape(), &[2, 4]);
+    for row in out.to_vec().chunks(4) {
+        let mean = row.iter().sum::<f32>() / 4.0;
+        let var = row.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / 4.0;
+        assert!(mean.abs() < 1e-5, "row mean not ~0: {mean}");
+        assert!((var - 1.0).abs() < 1e-3, "row var not ~1: {var}");
+    }
+}
+
+#[test]
+fn layernorm_grad() {
+    let ln = LayerNorm::new(3);
+    let x = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
+    let w = Tensor::from_vec(vec![0.7, -1.3, 0.4, 2.1, -0.6, 0.9], &[2, 3]).unwrap();
+    grad_check(&[x], |t| ln.forward(&t[0]).unwrap().mul(&w).unwrap().sum());
+}
+
+#[test]
+fn layernorm_in_mlp_trains() {
+    let rng = Rng::new(7);
+    let model = Sequential::new(vec![
+        Box::new(Linear::new(3, 4, &rng)),
+        Box::new(LayerNorm::new(4)),
+        Box::new(Relu),
+        Box::new(Linear::new(4, 1, &rng)),
+    ]);
+
+    // Regress y = sum of inputs.
+    let inputs: Vec<f32> = vec![
+        0.1, 0.2, 0.3, 0.5, 0.1, 0.4, 0.9, 0.2, 0.1, 0.3, 0.3, 0.3, 0.0, 0.7, 0.2, 0.6, 0.1, 0.1,
+    ];
+    let batch = inputs.len() / 3;
+    let x = Tensor::from_vec(inputs.clone(), &[batch, 3]).unwrap();
+    let targets: Vec<f32> = inputs.chunks(3).map(|c| c.iter().sum()).collect();
+    let y = Tensor::from_vec(targets, &[batch, 1]).unwrap();
+
+    let mut opt = ferro_core::optim::Sgd::new(model.parameters(), 0.1);
+    let mut first_loss = f32::NAN;
+    let mut last_loss = f32::NAN;
+    for step in 0..200 {
+        let pred = model.forward(&x).unwrap();
+        let diff = pred.sub(&y).unwrap();
+        let loss = diff.mul(&diff).unwrap().mean();
+        if step == 0 {
+            first_loss = loss.item();
+        }
+        last_loss = loss.item();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
     }
 
     assert!(last_loss < first_loss * 0.5, "loss did not decrease: {first_loss} -> {last_loss}");
