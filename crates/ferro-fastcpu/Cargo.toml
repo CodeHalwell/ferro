@@ -1,0 +1,13 @@
+[package]
+name = "ferro-fastcpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Zero external dependencies, matching ferro-core: blocking + std::thread only.
+[dependencies]
+ferro-core = { path = "../ferro-core" }
+
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
