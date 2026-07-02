@@ -48,14 +48,20 @@ impl Tensor {
 
     pub fn exp(&self) -> Tensor {
         let out = raw_unary(self, |x| x.exp());
+        if !self.requires_grad() {
+            return out;
+        }
         let saved = out.detach_copy();
-        out.record(self.requires_grad(), || Op::Exp(self.clone(), saved))
+        out.record(true, || Op::Exp(self.clone(), saved))
     }
 
     pub fn sigmoid(&self) -> Tensor {
         let out = raw_unary(self, |x| 1.0 / (1.0 + (-x).exp()));
+        if !self.requires_grad() {
+            return out;
+        }
         let saved = out.detach_copy();
-        out.record(self.requires_grad(), || Op::Sigmoid(self.clone(), saved))
+        out.record(true, || Op::Sigmoid(self.clone(), saved))
     }
 
     pub fn sum(&self) -> Tensor {

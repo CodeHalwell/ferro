@@ -45,6 +45,28 @@ impl Op {
         }
     }
 
+    /// Consume the op, yielding every tensor it holds (inputs plus any saved
+    /// snapshots). Used by TensorInner's iterative Drop to unlink deep graphs
+    /// without recursing.
+    pub(crate) fn into_inputs(self) -> Vec<Tensor> {
+        match self {
+            Op::Add(a, b)
+            | Op::Sub(a, b)
+            | Op::Mul(a, b)
+            | Op::Div(a, b)
+            | Op::Matmul(a, b)
+            | Op::Exp(a, b)
+            | Op::Sigmoid(a, b) => vec![a, b],
+            Op::Sum(a, _)
+            | Op::Mean(a, _)
+            | Op::Relu(a)
+            | Op::Neg(a)
+            | Op::Reshape(a, _)
+            | Op::Transpose(a, _, _) => vec![a],
+            Op::Fn(inputs, _) => inputs,
+        }
+    }
+
     /// Given the gradient flowing into this op's output, return the gradient for
     /// each input (in `inputs()` order).
     pub(crate) fn backward(&self, g: &Tensor) -> Vec<Tensor> {
@@ -91,21 +113,36 @@ impl Op {
     }
 }
 
-fn build_topo(t: &Tensor, seen: &mut HashSet<usize>, topo: &mut Vec<Tensor>) {
-    if !seen.insert(t.id()) {
-        return;
-    }
-    if let Some(op) = &t.0.op {
-        for inp in op.inputs() {
-            build_topo(inp, seen, topo);
+/// Post-order topological sort via an explicit stack of (node, next child
+/// index), so graphs deeper than the native stack cannot overflow it.
+fn build_topo(root: &Tensor) -> Vec<Tensor> {
+    let mut seen = HashSet::new();
+    let mut topo = Vec::new();
+    let mut stack: Vec<(Tensor, usize)> = Vec::new();
+    seen.insert(root.id());
+    stack.push((root.clone(), 0));
+    while let Some((t, i)) = stack.pop() {
+        if let Some(op) = &t.0.op {
+            let inputs = op.inputs();
+            if i < inputs.len() {
+                let child = inputs[i].clone();
+                stack.push((t.clone(), i + 1));
+                if seen.insert(child.id()) {
+                    stack.push((child, 0));
+                }
+                continue;
+            }
         }
+        topo.push(t);
     }
-    topo.push(t.clone());
+    topo
 }
 
 impl Tensor {
     /// Reverse-mode autodiff seeded with ones (call on a scalar loss). Populates
-    /// `.grad()` on every leaf/intermediate with `requires_grad = true`.
+    /// `.grad()` on every leaf/intermediate with `requires_grad = true`. Repeated
+    /// calls follow torch's retain_graph semantics: leaf grads accumulate across
+    /// calls, interior grads are recomputed from scratch each call.
     pub fn backward(&self) {
         assert!(
             self.numel() == 1,
@@ -113,13 +150,28 @@ impl Tensor {
              reduce with .sum() or .mean() first",
             self.shape()
         );
-        let mut topo = Vec::new();
-        build_topo(self, &mut HashSet::new(), &mut topo);
+        let topo = build_topo(self);
+        // Interior grads are scratch state from any prior backward call; left in
+        // place they would compound through accumulate_grad and corrupt results.
+        for t in &topo {
+            if t.0.op.is_some() {
+                t.zero_grad();
+            }
+        }
         self.set_grad(Tensor::ones(self.shape()));
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
             let g = t.grad().expect("every op node on the path receives a gradient");
-            for (inp, ig) in op.inputs().into_iter().zip(op.backward(&g)) {
+            let inputs = op.inputs();
+            let grads = op.backward(&g);
+            assert!(
+                grads.len() == inputs.len(),
+                "op backward returned {} gradients for {} inputs; record_fn closures \
+                 must return one gradient per input",
+                grads.len(),
+                inputs.len()
+            );
+            for (inp, ig) in inputs.into_iter().zip(grads) {
                 if inp.requires_grad() {
                     inp.accumulate_grad(ig);
                 }

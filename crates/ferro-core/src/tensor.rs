@@ -39,6 +39,23 @@ pub(crate) struct TensorInner {
     pub(crate) grad: Mutex<Option<Tensor>>,
 }
 
+/// Dropping a graph naively recurses Tensor -> Op -> input Tensor, which
+/// overflows the stack on deep op chains; unlink iteratively instead.
+impl Drop for TensorInner {
+    fn drop(&mut self) {
+        let mut ops: Vec<Op> = self.op.take().into_iter().collect();
+        while let Some(op) = ops.pop() {
+            for t in op.into_inputs() {
+                if let Ok(mut inner) = Arc::try_unwrap(t.0) {
+                    if let Some(next) = inner.op.take() {
+                        ops.push(next);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Reference-counted, autograd-aware tensor. Cloning is cheap (bumps an `Arc`)
 /// and shares identity, so a value used in several ops accumulates grad once.
 #[derive(Clone)]
@@ -144,6 +161,9 @@ impl Tensor {
         let inner = &self.0;
         let data = inner.storage.as_f32();
         let n = self.numel();
+        if self.is_contiguous() {
+            return data[inner.offset..inner.offset + n].to_vec();
+        }
         let ndim = inner.shape.len();
         if ndim == 0 {
             return vec![data[inner.offset]];
@@ -172,8 +192,20 @@ impl Tensor {
         self.to_vec()[0]
     }
 
+    /// Row-major contiguous check without allocating (size-1 dims may carry any
+    /// stride since they contribute no offset).
     pub(crate) fn is_contiguous(&self) -> bool {
-        self.0.stride == default_strides(&self.0.shape)
+        let mut acc = 1usize;
+        for i in (0..self.0.shape.len()).rev() {
+            let dim = self.0.shape[i];
+            if dim != 1 {
+                if self.0.stride[i] != acc {
+                    return false;
+                }
+                acc *= dim;
+            }
+        }
+        true
     }
 
     // --- grad storage -----------------------------------------------------
@@ -191,6 +223,13 @@ impl Tensor {
     }
 
     pub(crate) fn accumulate_grad(&self, g: Tensor) {
+        assert!(
+            g.shape() == self.shape(),
+            "gradient shape {:?} does not match tensor shape {:?}; op backwards must \
+             reduce broadcasted gradients back to the input shape",
+            g.shape(),
+            self.shape()
+        );
         let mut slot = self.0.grad.lock().unwrap();
         *slot = Some(match slot.take() {
             None => g,

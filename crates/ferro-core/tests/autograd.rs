@@ -1,44 +1,8 @@
+use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
 fn assert_close(a: f32, b: f32, tol: f32, what: &str) {
     assert!((a - b).abs() <= tol, "{what}: {a} vs {b} (tol {tol})");
-}
-
-/// Relative closeness: f32 central differences on large-magnitude losses carry
-/// real rounding noise, so compare with an absolute + relative band.
-fn assert_close_rel(analytic: f32, numeric: f32, what: &str) {
-    let tol = 1e-2 + 2e-2 * analytic.abs();
-    assert!((analytic - numeric).abs() <= tol, "{what}: {analytic} vs {numeric} (tol {tol})");
-}
-
-/// Central-difference gradient check: perturb each input element and compare the
-/// numerical dL/dx against the autograd grad. `f` builds the scalar loss from a
-/// list of leaf tensors; `inputs` are the leaves to check.
-fn grad_check<F>(inputs: &[Tensor], f: F)
-where
-    F: Fn(&[Tensor]) -> Tensor,
-{
-    let leaves: Vec<Tensor> = inputs.iter().map(|t| t.requires_grad_(true)).collect();
-    let loss = f(&leaves);
-    loss.backward();
-
-    let eps = 4e-3f32;
-    for (li, leaf) in leaves.iter().enumerate() {
-        let base = leaf.to_vec();
-        let analytic = leaf.grad().expect("leaf should have grad").to_vec();
-        for i in 0..base.len() {
-            let mut up = base.clone();
-            up[i] += eps;
-            let mut dn = base.clone();
-            dn[i] -= eps;
-            let mut plus = leaves.clone();
-            plus[li] = Tensor::from_vec(up, leaf.shape()).unwrap();
-            let mut minus = leaves.clone();
-            minus[li] = Tensor::from_vec(dn, leaf.shape()).unwrap();
-            let numeric = (f(&plus).item() - f(&minus).item()) / (2.0 * eps);
-            assert_close_rel(analytic[i], numeric, &format!("input {li} elem {i}"));
-        }
-    }
 }
 
 #[test]
@@ -90,6 +54,49 @@ fn reused_leaf_accumulates() {
 fn backward_on_non_scalar_panics() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
     a.mul(&a).unwrap().backward();
+}
+
+#[test]
+fn double_backward_accumulates_like_torch() {
+    // Leaf grads accumulate across backward calls; interior grads are recomputed
+    // fresh, so two backwards of x^2 give exactly 2 * 2x, not compounded junk.
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
+    let loss = x.mul(&x).unwrap().sum();
+    loss.backward();
+    loss.backward();
+    assert_eq!(x.grad().unwrap().to_vec(), vec![4.0, 8.0, 12.0]);
+}
+
+#[test]
+fn deep_graph_backward_and_drop() {
+    // 100k chained ops: both the topological sort and graph teardown must be
+    // iterative or this overflows the native stack.
+    let x = Tensor::from_vec(vec![1.0], &[1]).unwrap().requires_grad_(true);
+    let mut y = x.clone();
+    for _ in 0..100_000 {
+        y = y.add(&x).unwrap();
+    }
+    y.sum().backward();
+    assert_eq!(x.grad().unwrap().to_vec(), vec![100_001.0]);
+}
+
+#[test]
+#[should_panic(expected = "one gradient per input")]
+fn record_fn_arity_mismatch_panics() {
+    let a = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap().requires_grad_(true);
+    let b = Tensor::from_vec(vec![3.0, 4.0], &[2]).unwrap().requires_grad_(true);
+    let out = Tensor::from_vec(vec![4.0, 6.0], &[2]).unwrap();
+    let out = out.record_fn(vec![a.clone(), b.clone()], |g| vec![g.detach_copy()]);
+    out.sum().backward();
+}
+
+#[test]
+#[should_panic(expected = "does not match tensor shape")]
+fn record_fn_wrong_grad_shape_panics() {
+    let a = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap().requires_grad_(true);
+    let out = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap();
+    let out = out.record_fn(vec![a.clone()], |_| vec![Tensor::ones(&[3, 2])]);
+    out.sum().backward();
 }
 
 #[test]
