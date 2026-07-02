@@ -78,10 +78,6 @@ impl PyTensor {
         self.inner.matmul(&other.inner).map(PyTensor::wrap).map_err(map_err)
     }
 
-    fn neg(&self) -> PyTensor {
-        PyTensor::wrap(self.inner.neg())
-    }
-
     fn __neg__(&self) -> PyTensor {
         PyTensor::wrap(self.inner.neg())
     }
@@ -114,12 +110,25 @@ impl PyTensor {
         self.inner.reshape(&shape).map(PyTensor::wrap).map_err(map_err)
     }
 
-    fn requires_grad_(&self, req: bool) -> PyTensor {
-        PyTensor::wrap(self.inner.requires_grad_(req))
+    /// In-place like torch: mutates self and returns it for chaining.
+    fn requires_grad_(mut slf: PyRefMut<'_, Self>, req: bool) -> PyRefMut<'_, Self> {
+        slf.inner = slf.inner.requires_grad_(req);
+        slf
     }
 
-    fn backward(&self) {
+    #[getter]
+    fn requires_grad(&self) -> bool {
+        self.inner.requires_grad()
+    }
+
+    fn backward(&self) -> PyResult<()> {
+        if self.inner.numel() != 1 {
+            return Err(PyValueError::new_err(
+                "backward() requires a scalar output; reduce with .sum() or .mean()",
+            ));
+        }
         self.inner.backward();
+        Ok(())
     }
 
     fn zero_grad(&self) {
@@ -145,8 +154,14 @@ impl PyTensor {
         to_nested(py, &self.inner.to_vec(), self.inner.shape())
     }
 
-    fn item(&self) -> f32 {
-        self.inner.item()
+    fn item(&self) -> PyResult<f32> {
+        if self.inner.numel() != 1 {
+            return Err(PyValueError::new_err(format!(
+                "item() requires a single-element tensor, got shape {:?}",
+                self.inner.shape()
+            )));
+        }
+        Ok(self.inner.item())
     }
 
     fn __repr__(&self) -> String {

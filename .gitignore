@@ -1,6 +1,7 @@
 /target
 **/target
 Cargo.lock
+!crates/ferro-py/Cargo.lock
 __pycache__/
 *.so
 *.pyd

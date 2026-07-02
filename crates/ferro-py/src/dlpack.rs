@@ -3,7 +3,7 @@
 //! Export: `__dlpack__` builds a `DLManagedTensor` that owns a heap copy of the
 //! tensor's row-major f32 data and wraps it in a PyCapsule named "dltensor".
 //! The consumer (numpy/torch) reads it zero-copy from that buffer and later
-//! invokes our `deleter`, which frees the owned box.
+//! invokes our `deleter`, which frees the DLManagedTensor and its data.
 //!
 //! Import: `from_dlpack` pulls the capsule from an object's `__dlpack__`,
 //! copies the described data into a fresh ferro tensor, then calls the source's
@@ -68,9 +68,11 @@ unsafe extern "C" fn managed_deleter(managed: *mut DLManagedTensor) {
     if managed.is_null() {
         return;
     }
-    let ctx = (*managed).manager_ctx as *mut ManagerCtx;
+    // Reclaim both allocations made in export_capsule: the DLManagedTensor
+    // box itself and the ManagerCtx box holding data/shape.
+    let managed_box = Box::from_raw(managed);
+    let ctx = managed_box.manager_ctx as *mut ManagerCtx;
     if !ctx.is_null() {
-        // Reclaim the box: drops data/shape and the managed tensor allocation.
         drop(Box::from_raw(ctx));
     }
 }
