@@ -1,9 +1,30 @@
 # Dispatcher Design Sketch
 
-This is a design sketch for an ATen-style dispatcher for `ferro`. It is not
-implemented yet; it describes the target design and, importantly, an incremental
-path to get there from the current code without a big-bang rewrite. See
-`ROADMAP.md` Phase 3 for where this fits.
+This is a design sketch for an ATen-style dispatcher for `ferro`, describing
+the target design and an incremental path to get there without a big-bang
+rewrite. See `ROADMAP.md` Phase 3 for where this fits.
+
+## Status
+
+Implemented so far (phase 1):
+
+- `device.rs`: a `Device` enum (`Cpu`, `Cuda(u32)`) carried on every
+  `TensorInner` and inherited by views. Creation defaults to `Cpu`;
+  `Tensor::device()` is public; `raw_binary`/`raw_matmul` reject mixed-device
+  operands with `Error::DeviceMismatch`.
+- `dispatch.rs`: a process-wide kernel table. `matmul` routes through a
+  swappable function pointer (`set_matmul_kernel`), seeded with the naive
+  reference kernel; the `ferro-fastcpu` crate overrides it from outside core.
+- Autograd was already unified behind `record_fn`, so the autograd layer is a
+  single wrapping mechanism rather than per-op branching - the "Autograd key"
+  in miniature.
+
+Not yet implemented: named elementwise kernels (still inline CPU closures),
+per-device kernel tables (the current table is CPU-only), Meta kernels, and
+any real second device. The sections below describe that target.
+
+Note: the code snippet immediately below predates the record_fn unification;
+today's ops.rs already records via closures. The scaling argument stands.
 
 ## Motivation
 
