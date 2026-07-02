@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::autograd::Op;
+use crate::device::Device;
 use crate::error::{Error, Result};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
@@ -33,6 +34,7 @@ pub(crate) struct TensorInner {
     pub(crate) shape: Vec<usize>,
     pub(crate) stride: Vec<usize>,
     pub(crate) offset: usize,
+    pub(crate) device: Device,
     pub(crate) requires_grad: bool,
     /// How this tensor was produced, for reverse-mode autodiff. `None` for leaves.
     pub(crate) op: Option<Op>,
@@ -67,6 +69,7 @@ impl Tensor {
         shape: Vec<usize>,
         stride: Vec<usize>,
         offset: usize,
+        device: Device,
         requires_grad: bool,
         op: Option<Op>,
     ) -> Tensor {
@@ -76,6 +79,7 @@ impl Tensor {
             shape,
             stride,
             offset,
+            device,
             requires_grad,
             op,
             grad: Mutex::new(None),
@@ -95,6 +99,7 @@ impl Tensor {
             shape.to_vec(),
             default_strides(shape),
             0,
+            Device::Cpu,
             false,
             None,
         ))
@@ -138,6 +143,9 @@ impl Tensor {
     pub fn requires_grad(&self) -> bool {
         self.0.requires_grad
     }
+    pub fn device(&self) -> Device {
+        self.0.device
+    }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
     /// Returns a fresh leaf sharing storage; only meaningful on leaves.
@@ -147,6 +155,7 @@ impl Tensor {
             self.0.shape.clone(),
             self.0.stride.clone(),
             self.0.offset,
+            self.0.device,
             req,
             None,
         )
@@ -267,6 +276,7 @@ impl Tensor {
             shape.to_vec(),
             new_stride,
             self.0.offset,
+            self.0.device,
             false,
             None,
         ))
@@ -290,6 +300,7 @@ impl Tensor {
             shape.to_vec(),
             default_strides(shape),
             base.0.offset,
+            self.0.device,
             false,
             None,
         );
@@ -312,7 +323,7 @@ impl Tensor {
         let mut stride = self.0.stride.clone();
         shape.swap(d0, d1);
         stride.swap(d0, d1);
-        Ok(Tensor::from_parts(self.0.storage.clone(), shape, stride, self.0.offset, false, None))
+        Ok(Tensor::from_parts(self.0.storage.clone(), shape, stride, self.0.offset, self.0.device, false, None))
     }
 
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
@@ -352,6 +363,9 @@ pub(crate) fn raw_binary(
     b: &Tensor,
     f: impl Fn(f32, f32) -> f32,
 ) -> Result<Tensor> {
+    if a.0.device != b.0.device {
+        return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
+    }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
     let vb = b.broadcast_to(&out_shape)?.to_vec();
@@ -364,8 +378,12 @@ pub(crate) fn raw_unary(a: &Tensor, f: impl Fn(f32) -> f32) -> Tensor {
     Tensor::from_vec(data, &a.0.shape).unwrap()
 }
 
-/// 2-D matmul: (m,k) @ (k,n) -> (m,n). Higher ranks are a follow-up.
+/// 2-D matmul: (m,k) @ (k,n) -> (m,n), routed through the dispatch table so a
+/// backend crate can swap in a faster kernel. Higher ranks are a follow-up.
 pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    if a.0.device != b.0.device {
+        return Err(Error::DeviceMismatch { op: "matmul", lhs: a.0.device, rhs: b.0.device });
+    }
     if a.ndim() != 2 || b.ndim() != 2 {
         return Err(Error::Unsupported {
             op: "matmul",
@@ -379,20 +397,7 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     }
     let va = a.to_vec();
     let vb = b.to_vec();
-    let mut out = vec![0f32; m * n];
-    for i in 0..m {
-        for p in 0..k {
-            let aip = va[i * k + p];
-            if aip == 0.0 {
-                continue;
-            }
-            let brow = p * n;
-            let orow = i * n;
-            for j in 0..n {
-                out[orow + j] += aip * vb[brow + j];
-            }
-        }
-    }
+    let out = crate::dispatch::matmul(&va, &vb, m, k, n);
     Tensor::from_vec(out, &[m, n])
 }
 

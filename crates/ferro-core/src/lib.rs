@@ -3,6 +3,8 @@
 //! layer; Python bindings and device backends live in sibling crates.
 
 mod autograd;
+pub mod device;
+pub mod dispatch;
 pub mod error;
 pub mod interop;
 pub mod nn;
@@ -15,6 +17,7 @@ pub mod shape;
 pub mod tensor;
 pub mod testkit;
 
+pub use device::Device;
 pub use error::{Error, Result};
 pub use params::Param;
 pub use rng::Rng;

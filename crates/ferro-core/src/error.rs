@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::device::Device;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Two shapes could not be broadcast/aligned for an op.
@@ -8,6 +10,8 @@ pub enum Error {
     InvalidShape { op: &'static str, msg: String },
     /// An op does not yet support the given rank/config in this MVP.
     Unsupported { op: &'static str, msg: String },
+    /// Operands live on different devices.
+    DeviceMismatch { op: &'static str, lhs: Device, rhs: Device },
 }
 
 impl fmt::Display for Error {
@@ -18,6 +22,9 @@ impl fmt::Display for Error {
             }
             Error::InvalidShape { op, msg } => write!(f, "{op}: invalid shape: {msg}"),
             Error::Unsupported { op, msg } => write!(f, "{op}: unsupported: {msg}"),
+            Error::DeviceMismatch { op, lhs, rhs } => {
+                write!(f, "{op}: operands on different devices ({lhs} vs {rhs})")
+            }
         }
     }
 }
