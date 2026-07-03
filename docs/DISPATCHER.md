@@ -39,10 +39,20 @@ Implemented in phase 2 (named kernels + per-device backends):
 - Migrated forwards: add/sub/mul/div/neg/relu/exp/sigmoid in `ops.rs` and
   tanh/sqrt/abs/log/powf/clamp in `ops_ext`.
 
-Not yet implemented: device-resident storage (buffers are still host `Vec<f32>`
-and results land on Cpu - phase 3), kinds for reductions and the composite
-ops_ext ops, backward routing through backends, Meta kernels, and any real
-second device. The sections below describe that target.
+Phase 3 (device-resident storage) is now implemented in core:
+`Storage::Device(Box<dyn DeviceBuffer>)` holds a backend-owned contiguous f32
+buffer; `Tensor::to_device` transfers explicitly (detached, like `to_dtype`);
+whole-buffer device tensors run unary/binary/matmul kernels via the backend's
+`*_dev` methods and STAY resident between ops (proven by a counting fake
+backend in tests/device.rs: one upload, N device kernels, one download).
+Boundaries: binary device ops require equal shapes (no device broadcasting
+yet), autograd is host-only (`requires_grad_` on a device tensor panics), and
+ops without device kernels fall back to host compute, visibly returning cpu
+tensors.
+
+Not yet implemented: device broadcasting/reductions, autograd on device,
+Meta kernels, and validation on real GPU hardware (ferro-cuda implements the
+seam; this container has no GPU).
 
 Note: the code snippet immediately below predates the record_fn unification;
 today's ops.rs already records via closures. The scaling argument stands.

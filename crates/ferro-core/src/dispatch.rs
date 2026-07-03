@@ -37,15 +37,59 @@ pub enum BinaryKind {
     Div,
 }
 
-/// Per-device compute kernels. Buffers are contiguous row-major f32 host
-/// slices for now (storage is host-resident until phase 3); a backend only
-/// supplies math, while broadcasting/materialization stay in core.
+/// Opaque device-resident buffer owned by a backend: contiguous f32 elements
+/// living wherever the backend keeps them (GPU memory, etc.). Core never sees
+/// the bytes; backends downcast via `as_any` to their concrete buffer type.
+pub trait DeviceBuffer: Send + Sync {
+    fn device(&self) -> Device;
+    fn len(&self) -> usize;
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+fn not_resident<T>(op: &'static str) -> Result<T> {
+    Err(Error::Unsupported { op, msg: "backend does not implement device-resident storage".into() })
+}
+
+/// Per-device compute kernels. The slice methods take contiguous row-major
+/// f32 host buffers (the CPU path; broadcasting/materialization stay in core).
+/// The `*_dev` methods operate on backend-owned `DeviceBuffer`s so chained ops
+/// stay resident on the device; they have host-rejecting defaults so a
+/// host-only backend is still a valid `Backend`.
 pub trait Backend: Send + Sync {
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32>;
     /// a and b are same-length, already-broadcast contiguous buffers.
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32>;
     /// Row-major (m,k) @ (k,n) -> (m,n).
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32>;
+
+    fn alloc_from_host(&self, _data: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("alloc_from_host")
+    }
+    fn copy_to_host(&self, _buf: &dyn DeviceBuffer) -> Result<Vec<f32>> {
+        not_resident("copy_to_host")
+    }
+    fn unary_dev(&self, _kind: UnaryKind, _x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("unary_dev")
+    }
+    /// a and b are same-length device buffers (no broadcasting on device yet).
+    fn binary_dev(
+        &self,
+        _kind: BinaryKind,
+        _a: &dyn DeviceBuffer,
+        _b: &dyn DeviceBuffer,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("binary_dev")
+    }
+    fn matmul_dev(
+        &self,
+        _a: &dyn DeviceBuffer,
+        _b: &dyn DeviceBuffer,
+        _m: usize,
+        _k: usize,
+        _n: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("matmul_dev")
+    }
 }
 
 /// Reference CPU backend; pre-registered for `Device::Cpu`.

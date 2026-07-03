@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::autograd::Op;
 use crate::device::Device;
-use crate::dispatch::{backend_for, BinaryKind, UnaryKind};
+use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::rng::Rng;
@@ -17,17 +17,30 @@ fn fresh_id() -> usize {
 
 /// Typed element storage. Compute ops and autograd are f32-only; F64/I64
 /// storage carries data (indices, targets) through views and materialization.
-#[derive(Debug)]
+/// `Device` holds a backend-owned buffer (f32 elements, always contiguous) so
+/// chained ops stay resident on the device between explicit transfers.
 pub enum Storage {
     F32(Vec<f32>),
     F64(Vec<f64>),
     I64(Vec<i64>),
+    Device(Box<dyn DeviceBuffer>),
+}
+
+impl std::fmt::Debug for Storage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Storage::F32(v) => write!(f, "F32({} elems)", v.len()),
+            Storage::F64(v) => write!(f, "F64({} elems)", v.len()),
+            Storage::I64(v) => write!(f, "I64({} elems)", v.len()),
+            Storage::Device(b) => write!(f, "Device({} elems on {})", b.len(), b.device()),
+        }
+    }
 }
 
 impl Storage {
     pub fn dtype(&self) -> DType {
         match self {
-            Storage::F32(_) => DType::F32,
+            Storage::F32(_) | Storage::Device(_) => DType::F32,
             Storage::F64(_) => DType::F64,
             Storage::I64(_) => DType::I64,
         }
@@ -36,7 +49,7 @@ impl Storage {
     pub fn as_f32(&self) -> &[f32] {
         match self {
             Storage::F32(v) => v,
-            other => panic!("expected f32 storage, got {}", other.dtype()),
+            other => panic!("expected f32 host storage, got {other:?}"),
         }
     }
 }
@@ -187,6 +200,11 @@ impl Tensor {
             "requires_grad_ supports only f32 tensors (autograd is f32-only), got {}",
             self.dtype()
         );
+        assert!(
+            !req || self.0.device == Device::Cpu,
+            "requires_grad_ supports only cpu tensors for now (autograd runs on host), got {}",
+            self.0.device
+        );
         Tensor::from_parts(
             self.0.storage.clone(),
             self.0.shape.clone(),
@@ -240,6 +258,10 @@ impl Tensor {
             Storage::F32(v) => self.gather(v),
             Storage::F64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
+            Storage::Device(b) => {
+                let host = device_to_host(self.0.device, b.as_ref());
+                self.gather(&host)
+            }
         }
     }
 
@@ -249,6 +271,7 @@ impl Tensor {
             Storage::F32(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
             Storage::F64(v) => self.gather(v),
             Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
+            Storage::Device(_) => self.to_vec().into_iter().map(|x| x as f64).collect(),
         }
     }
 
@@ -258,6 +281,7 @@ impl Tensor {
             Storage::F32(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
             Storage::F64(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
             Storage::I64(v) => self.gather(v),
+            Storage::Device(_) => self.to_vec().into_iter().map(|x| x as i64).collect(),
         }
     }
 
@@ -283,6 +307,51 @@ impl Tensor {
     /// Scalar value of a 0-d (or single-element) tensor.
     pub fn item(&self) -> f32 {
         self.to_vec()[0]
+    }
+
+    // --- device transfer ---------------------------------------------------
+
+    /// Move this tensor's data to `device`, returning a detached contiguous
+    /// leaf there (like `to_dtype`, transfers never carry autograd history).
+    /// Only f32 tensors can move off the host. Cross-device goes via the host.
+    pub fn to_device(&self, device: Device) -> Result<Tensor> {
+        if self.0.device == device {
+            return Ok(self.clone());
+        }
+        if self.dtype() != DType::F32 {
+            return Err(Error::DtypeMismatch {
+                op: "to_device",
+                expected: DType::F32,
+                got: self.dtype(),
+            });
+        }
+        // Materialize on the host first (a copy back for device sources, a
+        // contiguous gather for host views), then upload if the target is not
+        // the cpu.
+        let host = self.to_vec();
+        let shape = self.0.shape.clone();
+        if device == Device::Cpu {
+            return Tensor::from_vec(host, &shape);
+        }
+        let buf = backend_for(device)?.alloc_from_host(&host)?;
+        Ok(Tensor::from_parts(
+            Arc::new(Storage::Device(buf)),
+            shape.clone(),
+            default_strides(&shape),
+            0,
+            device,
+            false,
+            None,
+        ))
+    }
+
+    /// True when storage is a backend-owned device buffer usable by the
+    /// device kernel paths: those pass the raw buffer, so the view must be
+    /// the whole buffer in natural order.
+    fn device_resident_whole(&self) -> bool {
+        matches!(&*self.0.storage, Storage::Device(_))
+            && self.0.offset == 0
+            && self.is_contiguous()
     }
 
     /// Row-major contiguous check without allocating (size-1 dims may carry any
@@ -438,14 +507,29 @@ impl Tensor {
     }
 }
 
+/// Copy a device buffer back to host. Infallible by construction: a device
+/// tensor can only exist if its backend was registered at creation time.
+fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
+    backend_for(device)
+        .expect("device tensor exists, so its backend must be registered")
+        .copy_to_host(buf)
+        .expect("device-to-host copy failed")
+}
+
 // --- raw (detached) compute kernels --------------------------------------
 // These never record autograd; forward wrappers and backward both call them.
 // Two flavors:
 // - `raw_unary_k`/`raw_binary_k` take a named kind and route the math through
 //   the backend registered for the input's device. Forward ops use these.
 // - `raw_unary`/`raw_binary` take an inline closure that runs on the host, so
-//   they are the CPU-only escape hatch: backward closures and the composite
-//   ops_ext forwards without a named kernel stay on them until phase 3.
+//   they are the CPU-only escape hatch used by backward closures and the
+//   composite ops_ext forwards without a named kernel.
+//
+// Device residency: whole-buffer device tensors run unary/binary/matmul on
+// their backend and stay resident. Binary device ops require equal shapes
+// (broadcasting on device is not implemented yet -> explicit error). All
+// OTHER ops on device tensors fall back to host compute and return cpu
+// tensors - a visible (result.device() == Cpu), documented fallback.
 
 /// Float math is f32-only: F64/I64 operands must be cast explicitly via
 /// `to_dtype(DType::F32)` rather than silently at kernel entry.
@@ -459,7 +543,25 @@ fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
 pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     check_f32("unary", a)?;
     let backend = backend_for(a.0.device)?;
+    if a.device_resident_whole() {
+        let Storage::Device(buf) = &*a.0.storage else { unreachable!() };
+        let out = backend.unary_dev(kind, buf.as_ref())?;
+        return Ok(device_leaf(out, &a.0.shape, a.0.device));
+    }
     Tensor::from_vec(backend.unary(kind, &a.to_vec()), &a.0.shape)
+}
+
+/// Wrap a backend-produced buffer as a contiguous detached device tensor.
+fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> Tensor {
+    Tensor::from_parts(
+        Arc::new(Storage::Device(buf)),
+        shape.to_vec(),
+        default_strides(shape),
+        0,
+        device,
+        false,
+        None,
+    )
 }
 
 pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: BinaryKind) -> Result<Tensor> {
@@ -469,6 +571,23 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
         return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
     }
     let backend = backend_for(a.0.device)?;
+    if a.device_resident_whole() || b.device_resident_whole() {
+        if a.0.shape != b.0.shape {
+            return Err(Error::Unsupported {
+                op,
+                msg: format!(
+                    "broadcasting on device tensors is not supported yet ({:?} vs {:?})",
+                    a.0.shape, b.0.shape
+                ),
+            });
+        }
+        if a.device_resident_whole() && b.device_resident_whole() {
+            let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
+            let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+            let out = backend.binary_dev(kind, ba.as_ref(), bb.as_ref())?;
+            return Ok(device_leaf(out, &a.0.shape, a.0.device));
+        }
+    }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
     let vb = b.broadcast_to(&out_shape)?.to_vec();
@@ -520,6 +639,12 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
     }
     let backend = backend_for(a.0.device)?;
+    if a.device_resident_whole() && b.device_resident_whole() {
+        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
+        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n)?;
+        return Ok(device_leaf(out, &[m, n], a.0.device));
+    }
     let va = a.to_vec();
     let vb = b.to_vec();
     Tensor::from_vec(backend.matmul(&va, &vb, m, k, n), &[m, n])
