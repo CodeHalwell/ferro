@@ -14,15 +14,29 @@ compiled once and cached) for the elementwise ops.
   not guarantee a usable device; `install` performs the real init.
 - All `UnaryKind` variants (including parametrized `Powf`/`Clamp`, cached per
   scalar value), all `BinaryKind` variants, and `matmul` via cuBLAS.
+- Device-resident storage (dispatcher phase 3): the `alloc_from_host` /
+  `copy_to_host` / `unary_dev` / `binary_dev` / `matmul_dev` methods operate
+  on `CudaBuf` (a `CudaSlice<f32>` tagged with its device), so on a GPU box
+  `x.to_device(Device::Cuda(0))` followed by chained ops keeps the data in
+  GPU memory: one upload, N device kernels, one download. Driver failures on
+  this path surface as `Err(ferro_core::Error::Unsupported)`, and buffers
+  from another backend (or another CUDA ordinal) are rejected the same way.
 
-## The host-slice stopgap
+## Host-slice fallback
 
-Tensor storage is host-resident until dispatcher phase 3, and the `Backend`
-seam passes host slices and returns `Vec<f32>`. Every op therefore round
-trips: copy host -> device, compute, copy device -> host. This is correct but
-leaves most of the GPU's advantage on the table; tensors cannot yet live on
-the GPU. When the dispatcher grows device-resident storage, only the copy
-staging here needs to change.
+The host-slice `Backend` methods (`unary`/`binary`/`matmul` over `&[f32]`)
+remain as the path core uses for non-resident tensors -- e.g. broadcasted
+binaries, which core materializes on the host before dispatching. They are
+thin wrappers over the same device kernels: htod, `*_dev` compute, dtoh.
+
+Remaining gaps:
+
+- No broadcasting on device: binaries with mismatched shapes fall back to the
+  host-slice path (core errors on device tensors that would need broadcast).
+- Autograd is host-only: `requires_grad_` on a device tensor panics in core;
+  train on cpu, run inference on the device.
+- Ops without device kernels (softmax, reductions, ...) fall back to host
+  compute in core and return cpu tensors.
 
 ## Usage on a GPU box
 
@@ -30,7 +44,8 @@ staging here needs to change.
 if let Err(e) = ferro_cuda::install(0) {
     eprintln!("CUDA unavailable: {e}");
 }
-// Tensors on Device::Cuda(0) now dispatch through this backend.
+// Tensors moved to Device::Cuda(0) now stay resident across chained ops.
+let y = x.to_device(ferro_core::Device::Cuda(0))?.relu().exp();
 ```
 
 Requires an NVIDIA driver plus the CUDA runtime libraries (libnvrtc,
@@ -52,7 +67,11 @@ with a pure-host simulation of cuBLAS semantics (no GPU needed).
 ## Testing
 
 `cargo test -p ferro-cuda` is green without a GPU: it covers kernel source
-generation for every op kind, the sgemm layout mapping, and that
+generation for every op kind, the sgemm layout mapping, a compile-level check
+that `CudaBackend` implements the full `Backend` trait (including the `*_dev`
+methods) and `CudaBuf` the `DeviceBuffer` trait, and that
 `install`/`CudaBackend::new` fail gracefully. The `gpu_end_to_end` test is a
-no-op without a driver and validates real unary/binary/matmul round trips on
-a GPU box.
+no-op without a driver; on a GPU box it validates the host-slice fallback,
+direct `*_dev` round trips with foreign-buffer rejection, and a resident
+tensor chain (`to_device` -> relu -> exp -> mul -> matmul -> back to cpu)
+against the same chain computed on the cpu.
