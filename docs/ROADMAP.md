@@ -1,5 +1,8 @@
 # Roadmap
 
+Phases 0-5 of this plan are now largely implemented; see FUTURE.md for
+the current forward-looking master plan that supersedes the later phases.
+
 This is the honest path from today's MVP to the ambitious end goal: replacing
 enough of PyTorch's C++ backend (ATen + autograd) that `ferro` can stand in for
 it on a real, if narrow, set of workloads.

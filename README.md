@@ -88,6 +88,7 @@ rust_backend/
   docs/
     ARCHITECTURE.md       # crate + Tensor/autograd design
     ROADMAP.md            # MVP -> "replace the C++ backend" plan
+    FUTURE.md             # forward master plan: parity + differentiators
     DISPATCHER.md         # ATen-style dispatcher design sketch
     DLPACK.md             # zero-copy interop plan (torch/numpy)
 ```
