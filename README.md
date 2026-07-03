@@ -56,7 +56,6 @@ added without disturbing the tensor/view/autograd machinery.
 Run the core test suite (tensor + autograd, gradient checks, training loop):
 
 ```
-cd rust_backend
 cargo test -p ferro-core
 ```
 
@@ -66,7 +65,7 @@ toolchain and no network access.
 ## Project layout
 
 ```
-rust_backend/
+ferro/
   Cargo.toml              # workspace (members: ferro-core; ferro-py excluded)
   crates/
     ferro-core/           # pure-Rust tensor + autograd runtime (zero deps)
