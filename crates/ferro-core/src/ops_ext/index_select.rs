@@ -2,10 +2,37 @@
 //! Forward copies contiguous `inner` blocks; backward scatter-adds grad blocks
 //! back to the input shape (add, not overwrite, so duplicate indices accumulate).
 
+use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::tensor::Tensor;
 
 impl Tensor {
+    /// Tensor-index variant: `indices` must be a 1-D I64 tensor with in-range,
+    /// non-negative entries. Delegates to the slice version, so the gradient
+    /// to `self` comes from the same recorded backward.
+    pub fn index_select_t(&self, dim: usize, indices: &Tensor) -> Result<Tensor> {
+        if indices.dtype() != DType::I64 {
+            return Err(Error::DtypeMismatch { op: "index_select", expected: DType::I64, got: indices.dtype() });
+        }
+        if indices.ndim() != 1 {
+            return Err(Error::InvalidShape {
+                op: "index_select",
+                msg: format!("indices must be 1-D, got shape {:?}", indices.shape()),
+            });
+        }
+        let idx: Vec<usize> = indices
+            .to_vec_i64()
+            .into_iter()
+            .map(|i| {
+                usize::try_from(i).map_err(|_| Error::InvalidShape {
+                    op: "index_select",
+                    msg: format!("negative index {i} is not supported"),
+                })
+            })
+            .collect::<Result<_>>()?;
+        self.index_select(dim, &idx)
+    }
+
     pub fn index_select(&self, dim: usize, indices: &[usize]) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {

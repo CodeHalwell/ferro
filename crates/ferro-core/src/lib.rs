@@ -5,6 +5,7 @@
 mod autograd;
 pub mod device;
 pub mod dispatch;
+pub mod dtype;
 pub mod error;
 pub mod interop;
 pub mod nn;
@@ -19,6 +20,7 @@ pub mod testkit;
 
 pub use device::Device;
 pub use dispatch::{register_backend, Backend, BinaryKind, CpuBackend, UnaryKind};
+pub use dtype::DType;
 pub use error::{Error, Result};
 pub use params::Param;
 pub use rng::Rng;

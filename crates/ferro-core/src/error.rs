@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::device::Device;
+use crate::dtype::DType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -12,6 +13,8 @@ pub enum Error {
     Unsupported { op: &'static str, msg: String },
     /// Operands live on different devices.
     DeviceMismatch { op: &'static str, lhs: Device, rhs: Device },
+    /// An operand has the wrong dtype for the op (float math is f32-only).
+    DtypeMismatch { op: &'static str, expected: DType, got: DType },
 }
 
 impl fmt::Display for Error {
@@ -24,6 +27,9 @@ impl fmt::Display for Error {
             Error::Unsupported { op, msg } => write!(f, "{op}: unsupported: {msg}"),
             Error::DeviceMismatch { op, lhs, rhs } => {
                 write!(f, "{op}: operands on different devices ({lhs} vs {rhs})")
+            }
+            Error::DtypeMismatch { op, expected, got } => {
+                write!(f, "{op}: expected {expected} tensor, got {got}")
             }
         }
     }

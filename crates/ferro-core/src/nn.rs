@@ -4,10 +4,11 @@
 //! `matmul`, `add` (broadcasts a bias row), `relu`, `sigmoid`, and the autograd
 //! `backward()`.
 
+use crate::dtype::DType;
+use crate::error::{Error, Result};
 use crate::params::Param;
 use crate::rng::Rng;
 use crate::tensor::Tensor;
-use crate::Result;
 
 pub trait Module {
     fn forward(&self, x: &Tensor) -> Result<Tensor>;
@@ -126,4 +127,42 @@ impl Module for Sequential {
 /// Composed from autograd ops, so the gradient flows without a custom backward.
 pub fn cross_entropy(logits: &Tensor, targets_one_hot: &Tensor) -> Result<Tensor> {
     Ok(logits.log_softmax(1)?.mul(targets_one_hot)?.sum_dim(1, false)?.neg().mean())
+}
+
+/// One-hot encode 1-D I64 class ids `[n]` into an f32 `[n, classes]` tensor.
+pub fn one_hot(ids: &Tensor, classes: usize) -> Result<Tensor> {
+    if ids.dtype() != DType::I64 {
+        return Err(Error::DtypeMismatch { op: "one_hot", expected: DType::I64, got: ids.dtype() });
+    }
+    if ids.ndim() != 1 {
+        return Err(Error::InvalidShape {
+            op: "one_hot",
+            msg: format!("ids must be 1-D, got shape {:?}", ids.shape()),
+        });
+    }
+    let idx = ids.to_vec_i64();
+    let mut data = vec![0f32; idx.len() * classes];
+    for (row, &id) in idx.iter().enumerate() {
+        if id < 0 || id as usize >= classes {
+            return Err(Error::InvalidShape {
+                op: "one_hot",
+                msg: format!("id {id} out of range for {classes} classes"),
+            });
+        }
+        data[row * classes + id as usize] = 1.0;
+    }
+    Tensor::from_vec(data, &[idx.len(), classes])
+}
+
+/// Cross-entropy for `[batch, classes]` logits against I64 class ids `[batch]`
+/// (like PyTorch's `F.cross_entropy` with integer targets): one-hot encode the
+/// ids, then reuse `cross_entropy`.
+pub fn cross_entropy_indices(logits: &Tensor, target_ids: &Tensor) -> Result<Tensor> {
+    if logits.ndim() != 2 {
+        return Err(Error::InvalidShape {
+            op: "cross_entropy_indices",
+            msg: format!("logits must be 2-D [batch, classes], got {:?}", logits.shape()),
+        });
+    }
+    cross_entropy(logits, &one_hot(target_ids, logits.shape()[1])?)
 }

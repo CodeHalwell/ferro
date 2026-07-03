@@ -7,6 +7,7 @@ pub mod bmm;
 pub mod cat;
 pub mod clamp;
 pub mod conv2d;
+pub mod embedding;
 pub mod index_select;
 pub mod log;
 pub mod log_softmax;
@@ -20,3 +21,6 @@ pub mod squeeze;
 pub mod sum_dim;
 pub mod tanh;
 pub mod where_cond;
+
+// `embedding` is a free function over (weight, ids) rather than a method.
+pub use embedding::embedding;

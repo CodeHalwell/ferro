@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use crate::autograd::Op;
 use crate::device::Device;
 use crate::dispatch::{backend_for, BinaryKind, UnaryKind};
+use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
@@ -14,17 +15,28 @@ fn fresh_id() -> usize {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// MVP storage is f32-only, but kept behind an enum so more dtypes slot in
-/// without touching the tensor/view/autograd machinery.
+/// Typed element storage. Compute ops and autograd are f32-only; F64/I64
+/// storage carries data (indices, targets) through views and materialization.
 #[derive(Debug)]
 pub enum Storage {
     F32(Vec<f32>),
+    F64(Vec<f64>),
+    I64(Vec<i64>),
 }
 
 impl Storage {
+    pub fn dtype(&self) -> DType {
+        match self {
+            Storage::F32(_) => DType::F32,
+            Storage::F64(_) => DType::F64,
+            Storage::I64(_) => DType::I64,
+        }
+    }
+
     pub fn as_f32(&self) -> &[f32] {
         match self {
             Storage::F32(v) => v,
+            other => panic!("expected f32 storage, got {}", other.dtype()),
         }
     }
 }
@@ -87,16 +99,12 @@ impl Tensor {
         }))
     }
 
-    /// Build a contiguous leaf tensor from row-major data.
-    pub fn from_vec(data: Vec<f32>, shape: &[usize]) -> Result<Tensor> {
-        if data.len() != numel(shape) {
-            return Err(Error::InvalidShape {
-                op: "from_vec",
-                msg: format!("{} elements do not fit shape {shape:?}", data.len()),
-            });
+    fn contiguous_leaf(op: &'static str, len: usize, storage: Storage, shape: &[usize]) -> Result<Tensor> {
+        if len != numel(shape) {
+            return Err(Error::InvalidShape { op, msg: format!("{len} elements do not fit shape {shape:?}") });
         }
         Ok(Tensor::from_parts(
-            Arc::new(Storage::F32(data)),
+            Arc::new(storage),
             shape.to_vec(),
             default_strides(shape),
             0,
@@ -104,6 +112,25 @@ impl Tensor {
             false,
             None,
         ))
+    }
+
+    /// Build a contiguous leaf tensor from row-major data.
+    pub fn from_vec(data: Vec<f32>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec", data.len(), Storage::F32(data), shape)
+    }
+
+    pub fn from_vec_f64(data: Vec<f64>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_f64", data.len(), Storage::F64(data), shape)
+    }
+
+    pub fn from_vec_i64(data: Vec<i64>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_i64", data.len(), Storage::I64(data), shape)
+    }
+
+    /// I64 tensor of `[0, end)` with shape `[end]` (empty when `end <= 0`).
+    pub fn arange(end: i64) -> Tensor {
+        let n = end.max(0);
+        Tensor::from_vec_i64((0..n).collect(), &[n as usize]).unwrap()
     }
 
     pub fn full(shape: &[usize], value: f32) -> Tensor {
@@ -147,10 +174,19 @@ impl Tensor {
     pub fn device(&self) -> Device {
         self.0.device
     }
+    pub fn dtype(&self) -> DType {
+        self.0.storage.dtype()
+    }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
     /// Returns a fresh leaf sharing storage; only meaningful on leaves.
+    /// Panics on non-f32 tensors: autograd is f32-only.
     pub fn requires_grad_(&self, req: bool) -> Tensor {
+        assert!(
+            !req || self.dtype() == DType::F32,
+            "requires_grad_ supports only f32 tensors (autograd is f32-only), got {}",
+            self.dtype()
+        );
         Tensor::from_parts(
             self.0.storage.clone(),
             self.0.shape.clone(),
@@ -164,12 +200,11 @@ impl Tensor {
 
     // --- materialization --------------------------------------------------
 
-    /// Gather this (possibly strided/broadcast) view into a contiguous
-    /// row-major Vec. Every compute kernel reads through this, so strided
-    /// views (transpose, broadcast) work transparently.
-    pub fn to_vec(&self) -> Vec<f32> {
+    /// Gather a (possibly strided/broadcast) view of `data` into a contiguous
+    /// row-major Vec, generic over the element type so every dtype shares the
+    /// one strided-odometer implementation.
+    fn gather<T: Copy>(&self, data: &[T]) -> Vec<T> {
         let inner = &self.0;
-        let data = inner.storage.as_f32();
         let n = self.numel();
         if self.is_contiguous() {
             return data[inner.offset..inner.offset + n].to_vec();
@@ -195,6 +230,54 @@ impl Tensor {
             }
         }
         out
+    }
+
+    /// Materialize as row-major f32, casting from f64/i64 storage (lossy for
+    /// |i64| > 2^24). Every compute kernel reads through this, so strided
+    /// views (transpose, broadcast) work transparently.
+    pub fn to_vec(&self) -> Vec<f32> {
+        match &*self.0.storage {
+            Storage::F32(v) => self.gather(v),
+            Storage::F64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
+            Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
+        }
+    }
+
+    /// Materialize as row-major f64 (exact from f32/i64 up to 2^53).
+    pub fn to_vec_f64(&self) -> Vec<f64> {
+        match &*self.0.storage {
+            Storage::F32(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
+            Storage::F64(v) => self.gather(v),
+            Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
+        }
+    }
+
+    /// Materialize as row-major i64; floats truncate toward zero.
+    pub fn to_vec_i64(&self) -> Vec<i64> {
+        match &*self.0.storage {
+            Storage::F32(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
+            Storage::F64(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
+            Storage::I64(v) => self.gather(v),
+        }
+    }
+
+    /// Cast to `dtype`, returning a detached contiguous leaf on the same
+    /// device. This is the only route from F64/I64 data into float math.
+    pub fn to_dtype(&self, dtype: DType) -> Tensor {
+        let storage = match dtype {
+            DType::F32 => Storage::F32(self.to_vec()),
+            DType::F64 => Storage::F64(self.to_vec_f64()),
+            DType::I64 => Storage::I64(self.to_vec_i64()),
+        };
+        Tensor::from_parts(
+            Arc::new(storage),
+            self.0.shape.clone(),
+            default_strides(&self.0.shape),
+            0,
+            self.0.device,
+            false,
+            None,
+        )
     }
 
     /// Scalar value of a 0-d (or single-element) tensor.
@@ -364,12 +447,24 @@ impl Tensor {
 //   they are the CPU-only escape hatch: backward closures and the composite
 //   ops_ext forwards without a named kernel stay on them until phase 3.
 
+/// Float math is f32-only: F64/I64 operands must be cast explicitly via
+/// `to_dtype(DType::F32)` rather than silently at kernel entry.
+fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
+    if t.dtype() != DType::F32 {
+        return Err(Error::DtypeMismatch { op, expected: DType::F32, got: t.dtype() });
+    }
+    Ok(())
+}
+
 pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
+    check_f32("unary", a)?;
     let backend = backend_for(a.0.device)?;
     Tensor::from_vec(backend.unary(kind, &a.to_vec()), &a.0.shape)
 }
 
 pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: BinaryKind) -> Result<Tensor> {
+    check_f32(op, a)?;
+    check_f32(op, b)?;
     if a.0.device != b.0.device {
         return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
     }
@@ -386,6 +481,8 @@ pub(crate) fn raw_binary(
     b: &Tensor,
     f: impl Fn(f32, f32) -> f32,
 ) -> Result<Tensor> {
+    check_f32(op, a)?;
+    check_f32(op, b)?;
     if a.0.device != b.0.device {
         return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
     }
@@ -397,6 +494,7 @@ pub(crate) fn raw_binary(
 }
 
 pub(crate) fn raw_unary(a: &Tensor, f: impl Fn(f32) -> f32) -> Tensor {
+    assert!(a.dtype() == DType::F32, "op requires f32 tensors, got {}", a.dtype());
     let data = a.to_vec().into_iter().map(f).collect();
     Tensor::from_vec(data, &a.0.shape).unwrap()
 }
@@ -405,6 +503,8 @@ pub(crate) fn raw_unary(a: &Tensor, f: impl Fn(f32) -> f32) -> Tensor {
 /// (the CPU backend consults the swappable kernel pointer, so a backend crate
 /// can still swap in a faster kernel). Higher ranks are a follow-up.
 pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    check_f32("matmul", a)?;
+    check_f32("matmul", b)?;
     if a.0.device != b.0.device {
         return Err(Error::DeviceMismatch { op: "matmul", lhs: a.0.device, rhs: b.0.device });
     }

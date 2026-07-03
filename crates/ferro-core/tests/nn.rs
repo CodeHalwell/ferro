@@ -1,4 +1,5 @@
-use ferro_core::nn::{cross_entropy, LayerNorm, Linear, Module, Relu, Sequential};
+use ferro_core::nn::{cross_entropy, cross_entropy_indices, one_hot};
+use ferro_core::nn::{LayerNorm, Linear, Module, Relu, Sequential};
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
@@ -44,6 +45,30 @@ fn cross_entropy_training_separates_classes() {
         last = loss.item();
     }
     assert!(last < 0.05 && last < first * 0.2, "loss did not converge: {first} -> {last}");
+}
+
+#[test]
+fn one_hot_values_and_errors() {
+    let ids = Tensor::from_vec_i64(vec![2, 0], &[2]).unwrap();
+    let oh = one_hot(&ids, 3).unwrap();
+    assert_eq!(oh.shape(), &[2, 3]);
+    assert_eq!(oh.to_vec(), vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0]);
+
+    assert!(one_hot(&ids, 2).is_err());
+    assert!(one_hot(&Tensor::from_vec_i64(vec![-1], &[1]).unwrap(), 3).is_err());
+    assert!(one_hot(&Tensor::from_vec(vec![1.0], &[1]).unwrap(), 3).is_err());
+}
+
+#[test]
+fn cross_entropy_indices_matches_one_hot() {
+    let logits = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
+    let ids = Tensor::from_vec_i64(vec![2, 0], &[2]).unwrap();
+
+    let via_ids = cross_entropy_indices(&logits, &ids).unwrap();
+    let via_one_hot = cross_entropy(&logits, &one_hot(&ids, 3).unwrap()).unwrap();
+    assert!((via_ids.item() - via_one_hot.item()).abs() < 1e-6);
+
+    grad_check(&[logits], |l| cross_entropy_indices(&l[0], &ids).unwrap());
 }
 
 #[test]
