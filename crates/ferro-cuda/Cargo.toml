@@ -1,0 +1,21 @@
+[package]
+name = "ferro-cuda"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# cudarc's `dynamic-loading` feature dlopens libcuda/libnvrtc/libcublas at
+# runtime instead of linking them, so this crate builds on machines with no
+# CUDA installation at all. `cuda-12080` pins which CUDA API the bindings
+# target (avoiding cudarc's build-time nvcc probing, which fails without a
+# toolkit); set CUDARC_CUDA_VERSION at build time to target a different one.
+[dependencies]
+ferro-core = { path = "../ferro-core" }
+cudarc = { version = "0.19.8", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "cublas",
+    "dynamic-loading",
+    "cuda-12080",
+] }
