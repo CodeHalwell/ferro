@@ -278,6 +278,8 @@ fn where_(cond: &PyTensor, a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
 
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Route matmul through the optimized CPU backend for the whole process.
+    ferro_fastcpu::install();
     m.add_class::<PyTensor>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;

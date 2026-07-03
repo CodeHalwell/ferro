@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ferro-core = { path = "../ferro-core" }
+ferro-fastcpu = { path = "../ferro-fastcpu" }
 
 [dependencies.pyo3]
 version = "0.24"

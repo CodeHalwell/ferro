@@ -19,10 +19,18 @@ name = "ferro-core"
 version = "0.0.1"
 
 [[package]]
+name = "ferro-fastcpu"
+version = "0.0.1"
+dependencies = [
+ "ferro-core",
+]
+
+[[package]]
 name = "ferro-py"
 version = "0.0.1"
 dependencies = [
  "ferro-core",
+ "ferro-fastcpu",
  "pyo3",
 ]
 
