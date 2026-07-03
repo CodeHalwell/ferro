@@ -18,6 +18,7 @@ pub mod tensor;
 pub mod testkit;
 
 pub use device::Device;
+pub use dispatch::{register_backend, Backend, BinaryKind, CpuBackend, UnaryKind};
 pub use error::{Error, Result};
 pub use params::Param;
 pub use rng::Rng;

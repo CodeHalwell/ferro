@@ -3,11 +3,13 @@
 //! passes the gradient through only where the input is strictly inside the
 //! range, else 0 (zero everywhere when min >= max).
 
-use crate::tensor::{raw_binary, raw_unary, Tensor};
+use crate::dispatch::UnaryKind;
+use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn clamp(&self, min: f32, max: f32) -> Tensor {
-        let out = raw_unary(self, |x| x.max(min).min(max));
+        let kind = UnaryKind::Clamp { min, max };
+        let out = raw_unary_k(self, kind).expect("cpu backend is always registered");
         let x = self.clone();
         out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("clamp_bw", g, &x, |gg, xx| {

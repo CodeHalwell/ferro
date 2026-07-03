@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::autograd::Op;
 use crate::device::Device;
+use crate::dispatch::{backend_for, BinaryKind, UnaryKind};
 use crate::error::{Error, Result};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
@@ -356,6 +357,28 @@ impl Tensor {
 
 // --- raw (detached) compute kernels --------------------------------------
 // These never record autograd; forward wrappers and backward both call them.
+// Two flavors:
+// - `raw_unary_k`/`raw_binary_k` take a named kind and route the math through
+//   the backend registered for the input's device. Forward ops use these.
+// - `raw_unary`/`raw_binary` take an inline closure that runs on the host, so
+//   they are the CPU-only escape hatch: backward closures and the composite
+//   ops_ext forwards without a named kernel stay on them until phase 3.
+
+pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
+    let backend = backend_for(a.0.device)?;
+    Tensor::from_vec(backend.unary(kind, &a.to_vec()), &a.0.shape)
+}
+
+pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: BinaryKind) -> Result<Tensor> {
+    if a.0.device != b.0.device {
+        return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
+    }
+    let backend = backend_for(a.0.device)?;
+    let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
+    let va = a.broadcast_to(&out_shape)?.to_vec();
+    let vb = b.broadcast_to(&out_shape)?.to_vec();
+    Tensor::from_vec(backend.binary(kind, &va, &vb), &out_shape)
+}
 
 pub(crate) fn raw_binary(
     op: &'static str,
@@ -378,8 +401,9 @@ pub(crate) fn raw_unary(a: &Tensor, f: impl Fn(f32) -> f32) -> Tensor {
     Tensor::from_vec(data, &a.0.shape).unwrap()
 }
 
-/// 2-D matmul: (m,k) @ (k,n) -> (m,n), routed through the dispatch table so a
-/// backend crate can swap in a faster kernel. Higher ranks are a follow-up.
+/// 2-D matmul: (m,k) @ (k,n) -> (m,n), routed through the device's backend
+/// (the CPU backend consults the swappable kernel pointer, so a backend crate
+/// can still swap in a faster kernel). Higher ranks are a follow-up.
 pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     if a.0.device != b.0.device {
         return Err(Error::DeviceMismatch { op: "matmul", lhs: a.0.device, rhs: b.0.device });
@@ -395,10 +419,10 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     if k != k2 {
         return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
     }
+    let backend = backend_for(a.0.device)?;
     let va = a.to_vec();
     let vb = b.to_vec();
-    let out = crate::dispatch::matmul(&va, &vb, m, k, n);
-    Tensor::from_vec(out, &[m, n])
+    Tensor::from_vec(backend.matmul(&va, &vb, m, k, n), &[m, n])
 }
 
 /// Sum over one dim, matching PyTorch's keepdim semantics.

@@ -1,11 +1,12 @@
 //! Hyperbolic tangent. Backward: d/dx tanh(x) = 1 - tanh(x)^2, so with
 //! y = tanh(x) the gradient is dx = g * (1 - y^2).
 
-use crate::tensor::{raw_binary, raw_unary, Tensor};
+use crate::dispatch::UnaryKind;
+use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn tanh(&self) -> Tensor {
-        let out = raw_unary(self, |x| x.tanh());
+        let out = raw_unary_k(self, UnaryKind::Tanh).expect("cpu backend is always registered");
         if !self.requires_grad() {
             return out;
         }

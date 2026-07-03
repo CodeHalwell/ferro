@@ -1,11 +1,12 @@
 //! Square root. Inputs assumed positive. Backward: d/dx sqrt(x) = 1/(2*sqrt(x)),
 //! so with y = sqrt(x), dx = g / (2*y).
 
-use crate::tensor::{raw_binary, raw_unary, Tensor};
+use crate::dispatch::UnaryKind;
+use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn sqrt(&self) -> Tensor {
-        let out = raw_unary(self, |x| x.sqrt());
+        let out = raw_unary_k(self, UnaryKind::Sqrt).expect("cpu backend is always registered");
         if !self.requires_grad() {
             return out;
         }

@@ -1,12 +1,19 @@
+use crate::dispatch::{BinaryKind, UnaryKind};
 use crate::error::Result;
 use crate::shape::numel;
-use crate::tensor::{raw_binary, raw_matmul, raw_unary, unbroadcast, Tensor};
+use crate::tensor::{raw_binary, raw_binary_k, raw_matmul, raw_unary, raw_unary_k, unbroadcast, Tensor};
 
-/// Forward ops: compute the value with a detached raw kernel, then attach the
-/// backward closure via `record_fn` (a no-op when no input requires grad).
+/// Backends are looked up by device; Cpu is pre-registered and tensors are
+/// Cpu-only today, so infallible forwards unwrap with this message.
+const CPU_REGISTERED: &str = "cpu backend is always registered";
+
+/// Forward ops: compute the value with a detached raw kernel (named kind,
+/// routed through the device's backend), then attach the backward closure via
+/// `record_fn` (a no-op when no input requires grad). Backward closures stay
+/// on the host-closure kernels.
 impl Tensor {
     pub fn add(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("add", self, other, |a, b| a + b)?;
+        let out = raw_binary_k("add", self, other, BinaryKind::Add)?;
         let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
             vec![unbroadcast(g, &sa), unbroadcast(g, &sb)]
@@ -14,7 +21,7 @@ impl Tensor {
     }
 
     pub fn sub(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("sub", self, other, |a, b| a - b)?;
+        let out = raw_binary_k("sub", self, other, BinaryKind::Sub)?;
         let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
             let neg = raw_unary(g, |x| -x);
@@ -23,7 +30,7 @@ impl Tensor {
     }
 
     pub fn mul(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("mul", self, other, |a, b| a * b)?;
+        let out = raw_binary_k("mul", self, other, BinaryKind::Mul)?;
         let (a, b) = (self.clone(), other.clone());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
             let ga = raw_binary("mul_bw", g, &b, |x, y| x * y).unwrap();
@@ -33,7 +40,7 @@ impl Tensor {
     }
 
     pub fn div(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("div", self, other, |a, b| a / b)?;
+        let out = raw_binary_k("div", self, other, BinaryKind::Div)?;
         let (a, b) = (self.clone(), other.clone());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
             let ga = raw_binary("div_bw", g, &b, |x, y| x / y).unwrap();
@@ -55,12 +62,12 @@ impl Tensor {
     }
 
     pub fn neg(&self) -> Tensor {
-        let out = raw_unary(self, |x| -x);
+        let out = raw_unary_k(self, UnaryKind::Neg).expect(CPU_REGISTERED);
         out.record_fn(vec![self.clone()], |g| vec![raw_unary(g, |x| -x)])
     }
 
     pub fn relu(&self) -> Tensor {
-        let out = raw_unary(self, |x| x.max(0.0));
+        let out = raw_unary_k(self, UnaryKind::Relu).expect(CPU_REGISTERED);
         let a = self.clone();
         out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("relu_bw", g, &a, |gg, aa| if aa > 0.0 { gg } else { 0.0 }).unwrap()]
@@ -68,7 +75,7 @@ impl Tensor {
     }
 
     pub fn exp(&self) -> Tensor {
-        let out = raw_unary(self, |x| x.exp());
+        let out = raw_unary_k(self, UnaryKind::Exp).expect(CPU_REGISTERED);
         if !self.requires_grad() {
             return out;
         }
@@ -79,7 +86,7 @@ impl Tensor {
     }
 
     pub fn sigmoid(&self) -> Tensor {
-        let out = raw_unary(self, |x| 1.0 / (1.0 + (-x).exp()));
+        let out = raw_unary_k(self, UnaryKind::Sigmoid).expect(CPU_REGISTERED);
         if !self.requires_grad() {
             return out;
         }

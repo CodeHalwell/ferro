@@ -12,16 +12,37 @@ Implemented so far (phase 1):
   `TensorInner` and inherited by views. Creation defaults to `Cpu`;
   `Tensor::device()` is public; `raw_binary`/`raw_matmul` reject mixed-device
   operands with `Error::DeviceMismatch`.
-- `dispatch.rs`: a process-wide kernel table. `matmul` routes through a
+- `dispatch.rs`: a process-wide kernel table. The CPU matmul routes through a
   swappable function pointer (`set_matmul_kernel`), seeded with the naive
   reference kernel; the `ferro-fastcpu` crate overrides it from outside core.
 - Autograd was already unified behind `record_fn`, so the autograd layer is a
   single wrapping mechanism rather than per-op branching - the "Autograd key"
   in miniature.
 
-Not yet implemented: named elementwise kernels (still inline CPU closures),
-per-device kernel tables (the current table is CPU-only), Meta kernels, and
-any real second device. The sections below describe that target.
+Implemented in phase 2 (named kernels + per-device backends):
+
+- `dispatch.rs` defines `UnaryKind` (Neg, Relu, Exp, Sigmoid, Tanh, Sqrt, Abs,
+  Log, Powf(p), Clamp{min,max}) and `BinaryKind` (Add, Sub, Mul, Div): forward
+  ops now name their kernel instead of passing an inline closure.
+- A `Backend` trait (`unary`/`binary`/`matmul` over contiguous f32 buffers)
+  plus a per-device registry: `register_backend(device, Arc<dyn Backend>)` and
+  `backend_for(device)`, with `CpuBackend` pre-registered for `Device::Cpu`
+  and `Error::Unsupported` for devices without a backend. A future device
+  crate implements this one trait to cover every kind-routed forward op.
+  `CpuBackend::matmul` still consults the swappable matmul pointer, so
+  `ferro-fastcpu` keeps working unchanged.
+- `tensor.rs` grew `raw_unary_k`/`raw_binary_k`, which keep the broadcast/
+  materialize/device-check logic in core and route only the math through the
+  input's backend; `raw_matmul` also routes through `backend_for`. The
+  closure-based `raw_unary`/`raw_binary` remain as the CPU-only escape hatch
+  used by every backward closure and by composite ops_ext forwards.
+- Migrated forwards: add/sub/mul/div/neg/relu/exp/sigmoid in `ops.rs` and
+  tanh/sqrt/abs/log/powf/clamp in `ops_ext`.
+
+Not yet implemented: device-resident storage (buffers are still host `Vec<f32>`
+and results land on Cpu - phase 3), kinds for reductions and the composite
+ops_ext ops, backward routing through backends, Meta kernels, and any real
+second device. The sections below describe that target.
 
 Note: the code snippet immediately below predates the record_fn unification;
 today's ops.rs already records via closures. The scaling argument stands.
