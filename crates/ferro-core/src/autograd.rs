@@ -79,7 +79,9 @@ impl Tensor {
                 t.zero_grad();
             }
         }
-        self.set_grad(Tensor::ones(self.shape()));
+        let seed = Tensor::full_on(self.shape(), 1.0, self.device())
+            .expect("loss tensor's device backend is registered");
+        self.set_grad(seed);
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
             let g = t.grad().expect("every op node on the path receives a gradient");

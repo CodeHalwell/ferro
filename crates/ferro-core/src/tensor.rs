@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::autograd::Op;
 use crate::device::Device;
-use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, UnaryKind};
+use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::rng::Rng;
@@ -200,11 +200,6 @@ impl Tensor {
             "requires_grad_ supports only f32 tensors (autograd is f32-only), got {}",
             self.dtype()
         );
-        assert!(
-            !req || self.0.device == Device::Cpu,
-            "requires_grad_ supports only cpu tensors for now (autograd runs on host), got {}",
-            self.0.device
-        );
         Tensor::from_parts(
             self.0.storage.clone(),
             self.0.shape.clone(),
@@ -392,10 +387,18 @@ impl Tensor {
             g.shape(),
             self.shape()
         );
+        // Invariant: a tensor's grad lives on the tensor's device. Host-based
+        // backwards (ops_ext closures) produce cpu grads for device tensors;
+        // align here so mixed contributions accumulate instead of erroring.
+        let g = if g.device() == self.0.device {
+            g
+        } else {
+            g.to_device(self.0.device).expect("grad transfer to the tensor's device")
+        };
         let mut slot = self.0.grad.lock().unwrap();
         *slot = Some(match slot.take() {
             None => g,
-            Some(existing) => raw_binary("grad_acc", &existing, &g, |a, b| a + b).unwrap(),
+            Some(existing) => raw_binary_k("grad_acc", &existing, &g, BinaryKind::Add).unwrap(),
         });
     }
 
@@ -486,7 +489,29 @@ impl Tensor {
 
     /// A detached, contiguous copy that shares no autograd history or storage.
     pub fn detach_copy(&self) -> Tensor {
+        if self.device_resident_whole() {
+            // Device buffers are immutable and whole; share instead of copying
+            // through the host (which would also move the tensor to cpu).
+            return Tensor::from_parts(
+                self.0.storage.clone(),
+                self.0.shape.clone(),
+                self.0.stride.clone(),
+                0,
+                self.0.device,
+                false,
+                None,
+            );
+        }
         Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap()
+    }
+
+    /// Constant tensor on the given device (cpu allocation or backend fill).
+    pub fn full_on(shape: &[usize], value: f32, device: Device) -> Result<Tensor> {
+        if device == Device::Cpu {
+            return Ok(Tensor::full(shape, value));
+        }
+        let buf = backend_for(device)?.fill_dev(value, numel(shape))?;
+        Ok(device_leaf(buf, shape, device))
     }
 
     /// The single autograd recording hook: `inputs` are the differentiable
@@ -521,9 +546,10 @@ fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
 // Two flavors:
 // - `raw_unary_k`/`raw_binary_k` take a named kind and route the math through
 //   the backend registered for the input's device. Forward ops use these.
-// - `raw_unary`/`raw_binary` take an inline closure that runs on the host, so
-//   they are the CPU-only escape hatch used by backward closures and the
-//   composite ops_ext forwards without a named kernel.
+// - `raw_binary` takes an inline closure that runs on the host: the CPU-only
+//   escape hatch used by ops_ext backward closures and composite forwards
+//   without a named kernel. Core op backwards are fully kind-routed, so they
+//   run on whatever device the gradients live on.
 //
 // Device residency: whole-buffer device tensors run unary/binary/matmul on
 // their backend and stay resident. Binary device ops require equal shapes
@@ -571,22 +597,17 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
         return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
     }
     let backend = backend_for(a.0.device)?;
-    if a.device_resident_whole() || b.device_resident_whole() {
-        if a.0.shape != b.0.shape {
-            return Err(Error::Unsupported {
-                op,
-                msg: format!(
-                    "broadcasting on device tensors is not supported yet ({:?} vs {:?})",
-                    a.0.shape, b.0.shape
-                ),
-            });
-        }
-        if a.device_resident_whole() && b.device_resident_whole() {
-            let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
-            let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+    if a.device_resident_whole() && b.device_resident_whole() {
+        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
+        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        if a.0.shape == b.0.shape {
             let out = backend.binary_dev(kind, ba.as_ref(), bb.as_ref())?;
             return Ok(device_leaf(out, &a.0.shape, a.0.device));
         }
+        let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
+        let out =
+            backend.binary_bc_dev(kind, ba.as_ref(), &a.0.shape, bb.as_ref(), &b.0.shape, &out_shape)?;
+        return Ok(device_leaf(out, &out_shape, a.0.device));
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
@@ -610,12 +631,6 @@ pub(crate) fn raw_binary(
     let vb = b.broadcast_to(&out_shape)?.to_vec();
     let data = va.iter().zip(vb.iter()).map(|(&x, &y)| f(x, y)).collect();
     Tensor::from_vec(data, &out_shape)
-}
-
-pub(crate) fn raw_unary(a: &Tensor, f: impl Fn(f32) -> f32) -> Tensor {
-    assert!(a.dtype() == DType::F32, "op requires f32 tensors, got {}", a.dtype());
-    let data = a.to_vec().into_iter().map(f).collect();
-    Tensor::from_vec(data, &a.0.shape).unwrap()
 }
 
 /// 2-D matmul: (m,k) @ (k,n) -> (m,n), routed through the device's backend
@@ -642,7 +657,7 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     if a.device_resident_whole() && b.device_resident_whole() {
         let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
         let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
-        let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n)?;
+        let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
     let va = a.to_vec();
@@ -650,10 +665,58 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     Tensor::from_vec(backend.matmul(&va, &vb, m, k, n), &[m, n])
 }
 
+/// Full-tensor reduction on a resident device tensor, if it is one.
+pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
+    if !t.device_resident_whole() {
+        return None;
+    }
+    let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
+    let Storage::Device(buf) = &*t.0.storage else { unreachable!() };
+    let out = backend.reduce_dev(kind, buf.as_ref()).expect("device backend lacks reduce_dev");
+    Some(device_leaf(out, &[], t.0.device))
+}
+
+/// Matmul with logical transpose flags: computes op(a) @ op(b) where op is
+/// transpose when the flag is set. Device operands stay resident (backends
+/// take the flags natively, e.g. cuBLAS); host operands go through transpose
+/// views. Used by matmul's backward so gradients never materialize transposes.
+pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result<Tensor> {
+    if a.device_resident_whole() && b.device_resident_whole() && a.ndim() == 2 && b.ndim() == 2 {
+        let (m, k) = if ta { (a.0.shape[1], a.0.shape[0]) } else { (a.0.shape[0], a.0.shape[1]) };
+        let (k2, n) = if tb { (b.0.shape[1], b.0.shape[0]) } else { (b.0.shape[0], b.0.shape[1]) };
+        if k != k2 {
+            return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
+        }
+        let backend = backend_for(a.0.device)?;
+        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
+        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, ta, tb)?;
+        return Ok(device_leaf(out, &[m, n], a.0.device));
+    }
+    let av = if ta { a.transpose_view(0, 1)? } else { a.clone() };
+    let bv = if tb { b.transpose_view(0, 1)? } else { b.clone() };
+    raw_matmul(&av, &bv)
+}
+
 /// Sum over one dim, matching PyTorch's keepdim semantics.
 pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
     let in_shape = t.0.shape.clone();
     let ndim = in_shape.len();
+    if t.device_resident_whole() {
+        let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
+        let Storage::Device(buf) = &*t.0.storage else { unreachable!() };
+        let out = backend
+            .sum_dim_dev(buf.as_ref(), &in_shape, dim)
+            .expect("device backend lacks sum_dim_dev");
+        let mut keep_shape = in_shape.clone();
+        keep_shape[dim] = 1;
+        let out_shape: Vec<usize> = if keepdim {
+            keep_shape
+        } else {
+            in_shape.iter().enumerate().filter(|(d, _)| *d != dim).map(|(_, &s)| s).collect()
+        };
+        return device_leaf(out, &out_shape, t.0.device);
+    }
     let v = t.to_vec();
     let mut keep_shape = in_shape.clone();
     keep_shape[dim] = 1;

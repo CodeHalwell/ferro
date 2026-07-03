@@ -26,6 +26,8 @@ pub enum UnaryKind {
     Log,
     Powf(f32),
     Clamp { min: f32, max: f32 },
+    /// Heaviside step (1.0 where x > 0, else 0.0); the relu gradient mask.
+    Gtz,
 }
 
 /// Named elementwise binary kernels.
@@ -35,6 +37,13 @@ pub enum BinaryKind {
     Sub,
     Mul,
     Div,
+}
+
+/// Named full-tensor reductions (device kernels produce a 1-element buffer).
+#[derive(Clone, Copy, Debug)]
+pub enum ReduceKind {
+    Sum,
+    Mean,
 }
 
 /// Opaque device-resident buffer owned by a backend: contiguous f32 elements
@@ -80,6 +89,9 @@ pub trait Backend: Send + Sync {
     ) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("binary_dev")
     }
+    /// Logical (m,k) @ (k,n) -> (m,n); `ta`/`tb` mark an operand as stored
+    /// transposed (so its buffer is (k,m) / (n,k) row-major). Backward passes
+    /// need these flags to avoid materializing transposes.
     fn matmul_dev(
         &self,
         _a: &dyn DeviceBuffer,
@@ -87,8 +99,46 @@ pub trait Backend: Send + Sync {
         _m: usize,
         _k: usize,
         _n: usize,
+        _ta: bool,
+        _tb: bool,
     ) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("matmul_dev")
+    }
+
+    /// Broadcasting binary: `sa`/`sb` broadcast (numpy rules) to `out_shape`;
+    /// both inputs are whole contiguous buffers of their shapes.
+    fn binary_bc_dev(
+        &self,
+        _kind: BinaryKind,
+        _a: &dyn DeviceBuffer,
+        _sa: &[usize],
+        _b: &dyn DeviceBuffer,
+        _sb: &[usize],
+        _out_shape: &[usize],
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("binary_bc_dev")
+    }
+
+    /// Reduce the whole buffer to a single element.
+    fn reduce_dev(&self, _kind: ReduceKind, _x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("reduce_dev")
+    }
+
+    /// Sum over one dim of a contiguous row-major buffer of `shape`; output is
+    /// the keepdim=true layout (shape with dim set to 1).
+    fn sum_dim_dev(
+        &self,
+        _x: &dyn DeviceBuffer,
+        _shape: &[usize],
+        _dim: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("sum_dim_dev")
+    }
+
+    /// Constant-filled buffer. Defaulted via a host upload so every resident
+    /// backend gets it for free; override with a device-side fill for speed.
+    fn fill_dev(&self, value: f32, len: usize) -> Result<Box<dyn DeviceBuffer>> {
+        self.alloc_from_host(&vec![value; len])
     }
 }
 
@@ -110,6 +160,13 @@ impl Backend for CpuBackend {
             // max/min chain, not f32::clamp (which panics on min > max);
             // matches torch: min > max yields max everywhere.
             UnaryKind::Clamp { min, max } => v.max(min).min(max),
+            UnaryKind::Gtz => {
+                if v > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
         };
         x.iter().map(|&v| f(v)).collect()
     }
