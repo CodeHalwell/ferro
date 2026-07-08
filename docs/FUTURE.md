@@ -7,8 +7,10 @@ assessment of which axes "best in the world" is actually winnable on.
 
 ## Where we are (baseline for everything below)
 
-- Pure-Rust core: ~35 autograd ops, every one finite-difference checked and
+- Pure-Rust core: ~40 autograd ops, every one finite-difference checked and
   most cross-validated against torch numerically (values AND gradients).
+  The transformer set has landed: gelu, cumsum, argmax/argmin, gather, topk,
+  half-split rope, and a composed causal scaled_dot_product_attention.
 - Engine hardened: single closure-based autograd mechanism, strict grad
   arity/shape/device contracts, iterative topo sort and graph teardown (100k+
   op chains), torch retain_graph accumulation semantics.
@@ -21,8 +23,9 @@ assessment of which axes "best in the world" is actually winnable on.
   CUDA, gated GPU tests staged).
 - Dtypes: F32 everywhere; F64/I64 storage + casts; I64 index tensors feeding
   embedding / integer-target cross-entropy.
-- nn/optim: Linear, LayerNorm, activations, Sequential, cross_entropy, SGD
-  (+momentum), Adam. MLPs and CNNs train from Rust and Python.
+- nn/optim: Linear, LayerNorm, RmsNorm, Embedding, activations (incl. Gelu),
+  Sequential, cross_entropy, SGD (+momentum), Adam, AdamW. MLPs and CNNs
+  train from Rust and Python.
 - ferro-py: full op bindings, DLPack interop with numpy/torch (leak-free),
   training demos, everything validated against torch.
 
@@ -68,9 +71,10 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
   slice/index_put. Today strided views materialize on read and device views
   fall back to host.
 - (XL, ongoing) Operator long tail, prioritized by workload: transformer set
-  (softmax fused, gelu, rmsnorm, rope, attention masks, cumsum, topk,
-  argmax/argmin, gather/scatter), vision set (conv variants, pooling,
-  interpolate), then breadth. Each op stays one-file/one-agent parallel work.
+  remainder (fused softmax, scatter, exact-erf gelu), vision set (conv
+  variants, pooling, interpolate), then breadth. gelu/rmsnorm/rope/cumsum/
+  topk/argmax/argmin/gather and masked causal attention landed 2026-07.
+  Each op stays one-file/one-agent parallel work.
 - (M) Torch parity fuzzer: property-based random-shape/dtype op tests diffing
   ferro vs torch through DLPack, run in CI. The single highest-leverage
   correctness investment - it turns "validated on examples" into "validated
