@@ -58,6 +58,12 @@ impl PyTensor {
         PyTensor::wrap(CoreTensor::randn(&shape, &Rng::new(seed)))
     }
 
+    /// I64 index tensor (for gather/rope positions and future index ops).
+    #[staticmethod]
+    fn from_i64(data: Vec<i64>, shape: Vec<usize>) -> PyResult<PyTensor> {
+        CoreTensor::from_vec_i64(data, &shape).map(PyTensor::wrap).map_err(map_err)
+    }
+
     fn __add__(&self, other: &PyTensor) -> PyResult<PyTensor> {
         self.inner.add(&other.inner).map(PyTensor::wrap).map_err(map_err)
     }
@@ -102,6 +108,10 @@ impl PyTensor {
         PyTensor::wrap(self.inner.tanh())
     }
 
+    fn gelu(&self) -> PyTensor {
+        PyTensor::wrap(self.inner.gelu())
+    }
+
     fn sqrt(&self) -> PyTensor {
         PyTensor::wrap(self.inner.sqrt())
     }
@@ -142,6 +152,34 @@ impl PyTensor {
 
     fn bmm(&self, other: &PyTensor) -> PyResult<PyTensor> {
         self.inner.bmm(&other.inner).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn cumsum(&self, dim: usize) -> PyResult<PyTensor> {
+        self.inner.cumsum(dim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (dim, keepdim=false))]
+    fn argmax(&self, dim: usize, keepdim: bool) -> PyResult<PyTensor> {
+        self.inner.argmax(dim, keepdim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (dim, keepdim=false))]
+    fn argmin(&self, dim: usize, keepdim: bool) -> PyResult<PyTensor> {
+        self.inner.argmin(dim, keepdim).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn topk(&self, k: usize, dim: usize) -> PyResult<(PyTensor, PyTensor)> {
+        let (v, i) = self.inner.topk(k, dim).map_err(map_err)?;
+        Ok((PyTensor::wrap(v), PyTensor::wrap(i)))
+    }
+
+    fn gather(&self, dim: usize, index: &PyTensor) -> PyResult<PyTensor> {
+        self.inner.gather(dim, &index.inner).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (positions, base=10000.0))]
+    fn rope(&self, positions: &PyTensor, base: f32) -> PyResult<PyTensor> {
+        self.inner.rope(&positions.inner, base).map(PyTensor::wrap).map_err(map_err)
     }
 
     fn index_select(&self, dim: usize, indices: Vec<usize>) -> PyResult<PyTensor> {

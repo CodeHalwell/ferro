@@ -190,6 +190,74 @@ def main():
         ty.sum().backward()
         check(f"max_pool2d grad k={kernel} s={stride}", fx.grad, tx.grad)
 
+    # gelu: ferro implements the tanh approximation.
+    check_unary("gelu", MIX, lambda x: x.gelu(), lambda x: F.gelu(x, approximate="tanh"))
+
+    # cumsum: values on both dims, grad through a square so it is per-element.
+    for dim in (0, 1):
+        check(f"cumsum value dim={dim}", ft(MIX, SHAPE).cumsum(dim), tt(MIX, SHAPE).cumsum(dim))
+    fx = ft(MIX, SHAPE, requires_grad=True)
+    (fx.cumsum(1) * fx.cumsum(1)).sum().backward()
+    tx = tt(MIX, SHAPE, requires_grad=True)
+    (tx.cumsum(1) * tx.cumsum(1)).sum().backward()
+    check("cumsum grad", fx.grad, tx.grad)
+
+    # argmax/argmin: I64 outputs, compared as floats through tolist.
+    for name, fop, top in [
+        ("argmax", lambda x, d, k: x.argmax(d, k), torch.argmax),
+        ("argmin", lambda x, d, k: x.argmin(d, k), torch.argmin),
+    ]:
+        for dim in (0, 1):
+            for keep in (False, True):
+                f = fop(ft(MIX, SHAPE), dim, keep)
+                t = top(tt(MIX, SHAPE), dim=dim, keepdim=keep)
+                check(f"{name} value dim={dim} keepdim={keep}", f, t.float())
+
+    # gather: duplicate indices must accumulate grad.
+    gidx = [1, 1, 0, 2, 0, 0]
+    fx = ft(MIX, SHAPE, requires_grad=True)
+    fy = fx.gather(1, ferro.Tensor.from_i64(gidx, SHAPE))
+    tx = tt(MIX, SHAPE, requires_grad=True)
+    ty = tx.gather(1, tt(gidx, SHAPE).long())
+    check("gather value", fy, ty)
+    (fy * fy).sum().backward()
+    (ty * ty).sum().backward()
+    check("gather grad", fx.grad, tx.grad)
+
+    # topk: sorted values and indices, grad routed to the selected positions.
+    fv, fi = ft(MIX, SHAPE).topk(2, 1)
+    tv, ti = tt(MIX, SHAPE).topk(2, dim=1)
+    check("topk values", fv, tv)
+    check("topk indices", fi, ti.float())
+    fx = ft(MIX, SHAPE, requires_grad=True)
+    fv, _ = fx.topk(2, 1)
+    (fv * fv).sum().backward()
+    tx = tt(MIX, SHAPE, requires_grad=True)
+    tv, _ = tx.topk(2, dim=1)
+    (tv * tv).sum().backward()
+    check("topk grad", fx.grad, tx.grad)
+
+    # rope: half-split rotation vs an inline torch reference (LLaMA/HF
+    # convention: pair j rotates by pos * base^(-2j/d)).
+    def torch_rope(x, pos, base=10000.0):
+        half = x.shape[-1] // 2
+        inv = base ** (-torch.arange(half, dtype=torch.float32) * 2.0 / x.shape[-1])
+        theta = pos.float()[:, None] * inv[None, :]
+        cos, sin = theta.cos(), theta.sin()
+        x1, x2 = x[..., :half], x[..., half:]
+        return torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
+
+    rope_x = [((i * 7) % 11 - 5) * 0.25 for i in range(24)]
+    rope_pos = [0, 1, 5]
+    fx = ft(rope_x, [2, 3, 4], requires_grad=True)
+    fy = fx.rope(ferro.Tensor.from_i64(rope_pos, [3]))
+    tx = tt(rope_x, [2, 3, 4], requires_grad=True)
+    ty = torch_rope(tx, torch.tensor(rope_pos))
+    check("rope value", fy, ty)
+    (fy * fy).sum().backward()
+    (ty * ty).sum().backward()
+    check("rope grad", fx.grad, tx.grad)
+
     # Error mapping: core errors surface as ValueError.
     try:
         ft(MIX, SHAPE).sum_dim(99)
