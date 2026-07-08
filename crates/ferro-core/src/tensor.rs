@@ -216,7 +216,7 @@ impl Tensor {
     /// Gather a (possibly strided/broadcast) view of `data` into a contiguous
     /// row-major Vec, generic over the element type so every dtype shares the
     /// one strided-odometer implementation.
-    fn gather<T: Copy>(&self, data: &[T]) -> Vec<T> {
+    fn gather_view<T: Copy>(&self, data: &[T]) -> Vec<T> {
         let inner = &self.0;
         let n = self.numel();
         if self.is_contiguous() {
@@ -250,12 +250,12 @@ impl Tensor {
     /// views (transpose, broadcast) work transparently.
     pub fn to_vec(&self) -> Vec<f32> {
         match &*self.0.storage {
-            Storage::F32(v) => self.gather(v),
-            Storage::F64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
-            Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
+            Storage::F32(v) => self.gather_view(v),
+            Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
+            Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
             Storage::Device(b) => {
                 let host = device_to_host(self.0.device, b.as_ref());
-                self.gather(&host)
+                self.gather_view(&host)
             }
         }
     }
@@ -263,9 +263,9 @@ impl Tensor {
     /// Materialize as row-major f64 (exact from f32/i64 up to 2^53).
     pub fn to_vec_f64(&self) -> Vec<f64> {
         match &*self.0.storage {
-            Storage::F32(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
-            Storage::F64(v) => self.gather(v),
-            Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
+            Storage::F32(v) => self.gather_view(v).into_iter().map(|x| x as f64).collect(),
+            Storage::F64(v) => self.gather_view(v),
+            Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f64).collect(),
             Storage::Device(_) => self.to_vec().into_iter().map(|x| x as f64).collect(),
         }
     }
@@ -273,9 +273,9 @@ impl Tensor {
     /// Materialize as row-major i64; floats truncate toward zero.
     pub fn to_vec_i64(&self) -> Vec<i64> {
         match &*self.0.storage {
-            Storage::F32(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
-            Storage::F64(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
-            Storage::I64(v) => self.gather(v),
+            Storage::F32(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
+            Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
+            Storage::I64(v) => self.gather_view(v),
             Storage::Device(_) => self.to_vec().into_iter().map(|x| x as i64).collect(),
         }
     }

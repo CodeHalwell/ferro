@@ -1,5 +1,5 @@
 use ferro_core::nn::{cross_entropy, cross_entropy_indices, one_hot};
-use ferro_core::nn::{LayerNorm, Linear, Module, Relu, Sequential};
+use ferro_core::nn::{scaled_dot_product_attention, Embedding, Gelu, LayerNorm, Linear, Module, Relu, RmsNorm, Sequential};
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
@@ -196,4 +196,114 @@ fn layernorm_in_mlp_trains() {
     }
 
     assert!(last_loss < first_loss * 0.5, "loss did not decrease: {first_loss} -> {last_loss}");
+}
+
+#[test]
+fn rmsnorm_normalizes_any_rank() {
+    let rn = RmsNorm::new(4);
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, -0.5, 0.7, 2.3, -1.1, 0.2, 0.9, -0.4, 1.6], &[1, 3, 4]).unwrap();
+    let out = rn.forward(&x).unwrap();
+    assert_eq!(out.shape(), &[1, 3, 4]);
+    for row in out.to_vec().chunks(4) {
+        let ms = row.iter().map(|v| v * v).sum::<f32>() / 4.0;
+        assert!((ms - 1.0).abs() < 1e-3, "row mean-square not ~1: {ms}");
+    }
+}
+
+#[test]
+fn rmsnorm_grad() {
+    let rn = RmsNorm::new(3);
+    let x = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
+    let w = Tensor::from_vec(vec![0.7, -1.3, 0.4, 2.1, -0.6, 0.9], &[2, 3]).unwrap();
+    grad_check(&[x], |t| rn.forward(&t[0]).unwrap().mul(&w).unwrap().sum());
+}
+
+#[test]
+fn embedding_module_shapes_and_grad() {
+    let rng = Rng::new(5);
+    let emb = Embedding::new(6, 3, &rng);
+    let ids = Tensor::from_vec_i64(vec![1, 4, 1, 0], &[2, 2]).unwrap();
+    let out = emb.forward(&ids).unwrap();
+    assert_eq!(out.shape(), &[2, 2, 3]);
+
+    // Rows for the same id must match, and the duplicated id's grad must
+    // accumulate both contributions in the weight.
+    let o = out.to_vec();
+    assert_eq!(&o[0..3], &o[6..9]);
+    out.sum().backward();
+    let g = emb.parameters()[0].grad().unwrap().to_vec();
+    for (row, want) in [(0, 1.0), (1, 2.0), (4, 1.0), (2, 0.0)] {
+        for j in 0..3 {
+            assert_eq!(g[row * 3 + j], want, "weight row {row}");
+        }
+    }
+}
+
+#[test]
+fn gelu_module_matches_op() {
+    let x = Tensor::from_vec(vec![-1.0, 0.5, 2.0], &[3]).unwrap();
+    assert_eq!(Gelu.forward(&x).unwrap().to_vec(), x.gelu().to_vec());
+}
+
+#[test]
+fn attention_uniform_when_query_is_zero() {
+    // q = 0 makes every score 0, so softmax is uniform and each output row is
+    // the mean of the attendable v rows: all of v without the causal mask,
+    // the prefix v[0..=i] with it.
+    let q = Tensor::zeros(&[1, 3, 2]);
+    let k = Tensor::from_vec(vec![0.3, -0.9, 1.2, 0.4, -0.5, 0.8], &[1, 3, 2]).unwrap();
+    let v = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 3, 2]).unwrap();
+
+    let full = scaled_dot_product_attention(&q, &k, &v, false).unwrap().to_vec();
+    for row in full.chunks(2) {
+        assert!((row[0] - 3.0).abs() < 1e-5 && (row[1] - 4.0).abs() < 1e-5);
+    }
+
+    let causal = scaled_dot_product_attention(&q, &k, &v, true).unwrap().to_vec();
+    let want = [1.0, 2.0, 2.0, 3.0, 3.0, 4.0];
+    for (g, w) in causal.iter().zip(want) {
+        assert!((g - w).abs() < 1e-5, "got {g}, want {w}");
+    }
+}
+
+#[test]
+fn attention_rejects_mismatched_shapes() {
+    let q = Tensor::zeros(&[1, 2, 4]);
+    let k = Tensor::zeros(&[1, 3, 4]);
+    let v = Tensor::zeros(&[1, 3, 2]);
+    assert!(scaled_dot_product_attention(&q, &k, &v, false).is_ok());
+    assert!(scaled_dot_product_attention(&q, &Tensor::zeros(&[1, 3, 2]), &v, false).is_err());
+    assert!(scaled_dot_product_attention(&q, &k, &Tensor::zeros(&[1, 2, 2]), false).is_err());
+    assert!(scaled_dot_product_attention(&Tensor::zeros(&[2, 4]), &k, &v, false).is_err());
+}
+
+#[test]
+fn attention_grad() {
+    let q = Tensor::from_vec(vec![0.4, -0.7, 1.1, 0.2, -0.3, 0.9, 0.6, -1.2], &[1, 2, 4]).unwrap();
+    let k = Tensor::from_vec((0..12).map(|i| ((i * 5 % 7) as f32 - 3.0) / 3.0).collect(), &[1, 3, 4]).unwrap();
+    let v = Tensor::from_vec((0..6).map(|i| i as f32 / 3.0 - 1.0).collect(), &[1, 3, 2]).unwrap();
+    grad_check(&[q, k, v], |t| scaled_dot_product_attention(&t[0], &t[1], &t[2], true).unwrap().sum());
+}
+
+#[test]
+fn transformer_primitives_compose_end_to_end() {
+    // Embedding -> RmsNorm -> RoPE'd self-attention -> Gelu, and gradients
+    // reach the embedding table: the op set milestone M3 needs, in one graph.
+    let rng = Rng::new(11);
+    let emb = Embedding::new(10, 4, &rng);
+    let rn = RmsNorm::new(4);
+    let ids = Tensor::from_vec_i64(vec![3, 7, 1], &[1, 3]).unwrap();
+    let pos = Tensor::from_vec_i64(vec![0, 1, 2], &[3]).unwrap();
+
+    let h = rn.forward(&emb.forward(&ids).unwrap()).unwrap();
+    let q = h.rope(&pos, 10000.0).unwrap();
+    let k = h.rope(&pos, 10000.0).unwrap();
+    let out = scaled_dot_product_attention(&q, &k, &h, true).unwrap().gelu();
+    assert_eq!(out.shape(), &[1, 3, 4]);
+
+    out.sum().backward();
+    let g = emb.parameters()[0].grad().expect("embedding weight grad");
+    assert_eq!(g.shape(), &[10, 4]);
+    let gsum: f32 = g.to_vec().iter().map(|x| x.abs()).sum();
+    assert!(gsum > 0.0, "gradient did not reach the embedding table");
 }

@@ -1,4 +1,4 @@
-use ferro_core::optim::{Adam, Sgd};
+use ferro_core::optim::{Adam, AdamW, Sgd};
 use ferro_core::{Param, Rng, Tensor};
 
 /// MSE between predictions and targets as a differentiable scalar loss.
@@ -80,6 +80,50 @@ fn adam_minimizes_quadratic() {
     for (i, t) in target.to_vec().iter().enumerate() {
         assert!((learned[i] - t).abs() < 1e-3, "w[{i}] {} vs {t}", learned[i]);
     }
+}
+
+#[test]
+fn adamw_minimizes_quadratic() {
+    let rng = Rng::new(3);
+    let target = Tensor::from_vec(vec![0.5, -1.0, 0.25], &[3]).unwrap();
+    let w = Param::new(Tensor::randn(&[3], &rng));
+    let mut opt = AdamW::new(vec![w.clone()], 0.1).with_weight_decay(0.0);
+
+    for _ in 0..500 {
+        let loss = mse(&w.tensor(), &target);
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    let learned = w.tensor().to_vec();
+    for (i, t) in target.to_vec().iter().enumerate() {
+        assert!((learned[i] - t).abs() < 1e-3, "w[{i}] {} vs {t}", learned[i]);
+    }
+}
+
+#[test]
+fn adamw_decay_is_decoupled_from_moments() {
+    // One step from w=1 with dL/dw=0.5: Adam's update is exactly -lr (bias
+    // correction cancels on the first step and eps is negligible); AdamW must
+    // additionally shrink the parameter by lr*wd*w, and the decay must not
+    // pass through the moment estimates.
+    let make = || {
+        let w = Param::new(Tensor::from_vec(vec![1.0], &[1]).unwrap());
+        let loss = w.tensor().mul(&Tensor::scalar(0.5)).unwrap().sum();
+        loss.backward();
+        w
+    };
+    let (lr, wd) = (0.1, 0.04);
+
+    let plain = make();
+    AdamW::new(vec![plain.clone()], lr).with_weight_decay(0.0).step();
+    let decayed = make();
+    AdamW::new(vec![decayed.clone()], lr).with_weight_decay(wd).step();
+
+    let p = plain.tensor().item();
+    let d = decayed.tensor().item();
+    assert!((p - (1.0 - lr)).abs() < 1e-4, "no-decay step: {p}");
+    assert!((d - (p - lr * wd * 1.0)).abs() < 1e-6, "decoupled decay: {d} vs {p}");
 }
 
 #[test]
