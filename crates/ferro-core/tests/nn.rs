@@ -1,5 +1,5 @@
 use ferro_core::nn::{cross_entropy, cross_entropy_indices, one_hot};
-use ferro_core::nn::{scaled_dot_product_attention, Embedding, Gelu, LayerNorm, Linear, Module, Relu, RmsNorm, Sequential};
+use ferro_core::nn::{load_module, save_module, scaled_dot_product_attention, Embedding, Gelu, LayerNorm, Linear, Module, MultiHeadAttention, Relu, RmsNorm, Sequential, TransformerBlock};
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
@@ -306,4 +306,120 @@ fn transformer_primitives_compose_end_to_end() {
     assert_eq!(g.shape(), &[10, 4]);
     let gsum: f32 = g.to_vec().iter().map(|x| x.abs()).sum();
     assert!(gsum > 0.0, "gradient did not reach the embedding table");
+}
+
+#[test]
+fn mha_single_head_with_identity_projections_matches_sdpa() {
+    let rng = Rng::new(3);
+    let mha = MultiHeadAttention::new(3, 1, true, &rng).unwrap();
+    let eye = Tensor::from_vec(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], &[3, 3]).unwrap();
+    for (_, p) in mha.named_parameters() {
+        p.set(eye.clone());
+    }
+    let x = Tensor::from_vec(vec![0.4, -0.7, 1.1, 0.2, -0.3, 0.9], &[1, 2, 3]).unwrap();
+    let got = mha.forward(&x).unwrap().to_vec();
+    let want = scaled_dot_product_attention(&x, &x, &x, true).unwrap().to_vec();
+    for (g, w) in got.iter().zip(&want) {
+        assert!((g - w).abs() < 1e-5, "got {g}, want {w}");
+    }
+}
+
+#[test]
+fn mha_is_causal_and_rejects_bad_shapes() {
+    let rng = Rng::new(4);
+    let mha = MultiHeadAttention::new(4, 2, true, &rng).unwrap().with_rope(10000.0);
+    let base: Vec<f32> = (0..12).map(|i| ((i * 7 % 11) as f32 - 5.0) / 4.0).collect();
+    let mut bumped = base.clone();
+    bumped[9] += 1.0; // last token, batch stays [1, 3, 4]
+    let a = mha.forward(&Tensor::from_vec(base, &[1, 3, 4]).unwrap()).unwrap().to_vec();
+    let b = mha.forward(&Tensor::from_vec(bumped, &[1, 3, 4]).unwrap()).unwrap().to_vec();
+    assert_eq!(&a[..8], &b[..8], "perturbing token 2 changed outputs for tokens 0/1");
+    assert!(a[8..].iter().zip(&b[8..]).any(|(x, y)| x != y), "perturbation never reached token 2");
+
+    assert!(MultiHeadAttention::new(5, 2, true, &rng).is_err());
+    assert!(MultiHeadAttention::new(4, 0, true, &rng).is_err());
+    assert!(mha.forward(&Tensor::zeros(&[3, 4])).is_err());
+    assert!(mha.forward(&Tensor::zeros(&[1, 3, 6])).is_err());
+}
+
+#[test]
+fn mha_grad() {
+    let rng = Rng::new(5);
+    let mha = MultiHeadAttention::new(4, 2, true, &rng).unwrap().with_rope(10000.0);
+    let x = Tensor::from_vec((0..8).map(|i| ((i * 3 % 7) as f32 - 3.0) / 3.0).collect(), &[1, 2, 4]).unwrap();
+    grad_check(&[x], |t| mha.forward(&t[0]).unwrap().sum());
+}
+
+#[test]
+fn transformer_block_learns_next_token() {
+    // Tiny LM: embedding -> block -> tied-free output proj learns to predict
+    // the fixed cycle 0 1 2 3 0 1 ... from a causal context.
+    let rng = Rng::new(9);
+    let vocab = 4;
+    let dim = 8;
+    let emb = Embedding::new(vocab, dim, &rng);
+    let block = TransformerBlock::new(dim, 2, &rng).unwrap();
+    let head = Linear::new(dim, vocab, &rng);
+
+    let ids = Tensor::from_vec_i64(vec![0, 1, 2, 3, 0, 1, 2], &[1, 7]).unwrap();
+    let targets = Tensor::from_vec_i64(vec![1, 2, 3, 0, 1, 2, 3], &[7]).unwrap();
+
+    let mut params = emb.parameters();
+    params.extend(block.parameters());
+    params.extend(head.parameters());
+    let mut opt = ferro_core::optim::AdamW::new(params, 0.01).with_weight_decay(0.0);
+
+    let mut first = f32::NAN;
+    let mut last = f32::NAN;
+    for step in 0..150 {
+        let h = block.forward(&emb.forward(&ids).unwrap()).unwrap();
+        let logits = head.forward(&h.reshape(&[7, dim]).unwrap()).unwrap();
+        let loss = cross_entropy_indices(&logits, &targets).unwrap();
+        if step == 0 {
+            first = loss.item();
+        }
+        last = loss.item();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+    }
+    assert!(last < 0.1 && last < first * 0.1, "LM did not learn: {first} -> {last}");
+
+    // Greedy decode from the trained model: every position predicts its target.
+    let h = block.forward(&emb.forward(&ids).unwrap()).unwrap();
+    let logits = head.forward(&h.reshape(&[7, dim]).unwrap()).unwrap();
+    let pred = logits.argmax(1, false).unwrap();
+    assert_eq!(pred.to_vec_i64(), targets.to_vec_i64());
+}
+
+#[test]
+fn state_dict_names_and_roundtrip() {
+    let rng = Rng::new(10);
+    let block = TransformerBlock::new(4, 2, &rng).unwrap();
+    let names: Vec<String> = block.named_parameters().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        names,
+        ["norm1.weight", "attn.q_proj", "attn.k_proj", "attn.v_proj", "attn.o_proj", "norm2.weight", "mlp.up.weight", "mlp.up.bias", "mlp.down.weight", "mlp.down.bias"]
+    );
+
+    let seq = Sequential::new(vec![Box::new(Linear::new(2, 2, &rng)), Box::new(Relu), Box::new(Linear::new(2, 1, &rng))]);
+    let seq_names: Vec<String> = seq.named_parameters().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(seq_names, ["0.weight", "0.bias", "2.weight", "2.bias"]);
+
+    let mut path = std::env::temp_dir();
+    path.push(format!("ferro_state_{}.safetensors", std::process::id()));
+    save_module(&path, &block).unwrap();
+
+    let x = Tensor::from_vec((0..12).map(|i| i as f32 / 6.0 - 1.0).collect(), &[1, 3, 4]).unwrap();
+    let fresh = TransformerBlock::new(4, 2, &Rng::new(999)).unwrap();
+    assert_ne!(fresh.forward(&x).unwrap().to_vec(), block.forward(&x).unwrap().to_vec());
+    load_module(&path, &fresh).unwrap();
+    assert_eq!(fresh.forward(&x).unwrap().to_vec(), block.forward(&x).unwrap().to_vec());
+
+    // Strict loading: wrong architecture fails on names, wrong sizes on shape.
+    let wrong_arch = Linear::new(4, 4, &rng);
+    assert!(matches!(load_module(&path, &wrong_arch), Err(ferro_core::Error::Format { .. })));
+    let wrong_size = TransformerBlock::new(8, 2, &Rng::new(1)).unwrap();
+    assert!(matches!(load_module(&path, &wrong_size), Err(ferro_core::Error::Format { .. })));
+    std::fs::remove_file(&path).unwrap();
 }

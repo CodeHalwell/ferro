@@ -130,17 +130,18 @@ a good substrate for an IR.
 
 ## 6. Training stack completeness [P]
 
-- (M) nn: attention block, multi-head attention, Embedding module, Dropout
-  (needs RNG plumbing + train/eval mode), Conv2d module with bias, RMSNorm,
-  GELU; parameter initialization registry.
-- (M) optim: AdamW, weight decay done right, LR schedulers, grad clipping;
+- (M) nn: MultiHeadAttention (RoPE + causal) and a pre-norm TransformerBlock
+  landed 2026-07 - a one-block LM trains and greedy-decodes its target in
+  tests. Remaining: Dropout (needs RNG plumbing + train/eval mode), Conv2d
+  module with bias, parameter initialization registry.
+- (M) optim: AdamW landed 2026-07. Remaining: LR schedulers, grad clipping;
   optimizer state on device (currently host Vecs - must move for GPU
   training).
 - (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
-- (M) Serialization: safetensors read/write landed 2026-07 (zero-dep header
-  parser in core, byte-validated against the reference implementation, the
-  model-import path for M3). Remaining: named state_dict on the Module trait
-  so whole models save/load without hand-listing tensors.
+- (M) Serialization: safetensors read/write and named state_dict save/load
+  on the Module trait (strict torch semantics) landed 2026-07, byte-validated
+  against the reference implementation - the model-import path for M3 is
+  open end to end.
 - (M) Data: a minimal DataLoader (batching, shuffling, parallel prefetch).
 - (L) Distributed data parallel once NCCL exists.
 

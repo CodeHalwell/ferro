@@ -12,7 +12,54 @@ use crate::tensor::Tensor;
 
 pub trait Module {
     fn forward(&self, x: &Tensor) -> Result<Tensor>;
-    fn parameters(&self) -> Vec<Param>;
+
+    /// Parameters with torch-style names ("weight", "bias", "0.weight" inside
+    /// a Sequential); the contract behind state_dict save/load.
+    fn named_parameters(&self) -> Vec<(String, Param)>;
+
+    fn parameters(&self) -> Vec<Param> {
+        self.named_parameters().into_iter().map(|(_, p)| p).collect()
+    }
+}
+
+/// Save a module's parameters as a safetensors state dict.
+pub fn save_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
+    let named = module.named_parameters();
+    let tensors: Vec<(String, Tensor)> = named.iter().map(|(n, p)| (n.clone(), p.tensor())).collect();
+    let refs: Vec<(&str, &Tensor)> = tensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
+    crate::safetensors::save_safetensors(path, &refs)
+}
+
+/// Load a safetensors state dict into a module, strictly (torch semantics):
+/// every parameter must be present with a matching shape, and every tensor in
+/// the file must correspond to a parameter.
+pub fn load_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
+    let mut loaded = crate::safetensors::load_safetensors(path)?;
+    for (name, param) in module.named_parameters() {
+        let pos = loaded.iter().position(|(n, _)| *n == name).ok_or_else(|| Error::Format {
+            op: "load_module",
+            msg: format!("state dict is missing parameter {name:?}"),
+        })?;
+        let (_, t) = loaded.swap_remove(pos);
+        let want = param.tensor();
+        if t.shape() != want.shape() || t.dtype() != want.dtype() {
+            return Err(Error::Format {
+                op: "load_module",
+                msg: format!(
+                    "parameter {name:?}: expected {} {:?}, file has {} {:?}",
+                    want.dtype(),
+                    want.shape(),
+                    t.dtype(),
+                    t.shape()
+                ),
+            });
+        }
+        param.set(t);
+    }
+    if let Some((name, _)) = loaded.first() {
+        return Err(Error::Format { op: "load_module", msg: format!("state dict has unexpected tensor {name:?}") });
+    }
+    Ok(())
 }
 
 /// Affine layer `y = x @ W + b` with He-initialized weights.
@@ -36,8 +83,8 @@ impl Module for Linear {
         x.matmul(&self.weight.tensor())?.add(&self.bias.tensor())
     }
 
-    fn parameters(&self) -> Vec<Param> {
-        vec![self.weight.clone(), self.bias.clone()]
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![("weight".into(), self.weight.clone()), ("bias".into(), self.bias.clone())]
     }
 }
 
@@ -48,7 +95,7 @@ impl Module for Relu {
         Ok(x.relu())
     }
 
-    fn parameters(&self) -> Vec<Param> {
+    fn named_parameters(&self) -> Vec<(String, Param)> {
         Vec::new()
     }
 }
@@ -60,7 +107,7 @@ impl Module for Sigmoid {
         Ok(x.sigmoid())
     }
 
-    fn parameters(&self) -> Vec<Param> {
+    fn named_parameters(&self) -> Vec<(String, Param)> {
         Vec::new()
     }
 }
@@ -72,7 +119,7 @@ impl Module for Gelu {
         Ok(x.gelu())
     }
 
-    fn parameters(&self) -> Vec<Param> {
+    fn named_parameters(&self) -> Vec<(String, Param)> {
         Vec::new()
     }
 }
@@ -104,8 +151,8 @@ impl Module for LayerNorm {
         norm.mul(&self.gamma.tensor())?.add(&self.beta.tensor())
     }
 
-    fn parameters(&self) -> Vec<Param> {
-        vec![self.gamma.clone(), self.beta.clone()]
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![("weight".into(), self.gamma.clone()), ("bias".into(), self.beta.clone())]
     }
 }
 
@@ -130,8 +177,8 @@ impl Module for RmsNorm {
         x.div(&ms.add(&Tensor::scalar(self.eps))?.sqrt())?.mul(&self.gamma.tensor())
     }
 
-    fn parameters(&self) -> Vec<Param> {
-        vec![self.gamma.clone()]
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![("weight".into(), self.gamma.clone())]
     }
 }
 
@@ -160,8 +207,8 @@ impl Module for Embedding {
         out.reshape(&shape)
     }
 
-    fn parameters(&self) -> Vec<Param> {
-        vec![self.weight.clone()]
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![("weight".into(), self.weight.clone())]
     }
 }
 
@@ -185,8 +232,12 @@ impl Module for Sequential {
         Ok(out)
     }
 
-    fn parameters(&self) -> Vec<Param> {
-        self.layers.iter().flat_map(|l| l.parameters()).collect()
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        self.layers
+            .iter()
+            .enumerate()
+            .flat_map(|(i, l)| l.named_parameters().into_iter().map(move |(n, p)| (format!("{i}.{n}"), p)))
+            .collect()
     }
 }
 
@@ -258,6 +309,155 @@ pub fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: 
         scores = scores.add(&Tensor::from_vec(m, &[sq, sk])?)?;
     }
     scores.softmax(2)?.bmm(v)
+}
+
+/// Multi-head self-attention over `[batch, seq, dim]` (LLaMA-shaped: four
+/// bias-free square projections named q_proj/k_proj/v_proj/o_proj, optional
+/// half-split RoPE on q and k, causal masking). Heads fold into the batch dim
+/// around the shared `scaled_dot_product_attention`.
+pub struct MultiHeadAttention {
+    q_proj: Param,
+    k_proj: Param,
+    v_proj: Param,
+    o_proj: Param,
+    heads: usize,
+    causal: bool,
+    rope_base: Option<f32>,
+}
+
+impl MultiHeadAttention {
+    pub fn new(dim: usize, heads: usize, causal: bool, rng: &Rng) -> Result<MultiHeadAttention> {
+        if heads == 0 || dim % heads != 0 {
+            return Err(Error::InvalidShape {
+                op: "multi_head_attention",
+                msg: format!("dim {dim} is not divisible into {heads} heads"),
+            });
+        }
+        let scale = 1.0 / (dim as f32).sqrt();
+        let proj = || {
+            let w: Vec<f32> = (0..dim * dim).map(|_| rng.normal() * scale).collect();
+            Param::new(Tensor::from_vec(w, &[dim, dim]).unwrap())
+        };
+        Ok(MultiHeadAttention {
+            q_proj: proj(),
+            k_proj: proj(),
+            v_proj: proj(),
+            o_proj: proj(),
+            heads,
+            causal,
+            rope_base: None,
+        })
+    }
+
+    /// Apply RoPE to q and k before attention (positions 0..seq).
+    pub fn with_rope(mut self, base: f32) -> MultiHeadAttention {
+        self.rope_base = Some(base);
+        self
+    }
+
+    /// `[b, s, d] -> [b*h, s, d/h]`: project, split heads, fold into batch.
+    fn heads_in(&self, x: &Tensor, w: &Param, b: usize, s: usize, d: usize) -> Result<Tensor> {
+        let hd = d / self.heads;
+        let p = x.reshape(&[b * s, d])?.matmul(&w.tensor())?;
+        p.reshape(&[b, s, self.heads, hd])?.transpose(1, 2)?.reshape(&[b * self.heads, s, hd])
+    }
+}
+
+impl Module for MultiHeadAttention {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if x.ndim() != 3 {
+            return Err(Error::InvalidShape {
+                op: "multi_head_attention",
+                msg: format!("input must be 3-D [batch, seq, dim], got {:?}", x.shape()),
+            });
+        }
+        let (b, s, d) = (x.shape()[0], x.shape()[1], x.shape()[2]);
+        if d != self.q_proj.tensor().shape()[0] {
+            return Err(Error::InvalidShape {
+                op: "multi_head_attention",
+                msg: format!("input dim {d} does not match projection dim {}", self.q_proj.tensor().shape()[0]),
+            });
+        }
+        let mut q = self.heads_in(x, &self.q_proj, b, s, d)?;
+        let mut k = self.heads_in(x, &self.k_proj, b, s, d)?;
+        let v = self.heads_in(x, &self.v_proj, b, s, d)?;
+        if let Some(base) = self.rope_base {
+            let pos = Tensor::arange(s as i64);
+            q = q.rope(&pos, base)?;
+            k = k.rope(&pos, base)?;
+        }
+        let attn = scaled_dot_product_attention(&q, &k, &v, self.causal)?;
+        let merged = attn.reshape(&[b, self.heads, s, d / self.heads])?.transpose(1, 2)?.reshape(&[b * s, d])?;
+        merged.matmul(&self.o_proj.tensor())?.reshape(&[b, s, d])
+    }
+
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![
+            ("q_proj".into(), self.q_proj.clone()),
+            ("k_proj".into(), self.k_proj.clone()),
+            ("v_proj".into(), self.v_proj.clone()),
+            ("o_proj".into(), self.o_proj.clone()),
+        ]
+    }
+}
+
+/// Pre-norm transformer block: `x + attn(norm1(x))`, then `x + mlp(norm2(x))`
+/// with a Gelu MLP at 4x width. The building block for milestone M3.
+pub struct TransformerBlock {
+    norm1: RmsNorm,
+    attn: MultiHeadAttention,
+    norm2: RmsNorm,
+    up: Linear,
+    down: Linear,
+}
+
+impl TransformerBlock {
+    pub fn new(dim: usize, heads: usize, rng: &Rng) -> Result<TransformerBlock> {
+        Ok(TransformerBlock {
+            norm1: RmsNorm::new(dim),
+            attn: MultiHeadAttention::new(dim, heads, true, rng)?.with_rope(10000.0),
+            norm2: RmsNorm::new(dim),
+            up: Linear::new(dim, 4 * dim, rng),
+            down: Linear::new(4 * dim, dim, rng),
+        })
+    }
+
+    /// The MLP runs per token: flatten `[b, s, d]` to `[b*s, d]` for the 2-D
+    /// Linear layers, then restore.
+    fn mlp(&self, x: &Tensor) -> Result<Tensor> {
+        let shape = x.shape().to_vec();
+        let d = shape[2];
+        let flat = x.reshape(&[shape[0] * shape[1], d])?;
+        let out = self.down.forward(&self.up.forward(&flat)?.gelu())?;
+        out.reshape(&shape)
+    }
+}
+
+impl Module for TransformerBlock {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if x.ndim() != 3 {
+            return Err(Error::InvalidShape {
+                op: "transformer_block",
+                msg: format!("input must be 3-D [batch, seq, dim], got {:?}", x.shape()),
+            });
+        }
+        let h = x.add(&self.attn.forward(&self.norm1.forward(x)?)?)?;
+        h.add(&self.mlp(&self.norm2.forward(&h)?)?)
+    }
+
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        let mut out = Vec::new();
+        for (prefix, m) in [
+            ("norm1", &self.norm1 as &dyn Module),
+            ("attn", &self.attn),
+            ("norm2", &self.norm2),
+            ("mlp.up", &self.up),
+            ("mlp.down", &self.down),
+        ] {
+            out.extend(m.named_parameters().into_iter().map(|(n, p)| (format!("{prefix}.{n}"), p)));
+        }
+        out
+    }
 }
 
 /// Cross-entropy for `[batch, classes]` logits against I64 class ids `[batch]`
