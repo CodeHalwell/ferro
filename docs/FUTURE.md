@@ -193,8 +193,12 @@ a good substrate for an IR.
 - M2: GPU perf floor - caching allocator + streams + real reductions;
   benchmark suite reporting the gap vs torch eager.
 - M3: Transformer inference - load a small real LLM (e.g. a TinyStories-class
-  model) from safetensors and generate tokens correctly. Requires the
-  transformer op set + serialization. This is the credibility milestone.
+  model) from safetensors and generate tokens correctly. The prerequisites
+  (transformer op set, serialization, attention/block modules) landed
+  2026-07, and ferro-fastcpu's char_lm example proves the full pipeline
+  (train -> save -> reload -> generate) on a toy model. Remaining: a real
+  checkpoint's architecture (learned positions or GQA, exact-erf gelu,
+  f16/bf16 weights) plus a tokenizer. This is the credibility milestone.
 - M4: Training parity demo - MNIST/CIFAR conv training on GPU within 2-3x of
   torch eager wall-clock.
 - M5: Compiler MVP - captured, fused forward+backward for an MLP beating
