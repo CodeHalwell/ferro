@@ -3,7 +3,7 @@ mod dlpack;
 use ferro_core::{Rng, Tensor as CoreTensor};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 fn map_err(e: ferro_core::Error) -> PyErr {
     PyValueError::new_err(e.to_string())
@@ -314,6 +314,27 @@ fn where_(cond: &PyTensor, a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
     CoreTensor::where_cond(&cond.inner, &a.inner, &b.inner).map(PyTensor::wrap).map_err(map_err)
 }
 
+/// Write a `{name: Tensor}` dict to a .safetensors file.
+#[pyfunction]
+fn save_safetensors(path: &str, tensors: &Bound<'_, PyDict>) -> PyResult<()> {
+    let mut pairs: Vec<(String, CoreTensor)> = Vec::new();
+    for (k, v) in tensors.iter() {
+        pairs.push((k.extract()?, v.extract::<PyTensor>()?.inner));
+    }
+    let refs: Vec<(&str, &CoreTensor)> = pairs.iter().map(|(n, t)| (n.as_str(), t)).collect();
+    ferro_core::save_safetensors(path, &refs).map_err(map_err)
+}
+
+/// Read a .safetensors file into a `{name: Tensor}` dict (header order).
+#[pyfunction]
+fn load_safetensors<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    for (name, t) in ferro_core::load_safetensors(path).map_err(map_err)? {
+        d.set_item(name, PyTensor::wrap(t))?;
+    }
+    Ok(d)
+}
+
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
@@ -322,5 +343,7 @@ fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;
     m.add_function(wrap_pyfunction!(where_, m)?)?;
+    m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
+    m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;
     Ok(())
 }

@@ -137,8 +137,10 @@ a good substrate for an IR.
   optimizer state on device (currently host Vecs - must move for GPU
   training).
 - (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
-- (M) Serialization: state_dict save/load; safetensors format read/write
-  (also the model-import path - see milestone below).
+- (M) Serialization: safetensors read/write landed 2026-07 (zero-dep header
+  parser in core, byte-validated against the reference implementation, the
+  model-import path for M3). Remaining: named state_dict on the Module trait
+  so whole models save/load without hand-listing tensors.
 - (M) Data: a minimal DataLoader (batching, shuffling, parallel prefetch).
 - (L) Distributed data parallel once NCCL exists.
 
