@@ -11,7 +11,9 @@ impl Tensor {
         if dim >= ndim {
             return Err(Error::InvalidShape { op: "mean_dim", msg: format!("dim {dim} out of range for rank {ndim}") });
         }
+        // No max(1) guard: like mean(), an empty reduced dim yields NaN
+        // (0 * inf) to match torch rather than a silent 0.
         let n = self.shape()[dim] as f32;
-        self.sum_dim(dim, keepdim)?.mul(&Tensor::scalar(1.0 / n))
+        self.sum_dim(dim, keepdim)?.mul(&Tensor::full_on(&[], 1.0 / n, self.device())?)
     }
 }

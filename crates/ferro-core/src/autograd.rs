@@ -81,7 +81,9 @@ impl Tensor {
         }
         let seed = Tensor::full_on(self.shape(), 1.0, self.device())
             .expect("loss tensor's device backend is registered");
-        self.set_grad(seed);
+        // Accumulate rather than set: a leaf root (no op node) keeps its grad
+        // across backward calls like any other leaf; op roots were cleared above.
+        self.accumulate_grad(seed);
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
             let g = t.grad().expect("every op node on the path receives a gradient");

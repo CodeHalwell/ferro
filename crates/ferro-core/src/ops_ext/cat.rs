@@ -2,6 +2,7 @@
 //! index (prod of dims before `dim`), each input contributes a contiguous
 //! block of `shape[dim] * inner` elements (inner = prod of dims after `dim`).
 
+use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::tensor::Tensor;
 
@@ -11,6 +12,18 @@ impl Tensor {
             op: "cat",
             msg: "expected a non-empty list of tensors".into(),
         })?;
+        for t in tensors {
+            // Forward reads through to_vec (an f32 cast), so non-f32 inputs
+            // must be rejected rather than silently converted.
+            if t.dtype() != DType::F32 {
+                return Err(Error::DtypeMismatch { op: "cat", expected: DType::F32, got: t.dtype() });
+            }
+        }
+        for t in &tensors[1..] {
+            if t.device() != first.device() {
+                return Err(Error::DeviceMismatch { op: "cat", lhs: first.device(), rhs: t.device() });
+            }
+        }
         let base = first.shape().to_vec();
         if dim >= base.len() {
             return Err(Error::InvalidShape {

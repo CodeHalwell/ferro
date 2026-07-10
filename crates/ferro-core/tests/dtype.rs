@@ -81,6 +81,21 @@ fn strided_i64_view_materializes() {
 }
 
 #[test]
+fn reshape_of_strided_view_keeps_dtype() {
+    // Materializing a non-contiguous view for reshape must not round-trip
+    // through f32: large ids would lose precision before one_hot etc.
+    let big = (1i64 << 40) + 1;
+    let t = Tensor::from_vec_i64(vec![big, 2, 3, 4, 5, 6], &[2, 3]).unwrap();
+    let r = t.transpose(0, 1).unwrap().reshape(&[6]).unwrap();
+    assert_eq!(r.dtype(), DType::I64);
+    assert_eq!(r.to_vec_i64(), vec![big, 4, 2, 5, 3, 6]);
+
+    let d = Tensor::ones(&[2, 3]).to_dtype(DType::F64);
+    let rd = d.transpose(0, 1).unwrap().reshape(&[6]).unwrap();
+    assert_eq!(rd.dtype(), DType::F64);
+}
+
+#[test]
 #[should_panic(expected = "autograd is f32-only")]
 fn requires_grad_on_i64_panics() {
     Tensor::arange(3).requires_grad_(true);

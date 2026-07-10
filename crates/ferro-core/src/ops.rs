@@ -118,7 +118,8 @@ impl Tensor {
     }
 
     pub fn mean(&self) -> Tensor {
-        let n = numel(self.shape()).max(1) as f32;
+        // No max(1) guard: torch's empty mean is NaN (0/0), not a silent 0.
+        let n = numel(self.shape()) as f32;
         let out = raw_reduce_dev(self, ReduceKind::Mean)
             .unwrap_or_else(|| Tensor::scalar(self.to_vec().iter().sum::<f32>() / n));
         let in_shape = self.shape().to_vec();

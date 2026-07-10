@@ -149,7 +149,8 @@ impl Backend for CpuBackend {
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32> {
         let f = move |v: f32| match kind {
             UnaryKind::Neg => -v,
-            UnaryKind::Relu => v.max(0.0),
+            // Not v.max(0.0): f32::max drops NaN, torch's relu propagates it.
+            UnaryKind::Relu => if v > 0.0 || v.is_nan() { v } else { 0.0 },
             UnaryKind::Exp => v.exp(),
             UnaryKind::Sigmoid => 1.0 / (1.0 + (-v).exp()),
             UnaryKind::Tanh => v.tanh(),
@@ -158,8 +159,11 @@ impl Backend for CpuBackend {
             UnaryKind::Log => v.ln(),
             UnaryKind::Powf(p) => v.powf(p),
             // max/min chain, not f32::clamp (which panics on min > max);
-            // matches torch: min > max yields max everywhere.
-            UnaryKind::Clamp { min, max } => v.max(min).min(max),
+            // matches torch: min > max yields max everywhere. NaN passes
+            // through explicitly since f32::max/min would drop it.
+            UnaryKind::Clamp { min, max } => {
+                if v.is_nan() { v } else { v.max(min).min(max) }
+            }
             UnaryKind::Gtz => {
                 if v > 0.0 {
                     1.0

@@ -136,6 +136,11 @@ impl CudaBackend {
     fn launch_elementwise(&self, op: &'static str, src: &str, inputs: &[&CudaSlice<f32>], n: usize) -> Result<CudaSlice<f32>> {
         let func = self.get_kernel(op, src)?;
         let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(op, e))?;
+        // Zero-sized launches are invalid; an empty tensor's result is the
+        // freshly allocated empty buffer.
+        if n == 0 {
+            return Ok(out);
+        }
         let n_arg = n as u32;
         let mut launch = self.stream.launch_builder(&func);
         for d in inputs {

@@ -283,6 +283,13 @@ impl Tensor {
     /// Cast to `dtype`, returning a detached contiguous leaf on the same
     /// device. This is the only route from F64/I64 data into float math.
     pub fn to_dtype(&self, dtype: DType) -> Tensor {
+        // Device storage is f32-only, so a same-dtype cast of a whole device
+        // buffer stays resident; every other cast materializes host storage
+        // and must report Cpu (a stale device tag would make a later
+        // to_device a no-op on host data).
+        if dtype == self.dtype() && self.device_resident_whole() {
+            return self.detach_copy();
+        }
         let storage = match dtype {
             DType::F32 => Storage::F32(self.to_vec()),
             DType::F64 => Storage::F64(self.to_vec_f64()),
@@ -293,7 +300,7 @@ impl Tensor {
             self.0.shape.clone(),
             default_strides(&self.0.shape),
             0,
-            self.0.device,
+            Device::Cpu,
             false,
             None,
         )
@@ -375,10 +382,6 @@ impl Tensor {
         *self.0.grad.lock().unwrap() = None;
     }
 
-    pub(crate) fn set_grad(&self, g: Tensor) {
-        *self.0.grad.lock().unwrap() = Some(g);
-    }
-
     pub(crate) fn accumulate_grad(&self, g: Tensor) {
         assert!(
             g.shape() == self.shape(),
@@ -445,18 +448,26 @@ impl Tensor {
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
             });
         }
-        // reshape needs contiguous data; materialize if this is a strided view.
+        // reshape needs contiguous data; materialize if this is a strided view
+        // (through the host, preserving dtype, then back to the source device
+        // so the result's device tag always matches its storage; non-F32
+        // views are always host tensors, so their to_device is a no-op).
         let base = if self.is_contiguous() {
             self.clone()
         } else {
-            Tensor::from_vec(self.to_vec(), &self.0.shape)?
+            let host = match self.dtype() {
+                DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape)?,
+                DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape)?,
+                DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape)?,
+            };
+            host.to_device(self.0.device)?
         };
         let out = Tensor::from_parts(
             base.0.storage.clone(),
             shape.to_vec(),
             default_strides(shape),
             base.0.offset,
-            self.0.device,
+            base.0.device,
             false,
             None,
         );
@@ -551,11 +562,14 @@ fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
 //   without a named kernel. Core op backwards are fully kind-routed, so they
 //   run on whatever device the gradients live on.
 //
-// Device residency: whole-buffer device tensors run unary/binary/matmul on
-// their backend and stay resident. Binary device ops require equal shapes
-// (broadcasting on device is not implemented yet -> explicit error). All
-// OTHER ops on device tensors fall back to host compute and return cpu
-// tensors - a visible (result.device() == Cpu), documented fallback.
+// Device residency: whole-buffer device tensors run unary/binary (equal
+// shapes or broadcast)/matmul on their backend and stay resident. Device
+// VIEWS (transposes, strided slices) fall back to host math on the cpu
+// backend's kernels, and the result is uploaded back to the source device:
+// forward outputs must stay on the operand device or backward would mix cpu
+// gradients with saved device operands. Composite ops without a named kernel
+// (`raw_binary` and ops_ext forwards) still return cpu tensors - a visible
+// (result.device() == Cpu), documented fallback.
 
 /// Float math is f32-only: F64/I64 operands must be cast explicitly via
 /// `to_dtype(DType::F32)` rather than silently at kernel entry.
@@ -568,13 +582,14 @@ fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
 
 pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     check_f32("unary", a)?;
-    let backend = backend_for(a.0.device)?;
     if a.device_resident_whole() {
+        let backend = backend_for(a.0.device)?;
         let Storage::Device(buf) = &*a.0.storage else { unreachable!() };
         let out = backend.unary_dev(kind, buf.as_ref())?;
         return Ok(device_leaf(out, &a.0.shape, a.0.device));
     }
-    Tensor::from_vec(backend.unary(kind, &a.to_vec()), &a.0.shape)
+    let cpu = backend_for(Device::Cpu)?;
+    Tensor::from_vec(cpu.unary(kind, &a.to_vec()), &a.0.shape)?.to_device(a.0.device)
 }
 
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
@@ -596,8 +611,8 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
     if a.0.device != b.0.device {
         return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
     }
-    let backend = backend_for(a.0.device)?;
     if a.device_resident_whole() && b.device_resident_whole() {
+        let backend = backend_for(a.0.device)?;
         let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
         let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
         if a.0.shape == b.0.shape {
@@ -612,7 +627,8 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
     let vb = b.broadcast_to(&out_shape)?.to_vec();
-    Tensor::from_vec(backend.binary(kind, &va, &vb), &out_shape)
+    let cpu = backend_for(Device::Cpu)?;
+    Tensor::from_vec(cpu.binary(kind, &va, &vb), &out_shape)?.to_device(a.0.device)
 }
 
 pub(crate) fn raw_binary(
@@ -653,8 +669,8 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     if k != k2 {
         return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
     }
-    let backend = backend_for(a.0.device)?;
     if a.device_resident_whole() && b.device_resident_whole() {
+        let backend = backend_for(a.0.device)?;
         let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
         let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
@@ -662,7 +678,8 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     }
     let va = a.to_vec();
     let vb = b.to_vec();
-    Tensor::from_vec(backend.matmul(&va, &vb, m, k, n), &[m, n])
+    let cpu = backend_for(Device::Cpu)?;
+    Tensor::from_vec(cpu.matmul(&va, &vb, m, k, n), &[m, n])?.to_device(a.0.device)
 }
 
 /// Full-tensor reduction on a resident device tensor, if it is one.
