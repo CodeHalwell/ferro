@@ -42,17 +42,19 @@ Implemented in phase 2 (named kernels + per-device backends):
 Phase 3 (device-resident storage) is now implemented in core:
 `Storage::Device(Box<dyn DeviceBuffer>)` holds a backend-owned contiguous f32
 buffer; `Tensor::to_device` transfers explicitly (detached, like `to_dtype`);
-whole-buffer device tensors run unary/binary/matmul kernels via the backend's
-`*_dev` methods and STAY resident between ops (proven by a counting fake
-backend in tests/device.rs: one upload, N device kernels, one download).
-Boundaries: binary device ops require equal shapes (no device broadcasting
-yet), autograd is host-only (`requires_grad_` on a device tensor panics), and
-ops without device kernels fall back to host compute, visibly returning cpu
+whole-buffer device tensors run unary/binary (equal-shape and broadcast),
+matmul, and sum/mean reductions via the backend's `*_dev` methods and STAY
+resident between ops - including backward passes and optimizer steps (proven
+by a counting fake backend in tests/device.rs: a 40-step training loop makes
+zero per-step uploads and two scalar downloads per step). Boundaries: device
+views (transposes, strided slices) compute kind-routed ops on the host via
+the cpu backend's kernels and re-upload the result to the source device, so
+autograd never mixes cpu gradients with saved device operands; composite ops
+without a named kernel fall back to host compute, visibly returning cpu
 tensors.
 
-Not yet implemented: device broadcasting/reductions, autograd on device,
-Meta kernels, and validation on real GPU hardware (ferro-cuda implements the
-seam; this container has no GPU).
+Not yet implemented: Meta kernels and validation on real GPU hardware
+(ferro-cuda implements the seam; this container has no GPU).
 
 Note: the code snippet immediately below predates the record_fn unification;
 today's ops.rs already records via closures. The scaling argument stands.

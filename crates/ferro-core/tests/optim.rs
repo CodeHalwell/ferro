@@ -89,3 +89,30 @@ fn step_skips_param_without_grad() {
     opt.step();
     assert_eq!(w.tensor().to_vec(), vec![1.0, 2.0]);
 }
+
+#[test]
+fn adam_bias_correction_ignores_skipped_steps() {
+    // Param b gets no gradient for the first k steps; when it finally receives
+    // one, its update must match a fresh Adam's first step (per-param step
+    // counts, not a global timestep).
+    let data = Tensor::from_vec(vec![1.0, 2.0], &[1, 2]).unwrap();
+
+    let run = |skip_steps: usize| -> Vec<f32> {
+        let a = ferro_core::Param::new(Tensor::from_vec(vec![0.5, -0.5], &[2, 1]).unwrap());
+        let b = ferro_core::Param::new(Tensor::from_vec(vec![1.0, -2.0], &[2, 1]).unwrap());
+        let mut opt = Adam::new(vec![a.clone(), b.clone()], 0.01);
+        for _ in 0..skip_steps {
+            let loss = data.matmul(&a.tensor()).unwrap().mean();
+            opt.zero_grad();
+            loss.backward();
+            opt.step();
+        }
+        let loss = data.matmul(&b.tensor()).unwrap().mean();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+        b.tensor().to_vec()
+    };
+
+    assert_eq!(run(3), run(0));
+}

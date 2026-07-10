@@ -181,7 +181,14 @@ pub fn import_from_dlpack(obj: &Bound<'_, PyAny>) -> PyResult<CoreTensor> {
         // Rename the capsule so its destructor won't also free the managed
         // tensor, then invoke the producer's deleter now that we've copied.
         let used = c"used_dltensor";
-        ffi::PyCapsule_SetName(capsule.as_ptr(), used.as_ptr() as *const c_char);
+        if ffi::PyCapsule_SetName(capsule.as_ptr(), used.as_ptr() as *const c_char) != 0 {
+            // Rename failed: the capsule destructor still owns the managed
+            // tensor, so calling the deleter here would double-free. Leave
+            // ownership with the capsule and surface the Python error.
+            return Err(PyErr::take(obj.py()).unwrap_or_else(|| {
+                PyValueError::new_err("failed to rename consumed DLPack capsule")
+            }));
+        }
         if let Some(deleter) = (*managed).deleter {
             deleter(managed);
         }
@@ -200,8 +207,20 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
     }
 
     let ndim = t.ndim as usize;
+    if ndim > 0 && t.shape.is_null() {
+        return Err(PyValueError::new_err("DLPack tensor has null shape"));
+    }
     let shape: Vec<usize> = (0..ndim).map(|i| *t.shape.add(i) as usize).collect();
-    let numel: usize = shape.iter().product::<usize>().max(if ndim == 0 { 1 } else { 0 });
+    let numel: usize = if ndim == 0 { 1 } else { shape.iter().product() };
+    // Zero-element tensors may carry a null data pointer; never touch it
+    // (pointer arithmetic and from_raw_parts require non-null even for len 0).
+    if numel == 0 {
+        return CoreTensor::from_contiguous(&[], &shape)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
+    }
+    if t.data.is_null() {
+        return Err(PyValueError::new_err("DLPack tensor has null data pointer"));
+    }
 
     let base = (t.data as *const u8).add(t.byte_offset as usize) as *const f32;
 

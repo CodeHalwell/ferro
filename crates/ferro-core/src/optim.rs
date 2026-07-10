@@ -60,7 +60,9 @@ pub struct Adam {
     beta1: f32,
     beta2: f32,
     eps: f32,
-    t: u32,
+    /// Per-parameter step counts: a param that skips a step (no grad) must not
+    /// advance its bias correction, or its next update is scaled wrongly.
+    t: Vec<u32>,
     m: Vec<Vec<f32>>,
     v: Vec<Vec<f32>>,
 }
@@ -69,7 +71,8 @@ impl Adam {
     pub fn new(params: Vec<Param>, lr: f32) -> Adam {
         let m = params.iter().map(|p| vec![0.0; p.tensor().numel()]).collect();
         let v = params.iter().map(|p| vec![0.0; p.tensor().numel()]).collect();
-        Adam { params, lr, beta1: 0.9, beta2: 0.999, eps: 1e-8, t: 0, m, v }
+        let t = vec![0u32; params.len()];
+        Adam { params, lr, beta1: 0.9, beta2: 0.999, eps: 1e-8, t, m, v }
     }
 
     pub fn with_betas(mut self, beta1: f32, beta2: f32) -> Adam {
@@ -90,14 +93,14 @@ impl Adam {
     }
 
     pub fn step(&mut self) {
-        self.t += 1;
-        let bc1 = 1.0 - self.beta1.powi(self.t as i32);
-        let bc2 = 1.0 - self.beta2.powi(self.t as i32);
         for (i, p) in self.params.iter().enumerate() {
             let grad = match p.grad() {
                 Some(g) => g.to_vec(),
                 None => continue,
             };
+            self.t[i] += 1;
+            let bc1 = 1.0 - self.beta1.powi(self.t[i] as i32);
+            let bc2 = 1.0 - self.beta2.powi(self.t[i] as i32);
             let cur = p.tensor();
             let mut vals = cur.to_vec();
             let m = &mut self.m[i];
@@ -115,6 +118,10 @@ impl Adam {
 }
 
 fn set_leaf(p: &Param, vals: Vec<f32>, shape: &[usize]) {
+    // Step math runs on host Vecs, but the leaf must go back to wherever the
+    // parameter lives or a device param would silently migrate to cpu.
+    let device = p.tensor().device();
     let updated: Result<Tensor> = Tensor::from_vec(vals, shape);
-    p.set(updated.expect("optimizer rebuilds a leaf with the same shape"));
+    let host = updated.expect("optimizer rebuilds a leaf with the same shape");
+    p.set(host.to_device(device).expect("param's device backend is registered"));
 }

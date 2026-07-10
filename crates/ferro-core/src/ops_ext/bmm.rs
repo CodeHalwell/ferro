@@ -23,6 +23,9 @@ fn batched_matmul(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usi
 
 impl Tensor {
     pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
+        if self.device() != other.device() {
+            return Err(Error::DeviceMismatch { op: "bmm", lhs: self.device(), rhs: other.device() });
+        }
         if self.ndim() != 3 || other.ndim() != 3 {
             return Err(Error::Unsupported { op: "bmm", msg: "inputs must be rank 3".into() });
         }

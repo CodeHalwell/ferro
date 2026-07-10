@@ -11,6 +11,11 @@ impl Tensor {
     /// non-negative entries. Delegates to the slice version, so the gradient
     /// to `self` comes from the same recorded backward.
     pub fn index_select_t(&self, dim: usize, indices: &Tensor) -> Result<Tensor> {
+        // I64 index tensors cannot live on a device yet, so this also pins
+        // index_select_t (and embedding) to host data for now.
+        if self.device() != indices.device() {
+            return Err(Error::DeviceMismatch { op: "index_select", lhs: self.device(), rhs: indices.device() });
+        }
         if indices.dtype() != DType::I64 {
             return Err(Error::DtypeMismatch { op: "index_select", expected: DType::I64, got: indices.dtype() });
         }

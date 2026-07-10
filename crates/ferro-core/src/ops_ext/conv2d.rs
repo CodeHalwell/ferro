@@ -11,6 +11,9 @@ use crate::tensor::Tensor;
 
 impl Tensor {
     pub fn conv2d(&self, weight: &Tensor, stride: usize, padding: usize) -> Result<Tensor> {
+        if self.device() != weight.device() {
+            return Err(Error::DeviceMismatch { op: "conv2d", lhs: self.device(), rhs: weight.device() });
+        }
         if self.ndim() != 4 || weight.ndim() != 4 {
             return Err(Error::Unsupported {
                 op: "conv2d",

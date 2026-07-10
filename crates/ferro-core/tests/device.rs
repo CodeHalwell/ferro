@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use ferro_core::dispatch::{register_backend, Backend, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
-use ferro_core::{Device, Result, Tensor};
+use ferro_core::nn::{cross_entropy, one_hot};
+use ferro_core::{DType, Device, Result, Tensor};
 
 // A fake device backend that stores data in host Vecs but counts every
 // transfer and kernel call, so tests can PROVE chained ops stay resident:
@@ -162,7 +163,7 @@ impl Backend for FakeDevice {
         let s: f32 = v.iter().sum();
         let out = match kind {
             ReduceKind::Sum => s,
-            ReduceKind::Mean => s / v.len().max(1) as f32,
+            ReduceKind::Mean => s / v.len() as f32,
         };
         Ok(Box::new(FakeBuf(vec![out])))
     }
@@ -392,5 +393,166 @@ fn host_fallback_ops_return_cpu_tensors() {
     let rows: Vec<f32> = s.to_vec().chunks(3).map(|r| r.iter().sum()).collect();
     for r in rows {
         assert!((r - 1.0).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn mixed_device_composite_ops_error() {
+    let _serial = setup();
+    // Multi-input composite ops must reject mixed-device operands explicitly
+    // (matching the core kind-routed ops) rather than silently computing on
+    // the host.
+    let host3 = Tensor::from_vec(vec![1.0; 6], &[1, 2, 3]).unwrap();
+    let dev3 = host3.to_device(DEV).unwrap();
+    let host_bt = Tensor::from_vec(vec![1.0; 6], &[1, 3, 2]).unwrap();
+    assert!(matches!(dev3.bmm(&host_bt), Err(ferro_core::Error::DeviceMismatch { .. })));
+
+    let host2 = Tensor::ones(&[2, 2]);
+    let dev2 = host2.to_device(DEV).unwrap();
+    assert!(matches!(Tensor::cat(&[host2.clone(), dev2.clone()], 0), Err(ferro_core::Error::DeviceMismatch { .. })));
+
+    let img = Tensor::ones(&[1, 1, 3, 3]).to_device(DEV).unwrap();
+    let ker = Tensor::ones(&[1, 1, 2, 2]);
+    assert!(matches!(img.conv2d(&ker, 1, 0), Err(ferro_core::Error::DeviceMismatch { .. })));
+
+    let ids = Tensor::from_vec_i64(vec![0], &[1]).unwrap();
+    assert!(matches!(dev2.index_select_t(0, &ids), Err(ferro_core::Error::DeviceMismatch { .. })));
+}
+
+#[test]
+fn mean_dim_on_device_matches_cpu() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+    let dev = x.to_device(DEV).unwrap().mean_dim(1, false).unwrap();
+    assert_eq!(dev.device(), DEV);
+    assert_eq!(dev.to_vec(), x.mean_dim(1, false).unwrap().to_vec());
+}
+
+#[test]
+fn mean_dim_on_device_view_matches_cpu() {
+    let _serial = setup();
+    // A transposed operand is a device VIEW: sum_dim falls back to a cpu
+    // tensor, so mean_dim's scale scalar must follow the sum's device or the
+    // final mul would mix cpu and device operands and return DeviceMismatch.
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+    let dev = x.to_device(DEV).unwrap().transpose(0, 1).unwrap().mean_dim(1, false).unwrap();
+    assert_eq!(dev.to_vec(), x.transpose(0, 1).unwrap().mean_dim(1, false).unwrap().to_vec());
+}
+
+#[test]
+fn optimizer_steps_keep_params_on_device() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![1.0, 0.5, -0.3, 1.2], &[2, 2]).unwrap();
+    let y = Tensor::from_vec(vec![2.0, -1.0], &[2, 1]).unwrap();
+    let w0 = Tensor::from_vec(vec![0.1, -0.2], &[2, 1]).unwrap();
+
+    let run = |device: Option<Device>| -> (Device, Vec<f32>) {
+        let (mut xs, mut ys, mut ws) = (x.clone(), y.clone(), w0.clone());
+        if let Some(d) = device {
+            xs = xs.to_device(d).unwrap();
+            ys = ys.to_device(d).unwrap();
+            ws = ws.to_device(d).unwrap();
+        }
+        let p = ferro_core::Param::new(ws);
+        let mut opt = ferro_core::optim::Sgd::new(vec![p.clone()], 0.1);
+        for _ in 0..5 {
+            let diff = xs.matmul(&p.tensor()).unwrap().sub(&ys).unwrap();
+            let loss = diff.mul(&diff).unwrap().mean();
+            opt.zero_grad();
+            loss.backward();
+            opt.step();
+        }
+        (p.tensor().device(), p.tensor().to_vec())
+    };
+
+    let (cpu_dev, cpu_w) = run(None);
+    let (dev_dev, dev_w) = run(Some(DEV));
+    assert_eq!(cpu_dev, Device::Cpu);
+    assert_eq!(dev_dev, DEV, "optimizer must not migrate params off the device");
+    for (d, c) in dev_w.iter().zip(cpu_w.iter()) {
+        assert!((d - c).abs() < 1e-5, "device {d} vs cpu {c}");
+    }
+}
+
+#[test]
+fn reshape_of_device_view_keeps_real_device_storage() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+    let r = x.to_device(DEV).unwrap().transpose(0, 1).unwrap().reshape(&[6]).unwrap();
+    assert_eq!(r.device(), DEV);
+    // The result must be genuinely resident: a device kernel runs on it and
+    // the values match the same chain on cpu.
+    let doubled = r.mul(&r).unwrap();
+    assert_eq!(doubled.device(), DEV);
+    let cpu = x.transpose(0, 1).unwrap().reshape(&[6]).unwrap();
+    assert_eq!(doubled.to_vec(), cpu.mul(&cpu).unwrap().to_vec());
+}
+
+#[test]
+fn where_cond_backward_on_device_operands() {
+    let _serial = setup();
+    let mask = Tensor::from_vec(vec![1.0, 0.0, 1.0, 0.0], &[4]).unwrap().to_device(DEV).unwrap();
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]).unwrap().to_device(DEV).unwrap().requires_grad_(true);
+    let b = Tensor::from_vec(vec![5.0, 6.0, 7.0, 8.0], &[4]).unwrap().to_device(DEV).unwrap().requires_grad_(true);
+    let out = Tensor::where_cond(&mask, &a, &b).unwrap();
+    out.sum().backward();
+    assert_eq!(a.grad().unwrap().to_vec(), vec![1.0, 0.0, 1.0, 0.0]);
+    assert_eq!(b.grad().unwrap().to_vec(), vec![0.0, 1.0, 0.0, 1.0]);
+}
+
+#[test]
+fn to_dtype_reports_where_cast_storage_lives() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().to_device(DEV).unwrap();
+    // A same-dtype cast shares the resident buffer; running a device kernel on
+    // it proves the tag is not a lie over host storage.
+    let same = x.to_dtype(DType::F32);
+    assert_eq!(same.device(), DEV);
+    assert_eq!(same.mul(&same).unwrap().to_vec(), vec![1.0, 4.0, 9.0]);
+    // Real casts materialize on the host and must say so, keeping a later
+    // to_device a genuine upload.
+    let wide = x.to_dtype(DType::F64);
+    assert_eq!(wide.device(), Device::Cpu);
+    assert_eq!(wide.to_vec_f64(), vec![1.0, 2.0, 3.0]);
+    let back = wide.to_dtype(DType::F32).to_device(DEV).unwrap();
+    assert_eq!(back.device(), DEV);
+    assert_eq!(back.relu().to_vec(), vec![1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn mul_backward_on_device_view_operands() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![1.0, -2.0, 3.0, 4.0, 5.0, -6.0], &[2, 3]).unwrap();
+    let w = Tensor::from_vec(vec![0.5, 1.5, -1.0, 2.0, 0.25, -0.75], &[3, 2]).unwrap();
+    let xd = x.to_device(DEV).unwrap().requires_grad_(true);
+    let wd = w.to_device(DEV).unwrap();
+    // A transposed operand forces the host fallback; the result must come
+    // back to the device so backward kernels see a single device.
+    let out = xd.transpose(0, 1).unwrap().mul(&wd).unwrap();
+    assert_eq!(out.device(), DEV);
+    out.sum().backward();
+    let xc = x.requires_grad_(true);
+    xc.transpose(0, 1).unwrap().mul(&w).unwrap().sum().backward();
+    assert_eq!(xd.grad().unwrap().to_vec(), xc.grad().unwrap().to_vec());
+}
+
+#[test]
+fn cross_entropy_on_device_logits_and_targets() {
+    let _serial = setup();
+    let logits = Tensor::from_vec(vec![2.0, 0.5, -1.0, 0.0, 1.5, 0.5], &[2, 3]).unwrap();
+    let hot = one_hot(&Tensor::from_vec_i64(vec![0, 1], &[2]).unwrap(), 3).unwrap();
+    let dlog = logits.to_device(DEV).unwrap().requires_grad_(true);
+    let dhot = hot.to_device(DEV).unwrap();
+    // log_softmax falls back to the host, so the loss must realign the
+    // constant target instead of erroring with DeviceMismatch.
+    let loss = cross_entropy(&dlog, &dhot).unwrap();
+    let clog = logits.requires_grad_(true);
+    let cpu_loss = cross_entropy(&clog, &hot).unwrap();
+    assert!((loss.item() - cpu_loss.item()).abs() < 1e-5);
+    loss.backward();
+    cpu_loss.backward();
+    let (g, cg) = (dlog.grad().unwrap().to_vec(), clog.grad().unwrap().to_vec());
+    for (a, b) in g.iter().zip(&cg) {
+        assert!((a - b).abs() < 1e-5, "{a} vs {b}");
     }
 }

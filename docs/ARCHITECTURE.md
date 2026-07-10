@@ -6,7 +6,7 @@ current code, not in aspirations; see `ROADMAP.md`, `DISPATCHER.md`, and
 
 ## Crate layout
 
-The workspace lives under `rust_backend/`:
+The workspace lives under `ferro/`:
 
 - `crates/ferro-core`: the pure-Rust tensor + reverse-mode autograd runtime. It
   has intentionally zero external dependencies, so the core compute and
@@ -42,16 +42,22 @@ lets a value used in several ops accumulate its gradient exactly once.
   leaves.
 - `grad: Mutex<Option<Tensor>>` - the accumulated gradient slot.
 
-`Storage` is currently a single-variant enum:
+`Storage` carries the element buffer in one of four variants:
 
 ```rust
 pub enum Storage {
     F32(Vec<f32>),
+    F64(Vec<f64>),
+    I64(Vec<i64>),
+    Device(Box<dyn DeviceBuffer>),
 }
 ```
 
-It is f32-only for the MVP, but the enum exists precisely so more dtypes can be
-added later without touching the view or autograd machinery.
+Compute kernels and autograd are f32-only: F64/I64 storage carries data
+(indices, class targets) through views and materialization, with explicit
+`to_dtype` casts as the only route into float math, and `Device` holds an
+opaque backend-owned buffer for device-resident tensors (see DISPATCHER.md).
+The view and autograd machinery is shared across all variants.
 
 ### Views share storage
 

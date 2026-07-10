@@ -48,8 +48,9 @@ What works today (in `ferro-core`, pure Rust, zero dependencies):
   directions (`np.from_dlpack` / `torch.from_dlpack` / `ferro.from_dlpack`),
   which is how ferro kernels are validated against torch numerically.
 
-Storage is f32-only for now, kept behind a `Storage` enum so more dtypes can be
-added without disturbing the tensor/view/autograd machinery.
+Storage supports f32 (full compute + autograd), f64 and i64 (data/index
+tensors with explicit `to_dtype` casts into float math), and opaque
+device-resident buffers; float math and autograd remain f32-only.
 
 ## Quickstart
 
