@@ -563,12 +563,13 @@ fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
 //   run on whatever device the gradients live on.
 //
 // Device residency: whole-buffer device tensors run unary/binary (equal
-// shapes or broadcast)/matmul on their backend and stay resident. Device
-// VIEWS (transposes, strided slices) fall back to host math on the cpu
-// backend's kernels, and the result is uploaded back to the source device:
-// forward outputs must stay on the operand device or backward would mix cpu
-// gradients with saved device operands. Composite ops without a named kernel
-// (`raw_binary` and ops_ext forwards) still return cpu tensors - a visible
+// shapes or broadcast)/matmul on their backend and stay resident. For those
+// three kinds, device VIEWS (transposes, strided slices) fall back to host
+// math on the cpu backend's kernels and the result is uploaded back to the
+// source device: forward outputs must stay on the operand device or backward
+// would mix cpu gradients with saved device operands. Reductions and composite
+// ops without a named device kernel (`raw_sum_dim`, `raw_binary`, ops_ext
+// forwards) still return cpu tensors for non-whole operands - a visible
 // (result.device() == Cpu), documented fallback.
 
 /// Float math is f32-only: F64/I64 operands must be cast explicitly via

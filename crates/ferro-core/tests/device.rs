@@ -429,6 +429,17 @@ fn mean_dim_on_device_matches_cpu() {
 }
 
 #[test]
+fn mean_dim_on_device_view_matches_cpu() {
+    let _serial = setup();
+    // A transposed operand is a device VIEW: sum_dim falls back to a cpu
+    // tensor, so mean_dim's scale scalar must follow the sum's device or the
+    // final mul would mix cpu and device operands and return DeviceMismatch.
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+    let dev = x.to_device(DEV).unwrap().transpose(0, 1).unwrap().mean_dim(1, false).unwrap();
+    assert_eq!(dev.to_vec(), x.transpose(0, 1).unwrap().mean_dim(1, false).unwrap().to_vec());
+}
+
+#[test]
 fn optimizer_steps_keep_params_on_device() {
     let _serial = setup();
     let x = Tensor::from_vec(vec![1.0, 0.5, -0.3, 1.2], &[2, 2]).unwrap();

@@ -14,6 +14,11 @@ impl Tensor {
         // No max(1) guard: like mean(), an empty reduced dim yields NaN
         // (0 * inf) to match torch rather than a silent 0.
         let n = self.shape()[dim] as f32;
-        self.sum_dim(dim, keepdim)?.mul(&Tensor::full_on(&[], 1.0 / n, self.device())?)
+        // sum_dim on a device VIEW falls back to a cpu tensor (only whole
+        // device buffers reduce in place), so the scale scalar must live on the
+        // sum's device, not self's, or a device-view mean hits DeviceMismatch.
+        let s = self.sum_dim(dim, keepdim)?;
+        let scale = Tensor::full_on(&[], 1.0 / n, s.device())?;
+        s.mul(&scale)
     }
 }
