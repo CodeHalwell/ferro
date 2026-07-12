@@ -13,6 +13,8 @@
 
 use std::thread;
 
+pub mod elementwise;
+
 /// Micro-kernel tile: MR x NR accumulators = 12 ymm registers under AVX2,
 /// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
 const MR: usize = 6;
@@ -42,6 +44,12 @@ pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
 /// Register this kernel process-wide for all ferro-core CPU matmuls.
 pub fn install() {
     ferro_core::dispatch::set_matmul_kernel(matmul);
+}
+
+/// Register the vectorized/threaded elementwise backend process-wide for
+/// Device::Cpu.
+pub fn install_backend() {
+    ferro_core::register_backend(ferro_core::Device::Cpu, std::sync::Arc::new(elementwise::FastCpuBackend));
 }
 
 /// Computes global rows i0..i0+out.len()/n of A@B into `out`.
