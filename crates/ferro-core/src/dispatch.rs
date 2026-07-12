@@ -83,6 +83,21 @@ pub trait Backend: Send + Sync {
         binary_bc_odometer(kind, a, sa, b, sb, out_shape)
     }
 
+    /// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n): batch independent
+    /// GEMMs. Default loops over batches calling `matmul`, so a backend that
+    /// threads each `matmul` call internally pays one thread-pool spin-up
+    /// per batch element; a backend should override this to parallelize
+    /// across the whole batch under a single thread::scope instead.
+    fn matmul_batch(&self, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+        let mut out = vec![0f32; batch * m * n];
+        for bi in 0..batch {
+            let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
+            let c = self.matmul(&a[ao..ao + m * k], &b[bo..bo + k * n], m, k, n);
+            out[co..co + m * n].copy_from_slice(&c);
+        }
+        out
+    }
+
     fn alloc_from_host(&self, _data: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("alloc_from_host")
     }

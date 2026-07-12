@@ -52,6 +52,10 @@ impl Backend for FastCpuBackend {
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
         crate::matmul(a, b, m, k, n)
     }
+
+    fn matmul_batch(&self, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+        crate::matmul_batch(a, b, batch, m, k, n)
+    }
 }
 
 /// Vectorized but forced single-threaded; exposed so bench_elementwise can
@@ -312,5 +316,62 @@ mod tests {
         assert_eq!(x.relu().to_vec(), vec![0.0, 0.0, 0.0, 1.5, 3.0]);
         assert_eq!(x.add(&y).unwrap().to_vec(), vec![-1.0, 1.5, 3.0, 5.5, 8.0]);
         ferro_core::register_backend(Device::Cpu, Arc::new(CpuBackend));
+    }
+
+    // (m,k,n) mixes covering {1,5,17,64,128}, including m=1/n=1 degenerates
+    // and every dim taking a turn at 1, mirroring op_bmm.rs's dispatch-parity
+    // grid one crate over.
+    const MATMUL_BATCH_DIMS: [(usize, usize, usize); 19] = [
+        (1, 1, 1),
+        (5, 5, 5),
+        (17, 17, 17),
+        (64, 64, 64),
+        (128, 128, 128),
+        (1, 5, 17),
+        (5, 1, 17),
+        (5, 17, 1),
+        (1, 64, 128),
+        (64, 1, 128),
+        (64, 128, 1),
+        (17, 64, 5),
+        (64, 5, 17),
+        (5, 64, 17),
+        (1, 1, 128),
+        (1, 128, 1),
+        (128, 1, 1),
+        (1, 17, 5),
+        (128, 5, 17),
+    ];
+
+    // CpuBackend never overrides matmul_batch, so it always runs the trait's
+    // default (loop over batches calling `matmul`) - installing fastcpu's
+    // matmul as the swappable CPU kernel first makes that default arithmetic
+    // identical to FastCpuBackend's own single-thread::scope batched kernel,
+    // per the fixed pp-block k-accumulation order both share (see lib.rs's
+    // matmul_batch doc comment), so a bitwise comparison is meaningful.
+    #[test]
+    fn matmul_batch_matches_default_bitwise() {
+        crate::install();
+        for batch in [1usize, 3, 16] {
+            for (i, &(m, k, n)) in MATMUL_BATCH_DIMS.iter().enumerate() {
+                let a = lcg_fill(1000 + i as u64 + batch as u64 * 97, batch * m * k);
+                let b = lcg_fill(2000 + i as u64 + batch as u64 * 97, batch * k * n);
+                let want = CpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+                let got = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+                assert_bitwise(&got, &want, &format!("batch={batch} m={m} k={k} n={n}"));
+            }
+        }
+    }
+
+    #[test]
+    fn matmul_batch_is_deterministic() {
+        // Above BATCH_PAR_THRESHOLD, so this exercises the thread::scope
+        // (batch x row-chunk) split; two runs must still agree bitwise.
+        let (batch, m, k, n) = (16usize, 128usize, 128usize, 128usize);
+        let a = lcg_fill(11, batch * m * k);
+        let b = lcg_fill(13, batch * k * n);
+        let r1 = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+        let r2 = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+        assert_bitwise(&r2, &r1, "matmul_batch determinism");
     }
 }

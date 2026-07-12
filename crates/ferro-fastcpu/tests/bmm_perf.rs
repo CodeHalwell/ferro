@@ -1,6 +1,9 @@
-//! Ignored timing test: bmm forward throughput before/after installing the
-//! fastcpu matmul kernel. Not a correctness check (see ferro-core's
-//! op_bmm.rs for that); run with --release to get meaningful numbers.
+//! Ignored timing test: bmm forward throughput naive vs. the swappable
+//! single-matmul kernel (bmm still loops one backend call per batch element
+//! via the Backend::matmul_batch trait default) vs. FastCpuBackend's
+//! matmul_batch override (one thread::scope for the whole batch). Not a
+//! correctness check (see ferro-core's op_bmm.rs for that); run with
+//! --release to get meaningful numbers.
 
 use ferro_core::Tensor;
 
@@ -36,19 +39,36 @@ fn bmm_perf_naive_vs_fastcpu() {
     let naive_dur = best_of(5, || {
         std::hint::black_box(a.bmm(&b).unwrap());
     });
-    let before = a.bmm(&b).unwrap();
+    let naive_result = a.bmm(&b).unwrap();
 
+    // Only the swappable single-matmul kernel installed: bmm still calls it
+    // once per batch element via the Backend::matmul_batch trait default,
+    // so this measures the per-call spawn/join overhead the batched path
+    // below is meant to eliminate.
     ferro_fastcpu::install();
-    let fastcpu_dur = best_of(5, || {
+    let per_call_dur = best_of(5, || {
         std::hint::black_box(a.bmm(&b).unwrap());
     });
-    let after = a.bmm(&b).unwrap();
+    let per_call_result = a.bmm(&b).unwrap();
+
+    // FastCpuBackend registered: matmul_batch parallelizes the whole batch
+    // under one thread::scope instead of one scope per batch element.
+    ferro_fastcpu::install_backend();
+    let batched_dur = best_of(5, || {
+        std::hint::black_box(a.bmm(&b).unwrap());
+    });
+    let batched_result = a.bmm(&b).unwrap();
 
     let tol = 1e-2;
-    for (x, y) in before.to_vec().iter().zip(after.to_vec().iter()) {
-        assert!((x - y).abs() <= tol * y.abs().max(1.0), "fastcpu result diverged: {x} vs {y}");
-    }
+    let assert_close = |lhs: &Tensor, rhs: &Tensor, what: &str| {
+        for (x, y) in lhs.to_vec().iter().zip(rhs.to_vec().iter()) {
+            assert!((x - y).abs() <= tol * y.abs().max(1.0), "{what}: diverged {x} vs {y}");
+        }
+    };
+    assert_close(&naive_result, &per_call_result, "per-call-matmul vs naive");
+    assert_close(&naive_result, &batched_result, "matmul_batch vs naive");
+
     println!(
-        "bmm forward batch={batch} m={m} k={k} n={n}: naive-cpu={naive_dur:?} fastcpu={fastcpu_dur:?}"
+        "bmm forward batch={batch} m={m} k={k} n={n}: naive-cpu={naive_dur:?} fastcpu-per-call={per_call_dur:?} fastcpu-matmul_batch={batched_dur:?}"
     );
 }

@@ -43,6 +43,18 @@ const KC: usize = 256;
 const MC: usize = 48;
 /// Below this many multiply-adds (m*k*n), thread spawn overhead dominates.
 const PAR_THRESHOLD: usize = 1 << 18;
+/// Below this many total multiply-adds (batch*m*k*n), `matmul_batch` skips
+/// thread::scope entirely and runs every batch element serially in one
+/// thread. Measured by timing `matmul_batch`'s serial and threaded paths
+/// directly (bypassing this threshold) across batch*m*k*n from 2^20 to 2^27
+/// on the 4-core dev box: threading is still a net loss at 2^21 (e.g.
+/// ~135us serial vs ~150us parallel) and a consistent win from 2^22 onward
+/// (~220us vs ~180us, widening to >3x by 2^27) - one thread::scope now costs
+/// one spawn/join total instead of one per batch element, but that one
+/// spawn/join still needs enough aggregate work to amortize. 2^21 (matching
+/// elementwise.rs's PAR_THRESHOLD) sits right at the crossover with a small
+/// safety margin against the loss side.
+const BATCH_PAR_THRESHOLD: usize = 1 << 21;
 
 /// Row-major (m,k) @ (k,n) -> (m,n).
 pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -82,6 +94,70 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
     out
 }
 
+/// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n): batch independent
+/// GEMMs sharing a single std::thread::scope, instead of the trait default's
+/// one scope per batch element (see ferro-core's `Backend::matmul_batch`).
+/// The batch*m row space is flattened and split into `threads` contiguous
+/// groups; each group's worker packs its own A/B scratch once and reuses it
+/// across every (batch, row-chunk) item in the group (splitting at a batch
+/// boundary only when a group's row range straddles two batches), so packing
+/// buffers are never shared across threads. Per output row, k is always
+/// swept in the same pp-block order regardless of how work was chunked
+/// (mirrors `matmul`'s row-split determinism), so results are bitwise
+/// independent of thread count and batch decomposition.
+pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    let mut out = vec![0f32; batch * m * n];
+    if batch == 0 || m == 0 {
+        return out;
+    }
+    let total_rows = batch * m;
+    let threads = thread::available_parallelism().map_or(1, |p| p.get()).min(total_rows);
+    if batch * m * k * n <= BATCH_PAR_THRESHOLD || threads <= 1 {
+        matmul_batch_group(a, b, &mut out, m, k, n, 0, total_rows);
+        return out;
+    }
+    let rows_per = total_rows.div_ceil(threads);
+    thread::scope(|s| {
+        let mut g0 = 0;
+        for chunk in out.chunks_mut(rows_per * n) {
+            let group_rows = chunk.len() / n;
+            s.spawn(move || matmul_batch_group(a, b, chunk, m, k, n, g0, group_rows));
+            g0 += group_rows;
+        }
+    });
+    out
+}
+
+/// Computes flattened rows g0..g0+group_rows of the (batch*m, n) output
+/// space (row index = bi*m + local row) into `out`, one packing-buffer pair
+/// allocated for the whole call and reused across every batch the group
+/// touches.
+fn matmul_batch_group(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize, g0: usize, group_rows: usize) {
+    let njtiles = n.div_ceil(NR);
+    let mut packed_b = vec![0f32; njtiles * KC * NR];
+    let mut packed_a = vec![0f32; (MC / MR) * KC * MR];
+    let mut g = g0;
+    let gend = g0 + group_rows;
+    while g < gend {
+        let bi = g / m;
+        let local0 = g % m;
+        let len = (gend - g).min(m - local0);
+        let (ao, bo) = (bi * m * k, bi * k * n);
+        let oo = (g - g0) * n;
+        matmul_rows_scratch(
+            &a[ao..ao + m * k],
+            &b[bo..bo + k * n],
+            &mut out[oo..oo + len * n],
+            k,
+            n,
+            local0,
+            &mut packed_a,
+            &mut packed_b,
+        );
+        g += len;
+    }
+}
+
 /// Register this kernel process-wide for all ferro-core CPU matmuls.
 pub fn install() {
     ferro_core::dispatch::set_matmul_kernel(matmul);
@@ -108,6 +184,26 @@ fn matmul_rows(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: us
 #[target_feature(enable = "avx2,fma")]
 fn matmul_rows_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize) {
     matmul_rows_body(a, b, out, k, n, i0);
+}
+
+/// Like `matmul_rows` but with caller-supplied packing scratch in place of a
+/// fresh per-call allocation - lets `matmul_batch`'s per-thread worker reuse
+/// one pair of buffers across every (batch, row-chunk) item it handles
+/// instead of paying one allocation per item.
+fn matmul_rows_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        // SAFETY: avx2 and fma were just detected at runtime.
+        unsafe { matmul_rows_scratch_avx2(a, b, out, k, n, i0, packed_a, packed_b) };
+        return;
+    }
+    matmul_rows_body_scratch(a, b, out, k, n, i0, packed_a, packed_b);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+fn matmul_rows_scratch_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
+    matmul_rows_body_scratch(a, b, out, k, n, i0, packed_a, packed_b);
 }
 
 /// Packs the (kc x n) row-block of B starting at k-offset `pp` into `dst` as
@@ -178,21 +274,33 @@ fn matmul_rows_body(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i
     if n == 0 || out.is_empty() {
         return;
     }
-    let rows = out.len() / n;
     let njtiles = n.div_ceil(NR);
     // Allocated once per thread call, reused (fully overwritten) across
     // every k-block/row-block iteration below - never shared across threads.
     let mut packed_b = vec![0f32; njtiles * KC * NR];
     let mut packed_a = vec![0f32; (MC / MR) * KC * MR];
+    matmul_rows_body_scratch(a, b, out, k, n, i0, &mut packed_a, &mut packed_b);
+}
+
+/// Shared inner loop for `matmul_rows_body`/`matmul_rows_scratch`: packing
+/// buffers come from the caller instead of being allocated here, so a
+/// batched-matmul worker can amortize one pair of buffers across many calls.
+#[inline(always)]
+fn matmul_rows_body_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
+    if n == 0 || out.is_empty() {
+        return;
+    }
+    let rows = out.len() / n;
+    let njtiles = n.div_ceil(NR);
     for pp in (0..k).step_by(KC) {
         let pend = (pp + KC).min(k);
         let kc = pend - pp;
-        pack_b(&mut packed_b, b, n, pp, kc, njtiles);
+        pack_b(packed_b, b, n, pp, kc, njtiles);
         let mut r0 = 0;
         while r0 < rows {
             let mc = MC.min(rows - r0);
             let mtiles = mc.div_ceil(MR);
-            pack_a(&mut packed_a, a, k, i0 + r0, pp, kc, mc, mtiles);
+            pack_a(packed_a, a, k, i0 + r0, pp, kc, mc, mtiles);
             for jt in 0..njtiles {
                 let jj = jt * NR;
                 let ncols = NR.min(n - jj);
