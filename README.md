@@ -89,6 +89,7 @@ ferro/
     ARCHITECTURE.md       # crate + Tensor/autograd design
     ROADMAP.md            # MVP -> "replace the C++ backend" plan
     FUTURE.md             # forward master plan: parity + differentiators
+    CAPABILITY.md         # the depth plan: theory, designs, acceptance gates
     DISPATCHER.md         # ATen-style dispatcher design sketch
     DLPACK.md             # zero-copy interop plan (torch/numpy)
 ```
