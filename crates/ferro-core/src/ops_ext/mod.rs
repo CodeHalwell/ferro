@@ -7,6 +7,7 @@ pub mod bmm;
 pub mod cat;
 pub mod clamp;
 pub mod conv2d;
+pub mod dropout;
 pub mod embedding;
 pub mod index_select;
 pub mod log;
