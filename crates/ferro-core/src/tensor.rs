@@ -6,6 +6,7 @@ use crate::device::Device;
 use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
+use crate::reduce::pairwise_sum_strided;
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
 
@@ -736,19 +737,19 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
         return device_leaf(out, &out_shape, t.0.device);
     }
     let v = t.to_vec();
+    let strides = default_strides(&in_shape);
+    let (n, stride) = (in_shape[dim], strides[dim]);
     let mut keep_shape = in_shape.clone();
     keep_shape[dim] = 1;
-    let keep_strides = default_strides(&keep_shape);
     let mut out = vec![0f32; numel(&keep_shape)];
     let mut idx = vec![0usize; ndim];
-    for &val in v.iter() {
-        let mut off = 0usize;
-        for d in 0..ndim {
-            let id = if d == dim { 0 } else { idx[d] };
-            off += id * keep_strides[d];
-        }
-        out[off] += val;
+    for slot in out.iter_mut() {
+        let off: usize = (0..ndim).map(|d| idx[d] * strides[d]).sum();
+        *slot = pairwise_sum_strided(&v, off, n, stride);
         for d in (0..ndim).rev() {
+            if d == dim {
+                continue;
+            }
             idx[d] += 1;
             if idx[d] < in_shape[d] {
                 break;
