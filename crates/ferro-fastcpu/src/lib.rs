@@ -1,15 +1,22 @@
 //! Optimized f32 CPU matmul backend for ferro-core, registered through the
 //! kernel dispatch seam (`ferro_core::dispatch::set_matmul_kernel`) without
-//! touching core. Pure std, no external deps. Techniques:
-//! - register-blocked 6x16 micro-kernel: the output tile lives in registers
-//!   across the whole k sweep, reading contiguous 16-float rows of B so the
-//!   inner loop auto-vectorizes to FMAs
-//! - cache blocking over k (KC=256) so the (KC x 16) B panel stays in L1
-//!   while it is reused by every row block
+//! touching core. Pure std, no external deps. Full Goto/van de Geijn (BLIS)
+//! blocking structure around a 6x16 register-blocked micro-kernel:
+//! - B is packed into contiguous (KC x NR) panels once per k-block, before
+//!   the row sweep, so the micro-kernel always reads sequential memory
+//! - A is packed into contiguous (MC x KC) panels (MR-row slivers) once per
+//!   (row-block, k-block) pair, so A loads never stride by k
+//! - the MC loop is the L2 blocking level: the packed A panel for one
+//!   (row-block, k-block) pair is swept over every n-tile before moving on,
+//!   so it stays L2-resident across that whole sweep
+//! - edge M/N tiles are zero-padded in the packed buffers so the
+//!   micro-kernel always runs a full MR x NR update, with a masked
+//!   writeback for the valid rows/cols - there is no scalar remainder path
 //! - runtime AVX2+FMA dispatch via #[target_feature]; plain `cargo` builds
 //!   target baseline SSE2, so this is what unlocks the wide FMA units
-//! - std::thread::scope splitting M across available_parallelism() for
-//!   large problems
+//! - std::thread::scope splits M across available_parallelism() for large
+//!   problems; each thread packs its own A/B panels into buffers allocated
+//!   once per thread call and reused across blocks (never shared)
 
 use std::thread;
 
@@ -19,8 +26,21 @@ pub mod elementwise;
 /// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
 const MR: usize = 6;
 const NR: usize = 16;
-/// K block: (KC x NR) B panel is 16KB, resident in L1 across the row sweep.
+/// K block: (KC x NR) packed B panel is 16KB, resident in L1 across the
+/// inner micro-kernel sweep.
 const KC: usize = 256;
+/// M block: the (MC x KC) packed A panel is resident in L2 across the whole
+/// n sweep for that block. Tuned by measuring 1024^3 and 2048^3 single- and
+/// multi-threaded GFLOP/s across {48, 72, 96, 120, 144, 192} (all multiples
+/// of MR, so a full block's last A tile never needs edge padding), plus the
+/// skinny (2048, 64, 2048) shape: 48 won cleanly and consistently across the
+/// whole grid, not just within noise - e.g. ~40 vs ~36-37 GFLOP/s at 1024^3
+/// single-threaded, and >2x on the skinny shape where larger MC values waste
+/// L2 traffic re-sweeping mostly-empty (mc x 64) panels. The smallest
+/// candidate wins here because KC=256 already keeps the panel L1/L2-small;
+/// a bigger MC just adds re-pack/re-read cost without a matching reuse win
+/// at these problem sizes.
+const MC: usize = 48;
 /// Below this many multiply-adds (m*k*n), thread spawn overhead dominates.
 const PAR_THRESHOLD: usize = 1 << 18;
 
@@ -32,6 +52,27 @@ pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
         return out;
     }
     let threads = thread::available_parallelism().map_or(1, |p| p.get()).min(m);
+    let rows_per = m.div_ceil(threads);
+    thread::scope(|s| {
+        for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
+            s.spawn(move || matmul_rows(a, b, chunk, k, n, t * rows_per));
+        }
+    });
+    out
+}
+
+/// Like `matmul` but with an explicit thread count in place of the
+/// PAR_THRESHOLD/available_parallelism heuristic - a benchmarking knob (see
+/// src/bin/bench.rs) for measuring single- vs multi-threaded throughput at
+/// a fixed problem size. `threads <= 1` runs inline with no spawn, matching
+/// `matmul`'s small-problem path.
+pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, threads: usize) -> Vec<f32> {
+    let mut out = vec![0f32; m * n];
+    let threads = threads.clamp(1, m.max(1));
+    if threads == 1 {
+        matmul_rows(a, b, &mut out, k, n, 0);
+        return out;
+    }
     let rows_per = m.div_ceil(threads);
     thread::scope(|s| {
         for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
@@ -69,25 +110,62 @@ fn matmul_rows_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i
     matmul_rows_body(a, b, out, k, n, i0);
 }
 
-/// Rank-KC update of an MRxNR register tile: for each p, broadcast one A
-/// element per row against a contiguous NR-wide B row. The fixed-size arrays
-/// keep the accumulators in registers and let LLVM emit packed FMAs.
+/// Packs the (kc x n) row-block of B starting at k-offset `pp` into `dst` as
+/// `njtiles` contiguous (kc x NR) panels, zero-padding the last panel's
+/// tail columns when n isn't a multiple of NR.
 #[inline(always)]
-fn micro<const R: usize>(
-    a: &[f32],
-    b: &[f32],
-    k: usize,
-    n: usize,
-    i: usize,
-    jj: usize,
-    p0: usize,
-    p1: usize,
-    acc: &mut [[f32; NR]; R],
-) {
-    for p in p0..p1 {
-        let bv: &[f32; NR] = (&b[p * n + jj..p * n + jj + NR]).try_into().unwrap();
-        for r in 0..R {
-            let ar = a[(i + r) * k + p];
+fn pack_b(dst: &mut [f32], b: &[f32], n: usize, pp: usize, kc: usize, njtiles: usize) {
+    for jt in 0..njtiles {
+        let jj = jt * NR;
+        let ncols = NR.min(n - jj);
+        let base = jt * kc * NR;
+        for p in 0..kc {
+            let src = (pp + p) * n + jj;
+            let dstp = base + p * NR;
+            dst[dstp..dstp + ncols].copy_from_slice(&b[src..src + ncols]);
+            if ncols < NR {
+                dst[dstp + ncols..dstp + NR].fill(0.0);
+            }
+        }
+    }
+}
+
+/// Packs the (mc x kc) block of A (global rows i0..i0+mc, k-offset `pp`)
+/// into `dst` as `mtiles` contiguous (kc x MR) panels:
+/// `dst[t][p*MR+r] = A[(i0+t*MR+r)*k+pp+p]`, zero-padding the last panel's
+/// tail rows when mc isn't a multiple of MR. Reads a contiguous kc-run of
+/// `a` per row, so the stride-k gather happens once here instead of on
+/// every micro-kernel call.
+#[inline(always)]
+fn pack_a(dst: &mut [f32], a: &[f32], k: usize, i0: usize, pp: usize, kc: usize, mc: usize, mtiles: usize) {
+    for t in 0..mtiles {
+        let r0 = t * MR;
+        let mr = MR.min(mc - r0);
+        let base = t * kc * MR;
+        for r in 0..mr {
+            let arow = (i0 + r0 + r) * k + pp;
+            for p in 0..kc {
+                dst[base + p * MR + r] = a[arow + p];
+            }
+        }
+        for r in mr..MR {
+            for p in 0..kc {
+                dst[base + p * MR + r] = 0.0;
+            }
+        }
+    }
+}
+
+/// Rank-kc update of a full MRxNR register tile from packed panels. Both
+/// panels are always full size (edge rows/cols zero-padded by the packer),
+/// so this is the only micro-kernel shape - no scalar remainder variant.
+#[inline(always)]
+fn micro_packed(pa: &[f32], pb: &[f32], kc: usize, acc: &mut [[f32; NR]; MR]) {
+    for p in 0..kc {
+        let av: &[f32; MR] = (&pa[p * MR..p * MR + MR]).try_into().unwrap();
+        let bv: &[f32; NR] = (&pb[p * NR..p * NR + NR]).try_into().unwrap();
+        for r in 0..MR {
+            let ar = av[r];
             for j in 0..NR {
                 acc[r][j] += ar * bv[j];
             }
@@ -101,47 +179,42 @@ fn matmul_rows_body(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i
         return;
     }
     let rows = out.len() / n;
-    let jful = n - n % NR;
-    let rful = rows - rows % MR;
+    let njtiles = n.div_ceil(NR);
+    // Allocated once per thread call, reused (fully overwritten) across
+    // every k-block/row-block iteration below - never shared across threads.
+    let mut packed_b = vec![0f32; njtiles * KC * NR];
+    let mut packed_a = vec![0f32; (MC / MR) * KC * MR];
     for pp in (0..k).step_by(KC) {
         let pend = (pp + KC).min(k);
-        for jj in (0..jful).step_by(NR) {
-            let mut r = 0;
-            while r < rful {
-                let mut acc = [[0f32; NR]; MR];
-                if pp > 0 {
-                    for t in 0..MR {
-                        acc[t].copy_from_slice(&out[(r + t) * n + jj..][..NR]);
+        let kc = pend - pp;
+        pack_b(&mut packed_b, b, n, pp, kc, njtiles);
+        let mut r0 = 0;
+        while r0 < rows {
+            let mc = MC.min(rows - r0);
+            let mtiles = mc.div_ceil(MR);
+            pack_a(&mut packed_a, a, k, i0 + r0, pp, kc, mc, mtiles);
+            for jt in 0..njtiles {
+                let jj = jt * NR;
+                let ncols = NR.min(n - jj);
+                let pb = &packed_b[jt * kc * NR..][..kc * NR];
+                let mut r = 0;
+                while r < mc {
+                    let mr = MR.min(mc - r);
+                    let pa = &packed_a[(r / MR) * kc * MR..][..kc * MR];
+                    let mut acc = [[0f32; NR]; MR];
+                    if pp > 0 {
+                        for rr in 0..mr {
+                            acc[rr][..ncols].copy_from_slice(&out[(r0 + r + rr) * n + jj..][..ncols]);
+                        }
                     }
-                }
-                micro::<MR>(a, b, k, n, i0 + r, jj, pp, pend, &mut acc);
-                for t in 0..MR {
-                    out[(r + t) * n + jj..][..NR].copy_from_slice(&acc[t]);
-                }
-                r += MR;
-            }
-            while r < rows {
-                let mut acc = [[0f32; NR]; 1];
-                if pp > 0 {
-                    acc[0].copy_from_slice(&out[r * n + jj..][..NR]);
-                }
-                micro::<1>(a, b, k, n, i0 + r, jj, pp, pend, &mut acc);
-                out[r * n + jj..][..NR].copy_from_slice(&acc[0]);
-                r += 1;
-            }
-        }
-        // n % NR tail columns: contiguous rank-1 updates (still vectorizable).
-        if jful < n {
-            for r in 0..rows {
-                let orow = &mut out[r * n + jful..r * n + n];
-                for p in pp..pend {
-                    let ap = a[(i0 + r) * k + p];
-                    let brow = &b[p * n + jful..p * n + n];
-                    for j in 0..orow.len() {
-                        orow[j] += ap * brow[j];
+                    micro_packed(pa, pb, kc, &mut acc);
+                    for rr in 0..mr {
+                        out[(r0 + r + rr) * n + jj..][..ncols].copy_from_slice(&acc[rr][..ncols]);
                     }
+                    r += MR;
                 }
             }
+            r0 += mc;
         }
     }
 }
@@ -196,6 +269,33 @@ mod tests {
     fn matches_naive_threaded_path() {
         // m*k*n > PAR_THRESHOLD: exercises the std::thread::scope row split.
         check_shape(160, 96, 80);
+    }
+
+    #[test]
+    fn matches_naive_packed_remainders() {
+        // Cross-product of m/n values landing on every side of an MR=6 /
+        // NR=16 tile boundary, against k values landing on every side of a
+        // KC=256 block boundary: stresses pack_a/pack_b zero-padding and
+        // the masked writeback for edge tiles.
+        let sizes = [1, 2, 5, 6, 7, 15, 16, 17, 31, 33, 63, 65, 127, 129];
+        let ks = [1, 17, 255, 256, 257, 300];
+        for &m in &sizes {
+            for &n in &sizes {
+                for &k in &ks {
+                    check_shape(m, k, n);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn matches_naive_packed_remainders_threaded() {
+        // Same remainder stress, sized above PAR_THRESHOLD to also exercise
+        // the multi-threaded row split with packed edge tiles.
+        for (m, k, n) in [(129, 257, 65), (127, 300, 129), (65, 256, 127)] {
+            assert!(m * k * n > PAR_THRESHOLD);
+            check_shape(m, k, n);
+        }
     }
 
     #[test]
