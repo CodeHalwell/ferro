@@ -4,6 +4,7 @@
 //! `dx_i = y_i * (g_i - sum_k g_k * y_k)`.
 
 use crate::error::{Error, Result};
+use crate::reduce::pairwise_sum_strided;
 use crate::tensor::Tensor;
 
 impl Tensor {
@@ -46,12 +47,10 @@ fn softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
             for k in 0..size {
                 m = m.max(x[base + k * stride]);
             }
-            let mut sum = 0.0f32;
             for k in 0..size {
-                let e = (x[base + k * stride] - m).exp();
-                y[base + k * stride] = e;
-                sum += e;
+                y[base + k * stride] = (x[base + k * stride] - m).exp();
             }
+            let sum = pairwise_sum_strided(&y, base, size, stride);
             for k in 0..size {
                 y[base + k * stride] /= sum;
             }
@@ -63,13 +62,15 @@ fn softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
 fn softmax_backward(g: &[f32], y: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
     let (outer, size, stride) = slice_dims(shape, dim);
     let mut dx = vec![0.0f32; g.len()];
+    let mut gy = vec![0.0f32; g.len()];
     for o in 0..outer {
         for i in 0..stride {
             let base = o * size * stride + i;
-            let mut dot = 0.0f32;
             for k in 0..size {
-                dot += g[base + k * stride] * y[base + k * stride];
+                let idx = base + k * stride;
+                gy[idx] = g[idx] * y[idx];
             }
+            let dot = pairwise_sum_strided(&gy, base, size, stride);
             for k in 0..size {
                 let idx = base + k * stride;
                 dx[idx] = y[idx] * (g[idx] - dot);

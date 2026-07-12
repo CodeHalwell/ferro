@@ -71,6 +71,33 @@ pub trait Backend: Send + Sync {
     /// Row-major (m,k) @ (k,n) -> (m,n).
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32>;
 
+    /// Broadcasting binary over unmaterialized whole-buffer operands: `a`/`b`
+    /// are contiguous row-major buffers of shapes `sa`/`sb`, which broadcast
+    /// (numpy rules) to `out_shape`. The default walks the output index space
+    /// and addresses each input through broadcast strides (stride 0 on
+    /// expanded dims), so a much smaller operand (e.g. a bias row) is read
+    /// repeatedly instead of being materialized to `out_shape` size first -
+    /// every existing `Backend` impl keeps working with no code change.
+    /// Override for a fused/threaded kernel.
+    fn binary_bc(&self, kind: BinaryKind, a: &[f32], sa: &[usize], b: &[f32], sb: &[usize], out_shape: &[usize]) -> Vec<f32> {
+        binary_bc_odometer(kind, a, sa, b, sb, out_shape)
+    }
+
+    /// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n): batch independent
+    /// GEMMs. Default loops over batches calling `matmul`, so a backend that
+    /// threads each `matmul` call internally pays one thread-pool spin-up
+    /// per batch element; a backend should override this to parallelize
+    /// across the whole batch under a single thread::scope instead.
+    fn matmul_batch(&self, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+        let mut out = vec![0f32; batch * m * n];
+        for bi in 0..batch {
+            let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
+            let c = self.matmul(&a[ao..ao + m * k], &b[bo..bo + k * n], m, k, n);
+            out[co..co + m * n].copy_from_slice(&c);
+        }
+        out
+    }
+
     fn alloc_from_host(&self, _data: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("alloc_from_host")
     }
@@ -236,6 +263,79 @@ pub fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f
             for j in 0..n {
                 out[orow + j] += aip * b[brow + j];
             }
+        }
+    }
+    out
+}
+
+/// Row-major strides for `shape`, computed locally since dispatch.rs sits
+/// below tensor.rs in the module graph and cannot borrow its helpers.
+fn contiguous_strides(shape: &[usize]) -> Vec<usize> {
+    let mut stride = vec![1usize; shape.len()];
+    let mut acc = 1usize;
+    for i in (0..shape.len()).rev() {
+        stride[i] = acc;
+        acc *= shape[i];
+    }
+    stride
+}
+
+/// `shape`'s strides for reading as if broadcast (numpy rules) to
+/// `out_shape`: a padded or size-1-expanded dim reads with stride 0.
+fn broadcast_strides(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
+    let own = contiguous_strides(shape);
+    let pad = out_shape.len() - shape.len();
+    (0..out_shape.len())
+        .map(|i| if i < pad || shape[i - pad] != out_shape[i] { 0 } else { own[i - pad] })
+        .collect()
+}
+
+/// Default `Backend::binary_bc`: the naive odometer over the output index
+/// space (the same shape as `Tensor::gather`'s), addressing each input
+/// through broadcast strides. When the last dim is contiguous (stride 1) in
+/// both inputs - the common bias-add case - the inner loop is a plain slice
+/// walk instead of per-element index arithmetic.
+fn binary_bc_odometer(kind: BinaryKind, a: &[f32], sa: &[usize], b: &[f32], sb: &[usize], out_shape: &[usize]) -> Vec<f32> {
+    let f = move |x: f32, y: f32| match kind {
+        BinaryKind::Add => x + y,
+        BinaryKind::Sub => x - y,
+        BinaryKind::Mul => x * y,
+        BinaryKind::Div => x / y,
+    };
+    if out_shape.is_empty() {
+        return vec![f(a[0], b[0])];
+    }
+    let n: usize = out_shape.iter().product();
+    let mut out = vec![0f32; n];
+    if n == 0 {
+        return out;
+    }
+    let sta = broadcast_strides(sa, out_shape);
+    let stb = broadcast_strides(sb, out_shape);
+    let ndim = out_shape.len();
+    let inner = out_shape[ndim - 1];
+    let outer = n / inner;
+    let (ia, ib) = (sta[ndim - 1], stb[ndim - 1]);
+    let mut idx = vec![0usize; ndim - 1];
+    for o in 0..outer {
+        let base_a: usize = idx.iter().zip(&sta).map(|(&i, &s)| i * s).sum();
+        let base_b: usize = idx.iter().zip(&stb).map(|(&i, &s)| i * s).sum();
+        let obase = o * inner;
+        if ia == 1 && ib == 1 {
+            for j in 0..inner {
+                out[obase + j] = f(a[base_a + j], b[base_b + j]);
+            }
+        } else {
+            for j in 0..inner {
+                out[obase + j] = f(a[base_a + j * ia], b[base_b + j * ib]);
+            }
+        }
+        for d in (0..ndim - 1).rev() {
+            idx[d] += 1;
+            if idx[d] < out_shape[d] {
+                break;
+            }
+            idx[d] = 0;
         }
     }
     out

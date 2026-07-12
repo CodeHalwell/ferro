@@ -1,13 +1,24 @@
 use std::collections::HashSet;
 
+use crate::dtype::DType;
 use crate::tensor::Tensor;
 
 /// The graph node behind every autograd-recorded tensor: the op's inputs plus a
 /// vector-Jacobian-product closure returning one gradient per input, in order.
 /// Ops that need their own output for backward (exp, sigmoid, softmax) capture
-/// a *detached* snapshot in the closure to avoid a reference cycle.
+/// a *detached* snapshot in the closure to avoid a reference cycle - detaching
+/// allocates fresh storage, so those closures are immune by construction to
+/// the version check below (mutating the live output cannot poison a copy
+/// that does not share its storage).
+///
+/// `saved_versions` snapshots each input's storage version (`Tensor::version`)
+/// at record time; `Tensor::backward` asserts they are unchanged immediately
+/// before running this op's closure, turning a mutation of a saved input
+/// between forward and backward into a loud error instead of a silently wrong
+/// gradient.
 pub(crate) struct Op {
     inputs: Vec<Tensor>,
+    saved_versions: Vec<u64>,
     backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
 }
 
@@ -16,11 +27,16 @@ impl Op {
         inputs: Vec<Tensor>,
         backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
     ) -> Op {
-        Op { inputs, backward }
+        let saved_versions = inputs.iter().map(|t| t.version()).collect();
+        Op { inputs, saved_versions, backward }
     }
 
     pub(crate) fn inputs(&self) -> &[Tensor] {
         &self.inputs
+    }
+
+    pub(crate) fn saved_versions(&self) -> &[u64] {
+        &self.saved_versions
     }
 
     pub(crate) fn backward(&self, g: &Tensor) -> Vec<Tensor> {
@@ -60,9 +76,10 @@ fn build_topo(root: &Tensor) -> Vec<Tensor> {
 }
 
 impl Tensor {
-    /// Reverse-mode autodiff seeded with ones (call on a scalar loss). Populates
-    /// `.grad()` on every leaf/intermediate with `requires_grad = true`. Repeated
-    /// calls follow torch's retain_graph semantics: leaf grads accumulate across
+    /// Reverse-mode autodiff seeded with ones (call on a scalar loss): the
+    /// scalar restriction (v = 1) of `backward_with`. Populates `.grad()` on
+    /// every leaf/intermediate with `requires_grad = true`. Repeated calls
+    /// follow torch's retain_graph semantics: leaf grads accumulate across
     /// calls, interior grads are recomputed from scratch each call.
     pub fn backward(&self) {
         assert!(
@@ -70,6 +87,32 @@ impl Tensor {
             "backward() requires a scalar output (single element), got shape {:?}; \
              reduce with .sum() or .mean() first",
             self.shape()
+        );
+        let seed = Tensor::full_on(self.shape(), 1.0, self.device())
+            .expect("loss tensor's device backend is registered");
+        self.backward_with(&seed);
+    }
+
+    /// Reverse-mode autodiff seeded with an explicit cotangent `v`: computes
+    /// the vector-Jacobian product v^T J for any (not just scalar) root, so
+    /// `backward()` is just the v = 1 case on a scalar. `cotangent` must match
+    /// `self`'s shape and be f32; it is detached before seeding (a graph-
+    /// carrying cotangent must not splice a surprise edge into this backward
+    /// pass) and aligned to `self`'s device the same way any op's backward
+    /// contribution is, via `accumulate_grad`. Differentiating through this
+    /// pass itself (create_graph) is a separate, later capability - see
+    /// docs/CAPABILITY.md 1.2. Same retain_graph semantics as `backward()`.
+    pub fn backward_with(&self, cotangent: &Tensor) {
+        assert!(
+            cotangent.shape() == self.shape(),
+            "backward_with() cotangent shape {:?} does not match output shape {:?}",
+            cotangent.shape(),
+            self.shape()
+        );
+        assert!(
+            cotangent.dtype() == DType::F32,
+            "backward_with() cotangent must be f32 (autograd is f32-only), got {}",
+            cotangent.dtype()
         );
         let topo = build_topo(self);
         // Interior grads are scratch state from any prior backward call; left in
@@ -79,15 +122,23 @@ impl Tensor {
                 t.zero_grad();
             }
         }
-        let seed = Tensor::full_on(self.shape(), 1.0, self.device())
-            .expect("loss tensor's device backend is registered");
         // Accumulate rather than set: a leaf root (no op node) keeps its grad
         // across backward calls like any other leaf; op roots were cleared above.
-        self.accumulate_grad(seed);
+        self.accumulate_grad(cotangent.detach_copy());
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
             let g = t.grad().expect("every op node on the path receives a gradient");
             let inputs = op.inputs();
+            for (i, (inp, &saved)) in inputs.iter().zip(op.saved_versions()).enumerate() {
+                let now = inp.version();
+                assert!(
+                    now == saved,
+                    "one of the variables needed for gradient computation has been modified by \
+                     an inplace operation: input {i} of the op producing tensor id {} was saved \
+                     with version {saved} but is now version {now}",
+                    t.id()
+                );
+            }
             let grads = op.backward(&g);
             assert!(
                 grads.len() == inputs.len(),

@@ -1,25 +1,17 @@
 //! `bmm` batched matrix multiply. self (b,m,k) @ other (b,k,n) -> (b,m,n).
 //! Backward per batch: dA = dC @ B^T, dB = A^T @ dC.
+//! Every GEMM (forward and both backward products) routes through the CPU
+//! backend's `matmul_batch` as a single call, so bmm rides whatever kernel is
+//! installed there (e.g. ferro-fastcpu's one-thread::scope batch-parallel
+//! path) instead of spawning a thread pool per batch element. The backend
+//! takes plain row-major operands, so the backward pass materializes every
+//! batch's B^T/A^T transpose into one contiguous scratch buffer before the
+//! single batched matmul call.
 
+use crate::device::Device;
+use crate::dispatch;
 use crate::error::{Error, Result};
 use crate::tensor::Tensor;
-
-// C[b] = A[b] @ B[b] over flat row-major buffers.
-fn batched_matmul(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
-    let mut c = vec![0.0f32; batch * m * n];
-    for bi in 0..batch {
-        let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
-        for i in 0..m {
-            for p in 0..k {
-                let av = a[ao + i * k + p];
-                for j in 0..n {
-                    c[co + i * n + j] += av * b[bo + p * n + j];
-                }
-            }
-        }
-    }
-    c
-}
 
 impl Tensor {
     pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
@@ -40,47 +32,47 @@ impl Tensor {
             });
         }
 
+        let cpu = dispatch::backend_for(Device::Cpu)?;
         let a_data = self.to_vec();
         let b_data = other.to_vec();
-        let c_data = batched_matmul(&a_data, &b_data, batch, m, k, n);
+        let c_data = cpu.matmul_batch(&a_data, &b_data, batch, m, k, n);
         let out = Tensor::from_vec(c_data, &[batch, m, n])?;
 
         let a = self.clone();
         let b = other.clone();
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+            let cpu = dispatch::backend_for(Device::Cpu).expect("cpu backend is always registered");
             let g_data = g.to_vec();
             let a_data = a.to_vec();
             let b_data = b.to_vec();
 
-            // dA[b] = dC[b] @ B[b]^T  -> (m,k)
-            let mut da = vec![0.0f32; batch * m * k];
+            // dA[b] = dC[b] @ B[b]^T -> (m,k). Materialize every batch's
+            // B^T into one contiguous [batch,n,k] buffer, then a single
+            // matmul_batch call (O(batch*kn) transpose against the
+            // O(batch*mkn) GEMMs).
+            let mut bt = vec![0.0f32; batch * n * k];
             for bi in 0..batch {
-                let (go, bo, ao) = (bi * m * n, bi * k * n, bi * m * k);
-                for i in 0..m {
-                    for p in 0..k {
-                        let mut s = 0.0f32;
-                        for j in 0..n {
-                            s += g_data[go + i * n + j] * b_data[bo + p * n + j];
-                        }
-                        da[ao + i * k + p] = s;
-                    }
-                }
-            }
-
-            // dB[b] = A[b]^T @ dC[b]  -> (k,n)
-            let mut db = vec![0.0f32; batch * k * n];
-            for bi in 0..batch {
-                let (go, ao, bo) = (bi * m * n, bi * m * k, bi * k * n);
+                let (bo, bto) = (bi * k * n, bi * n * k);
                 for p in 0..k {
                     for j in 0..n {
-                        let mut s = 0.0f32;
-                        for i in 0..m {
-                            s += a_data[ao + i * k + p] * g_data[go + i * n + j];
-                        }
-                        db[bo + p * n + j] = s;
+                        bt[bto + j * k + p] = b_data[bo + p * n + j];
                     }
                 }
             }
+            let da = cpu.matmul_batch(&g_data, &bt, batch, m, n, k);
+
+            // dB[b] = A[b]^T @ dC[b] -> (k,n). Same idea: one [batch,k,m]
+            // buffer of A^T.
+            let mut at = vec![0.0f32; batch * k * m];
+            for bi in 0..batch {
+                let (ao, ato) = (bi * m * k, bi * k * m);
+                for i in 0..m {
+                    for p in 0..k {
+                        at[ato + p * m + i] = a_data[ao + i * k + p];
+                    }
+                }
+            }
+            let db = cpu.matmul_batch(&at, &g_data, batch, k, m, n);
 
             vec![
                 Tensor::from_vec(da, &[batch, m, k]).unwrap(),
