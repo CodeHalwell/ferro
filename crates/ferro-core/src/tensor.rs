@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::autograd::Op;
@@ -55,9 +55,25 @@ impl Storage {
     }
 }
 
+/// Shared storage plus its version counter. The counter attaches here, not to
+/// `Storage` itself, so every view sharing the `Arc` sees the same count:
+/// bumping through one view is visible through the base and every sibling
+/// view. Starts at 0; `Tensor::version`/`Tensor::bump_version` are the only
+/// readers/writers.
+pub(crate) struct StorageCell {
+    pub(crate) data: Storage,
+    version: AtomicU64,
+}
+
+impl StorageCell {
+    fn new(data: Storage) -> StorageCell {
+        StorageCell { data, version: AtomicU64::new(0) }
+    }
+}
+
 pub(crate) struct TensorInner {
     pub(crate) id: usize,
-    pub(crate) storage: Arc<Storage>,
+    pub(crate) storage: Arc<StorageCell>,
     pub(crate) shape: Vec<usize>,
     pub(crate) stride: Vec<usize>,
     pub(crate) offset: usize,
@@ -92,7 +108,7 @@ pub struct Tensor(pub(crate) Arc<TensorInner>);
 
 impl Tensor {
     pub(crate) fn from_parts(
-        storage: Arc<Storage>,
+        storage: Arc<StorageCell>,
         shape: Vec<usize>,
         stride: Vec<usize>,
         offset: usize,
@@ -118,7 +134,7 @@ impl Tensor {
             return Err(Error::InvalidShape { op, msg: format!("{len} elements do not fit shape {shape:?}") });
         }
         Ok(Tensor::from_parts(
-            Arc::new(storage),
+            Arc::new(StorageCell::new(storage)),
             shape.to_vec(),
             default_strides(shape),
             0,
@@ -189,7 +205,7 @@ impl Tensor {
         self.0.device
     }
     pub fn dtype(&self) -> DType {
-        self.0.storage.dtype()
+        self.0.storage.data.dtype()
     }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
@@ -250,7 +266,7 @@ impl Tensor {
     /// |i64| > 2^24). Every compute kernel reads through this, so strided
     /// views (transpose, broadcast) work transparently.
     pub fn to_vec(&self) -> Vec<f32> {
-        match &*self.0.storage {
+        match &self.0.storage.data {
             Storage::F32(v) => self.gather(v),
             Storage::F64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f32).collect(),
@@ -263,7 +279,7 @@ impl Tensor {
 
     /// Materialize as row-major f64 (exact from f32/i64 up to 2^53).
     pub fn to_vec_f64(&self) -> Vec<f64> {
-        match &*self.0.storage {
+        match &self.0.storage.data {
             Storage::F32(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
             Storage::F64(v) => self.gather(v),
             Storage::I64(v) => self.gather(v).into_iter().map(|x| x as f64).collect(),
@@ -273,7 +289,7 @@ impl Tensor {
 
     /// Materialize as row-major i64; floats truncate toward zero.
     pub fn to_vec_i64(&self) -> Vec<i64> {
-        match &*self.0.storage {
+        match &self.0.storage.data {
             Storage::F32(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
             Storage::F64(v) => self.gather(v).into_iter().map(|x| x as i64).collect(),
             Storage::I64(v) => self.gather(v),
@@ -297,7 +313,7 @@ impl Tensor {
             DType::I64 => Storage::I64(self.to_vec_i64()),
         };
         Tensor::from_parts(
-            Arc::new(storage),
+            Arc::new(StorageCell::new(storage)),
             self.0.shape.clone(),
             default_strides(&self.0.shape),
             0,
@@ -338,7 +354,7 @@ impl Tensor {
         }
         let buf = backend_for(device)?.alloc_from_host(&host)?;
         Ok(Tensor::from_parts(
-            Arc::new(Storage::Device(buf)),
+            Arc::new(StorageCell::new(Storage::Device(buf))),
             shape.clone(),
             default_strides(&shape),
             0,
@@ -352,7 +368,7 @@ impl Tensor {
     /// device kernel paths: those pass the raw buffer, so the view must be
     /// the whole buffer in natural order.
     fn device_resident_whole(&self) -> bool {
-        matches!(&*self.0.storage, Storage::Device(_))
+        matches!(&self.0.storage.data, Storage::Device(_))
             && self.0.offset == 0
             && self.is_contiguous()
     }
@@ -542,6 +558,35 @@ impl Tensor {
         }
         self
     }
+
+    // --- version counters ---------------------------------------------------
+    // Every shared storage carries a version, bumped when it is mutated. Views
+    // created via from_parts clone the same Arc<StorageCell>, so they and their
+    // base always report the same version; a fresh Vec (from_vec, detach_copy,
+    // to_dtype, to_device) gets a fresh StorageCell starting at 0. No in-place
+    // op exists yet to call bump_version outside tests - it is the seam the
+    // first one will use.
+
+    pub(crate) fn version(&self) -> u64 {
+        self.0.storage.version.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn bump_version(&self) {
+        self.0.storage.version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Test-only seam to simulate an in-place mutation before real in-place ops
+    /// exist, so the version-mismatch assertion in `backward` is exercisable.
+    #[doc(hidden)]
+    pub fn _bump_version_for_test(&self) {
+        self.bump_version();
+    }
+
+    /// Test-only accessor for the storage version counter.
+    #[doc(hidden)]
+    pub fn _version(&self) -> u64 {
+        self.version()
+    }
 }
 
 /// Copy a device buffer back to host. Infallible by construction: a device
@@ -586,7 +631,7 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     check_f32("unary", a)?;
     if a.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(buf) = &*a.0.storage else { unreachable!() };
+        let Storage::Device(buf) = &a.0.storage.data else { unreachable!() };
         let out = backend.unary_dev(kind, buf.as_ref())?;
         return Ok(device_leaf(out, &a.0.shape, a.0.device));
     }
@@ -597,7 +642,7 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
 fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> Tensor {
     Tensor::from_parts(
-        Arc::new(Storage::Device(buf)),
+        Arc::new(StorageCell::new(Storage::Device(buf))),
         shape.to_vec(),
         default_strides(shape),
         0,
@@ -615,8 +660,8 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
-        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
+        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
         if a.0.shape == b.0.shape {
             let out = backend.binary_dev(kind, ba.as_ref(), bb.as_ref())?;
             return Ok(device_leaf(out, &a.0.shape, a.0.device));
@@ -673,8 +718,8 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
-        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
+        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
@@ -690,7 +735,7 @@ pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
         return None;
     }
     let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-    let Storage::Device(buf) = &*t.0.storage else { unreachable!() };
+    let Storage::Device(buf) = &t.0.storage.data else { unreachable!() };
     let out = backend.reduce_dev(kind, buf.as_ref()).expect("device backend lacks reduce_dev");
     Some(device_leaf(out, &[], t.0.device))
 }
@@ -707,8 +752,8 @@ pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result
             return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
         }
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &*a.0.storage else { unreachable!() };
-        let Storage::Device(bb) = &*b.0.storage else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
+        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, ta, tb)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
@@ -723,7 +768,7 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
     let ndim = in_shape.len();
     if t.device_resident_whole() {
         let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-        let Storage::Device(buf) = &*t.0.storage else { unreachable!() };
+        let Storage::Device(buf) = &t.0.storage.data else { unreachable!() };
         let out = backend
             .sum_dim_dev(buf.as_ref(), &in_shape, dim)
             .expect("device backend lacks sum_dim_dev");

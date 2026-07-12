@@ -6,9 +6,19 @@ use crate::tensor::Tensor;
 /// The graph node behind every autograd-recorded tensor: the op's inputs plus a
 /// vector-Jacobian-product closure returning one gradient per input, in order.
 /// Ops that need their own output for backward (exp, sigmoid, softmax) capture
-/// a *detached* snapshot in the closure to avoid a reference cycle.
+/// a *detached* snapshot in the closure to avoid a reference cycle - detaching
+/// allocates fresh storage, so those closures are immune by construction to
+/// the version check below (mutating the live output cannot poison a copy
+/// that does not share its storage).
+///
+/// `saved_versions` snapshots each input's storage version (`Tensor::version`)
+/// at record time; `Tensor::backward` asserts they are unchanged immediately
+/// before running this op's closure, turning a mutation of a saved input
+/// between forward and backward into a loud error instead of a silently wrong
+/// gradient.
 pub(crate) struct Op {
     inputs: Vec<Tensor>,
+    saved_versions: Vec<u64>,
     backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
 }
 
@@ -17,11 +27,16 @@ impl Op {
         inputs: Vec<Tensor>,
         backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
     ) -> Op {
-        Op { inputs, backward }
+        let saved_versions = inputs.iter().map(|t| t.version()).collect();
+        Op { inputs, saved_versions, backward }
     }
 
     pub(crate) fn inputs(&self) -> &[Tensor] {
         &self.inputs
+    }
+
+    pub(crate) fn saved_versions(&self) -> &[u64] {
+        &self.saved_versions
     }
 
     pub(crate) fn backward(&self, g: &Tensor) -> Vec<Tensor> {
@@ -114,6 +129,16 @@ impl Tensor {
             let Some(op) = &t.0.op else { continue };
             let g = t.grad().expect("every op node on the path receives a gradient");
             let inputs = op.inputs();
+            for (i, (inp, &saved)) in inputs.iter().zip(op.saved_versions()).enumerate() {
+                let now = inp.version();
+                assert!(
+                    now == saved,
+                    "one of the variables needed for gradient computation has been modified by \
+                     an inplace operation: input {i} of the op producing tensor id {} was saved \
+                     with version {saved} but is now version {now}",
+                    t.id()
+                );
+            }
             let grads = op.backward(&g);
             assert!(
                 grads.len() == inputs.len(),
