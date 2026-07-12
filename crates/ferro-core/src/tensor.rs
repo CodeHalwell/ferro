@@ -635,6 +635,16 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
         let out = backend.unary_dev(kind, buf.as_ref())?;
         return Ok(device_leaf(out, &a.0.shape, a.0.device));
     }
+    // Contiguous host f32 (any offset): slice straight into the backend, no
+    // materializing copy - the read side of the ~3x-bytes-moved bug this
+    // function used to have via `a.to_vec()`.
+    if let Storage::F32(v) = &a.0.storage.data {
+        if a.0.device == Device::Cpu && a.is_contiguous() {
+            let n = a.numel();
+            let cpu = backend_for(Device::Cpu)?;
+            return Tensor::from_vec(cpu.unary(kind, &v[a.0.offset..a.0.offset + n]), &a.0.shape);
+        }
+    }
     let cpu = backend_for(Device::Cpu)?;
     Tensor::from_vec(cpu.unary(kind, &a.to_vec()), &a.0.shape)?.to_device(a.0.device)
 }
@@ -670,6 +680,29 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
         let out =
             backend.binary_bc_dev(kind, ba.as_ref(), &a.0.shape, bb.as_ref(), &b.0.shape, &out_shape)?;
         return Ok(device_leaf(out, &out_shape, a.0.device));
+    }
+    // Contiguous host f32 operands: skip the copy-then-compute path.
+    if let (Storage::F32(va), Storage::F32(vb)) = (&a.0.storage.data, &b.0.storage.data) {
+        if a.0.device == Device::Cpu && a.is_contiguous() && b.is_contiguous() {
+            let cpu = backend_for(Device::Cpu)?;
+            // Equal shapes: slice both operands directly (any offset).
+            if a.0.shape == b.0.shape {
+                let n = a.numel();
+                let sa = &va[a.0.offset..a.0.offset + n];
+                let sb = &vb[b.0.offset..b.0.offset + n];
+                return Tensor::from_vec(cpu.binary(kind, sa, sb), &a.0.shape);
+            }
+            // Different shapes: hand the backend the whole unmaterialized
+            // buffers (e.g. a [4096] bias against a [4096,4096] output) so a
+            // smaller operand is read repeatedly instead of expanded first.
+            // Restricted to zero-offset whole buffers - an offset view still
+            // takes the materializing fallback below.
+            if a.0.offset == 0 && b.0.offset == 0 && va.len() == a.numel() && vb.len() == b.numel() {
+                let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
+                let out = cpu.binary_bc(kind, va, &a.0.shape, vb, &b.0.shape, &out_shape);
+                return Tensor::from_vec(out, &out_shape);
+            }
+        }
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
@@ -823,4 +856,31 @@ pub(crate) fn unbroadcast(g: &Tensor, target: &[usize]) -> Tensor {
         }
     }
     g
+}
+
+#[cfg(test)]
+mod tests {
+    // raw_unary_k/raw_binary_k's fast paths slice storage at `tensor.offset`,
+    // but no public op (narrow/as_strided; see docs/CAPABILITY.md 2.2) yet
+    // produces a nonzero-offset tensor, so this exercises the offset
+    // arithmetic directly via the pub(crate) constructor an external
+    // integration test cannot reach.
+    use super::*;
+
+    fn offset_view(v: Vec<f32>, offset: usize, shape: &[usize]) -> Tensor {
+        Tensor::from_parts(Arc::new(StorageCell::new(Storage::F32(v))), shape.to_vec(), default_strides(shape), offset, Device::Cpu, false, None)
+    }
+
+    #[test]
+    fn raw_unary_k_reads_from_the_view_offset_not_index_zero() {
+        let a = offset_view(vec![9.0, -1.0, -2.0, 3.0, 9.0], 1, &[3]);
+        assert_eq!(raw_unary_k(&a, UnaryKind::Relu).unwrap().to_vec(), vec![0.0, 0.0, 3.0]);
+    }
+
+    #[test]
+    fn raw_binary_k_reads_both_operands_from_their_view_offset() {
+        let a = offset_view(vec![100.0, 1.0, 2.0, 3.0], 1, &[3]);
+        let b = offset_view(vec![100.0, 10.0, 20.0, 30.0], 1, &[3]);
+        assert_eq!(raw_binary_k("add", &a, &b, BinaryKind::Add).unwrap().to_vec(), vec![11.0, 22.0, 33.0]);
+    }
 }
