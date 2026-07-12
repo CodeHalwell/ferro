@@ -41,6 +41,7 @@ const KC: usize = 256;
 /// a bigger MC just adds re-pack/re-read cost without a matching reuse win
 /// at these problem sizes.
 const MC: usize = 48;
+const _: () = assert!(MC % MR == 0, "pack_a sizes its panels in whole MR-row slivers");
 /// Below this many multiply-adds (m*k*n), thread spawn overhead dominates.
 const PAR_THRESHOLD: usize = 1 << 18;
 /// Below this many total multiply-adds (batch*m*k*n), `matmul_batch` skips
@@ -80,6 +81,10 @@ pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
 /// `matmul`'s small-problem path.
 pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, threads: usize) -> Vec<f32> {
     let mut out = vec![0f32; m * n];
+    // Empty output: chunks_mut(rows_per * n) would panic on a zero chunk size.
+    if out.is_empty() {
+        return out;
+    }
     let threads = threads.clamp(1, m.max(1));
     if threads == 1 {
         matmul_rows(a, b, &mut out, k, n, 0);
@@ -106,13 +111,18 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
 /// (mirrors `matmul`'s row-split determinism), so results are bitwise
 /// independent of thread count and batch decomposition.
 pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    assert!(a.len() >= batch * m * k, "a has {} elements, need batch*m*k = {}", a.len(), batch * m * k);
+    assert!(b.len() >= batch * k * n, "b has {} elements, need batch*k*n = {}", b.len(), batch * k * n);
     let mut out = vec![0f32; batch * m * n];
-    if batch == 0 || m == 0 {
+    if batch == 0 || m == 0 || n == 0 {
         return out;
     }
     let total_rows = batch * m;
     let threads = thread::available_parallelism().map_or(1, |p| p.get()).min(total_rows);
-    if batch * m * k * n <= BATCH_PAR_THRESHOLD || threads <= 1 {
+    // Work estimate in u128: the usize product can wrap for extreme shapes,
+    // which would make the serial-vs-threaded choice arbitrary.
+    let work = batch as u128 * m as u128 * k as u128 * n as u128;
+    if work <= BATCH_PAR_THRESHOLD as u128 || threads <= 1 {
         matmul_batch_group(a, b, &mut out, m, k, n, 0, total_rows);
         return out;
     }
@@ -371,6 +381,20 @@ mod tests {
         for (m, k, n) in [(1, 256, 256), (256, 256, 1), (1, 300, 1), (128, 1, 128)] {
             check_shape(m, k, n);
         }
+    }
+
+    #[test]
+    fn zero_dims_produce_empty_or_zero_outputs() {
+        // n == 0 with threads > 1 used to hit chunks_mut(0) and panic.
+        for (m, k, n) in [(0, 8, 8), (8, 0, 8), (8, 8, 0), (0, 0, 0)] {
+            let a = lcg_fill(1, m * k);
+            let b = lcg_fill(2, k * n);
+            assert_eq!(matmul(&a, &b, m, k, n), naive_matmul(&a, &b, m, k, n));
+            assert_eq!(matmul_with_threads(&a, &b, m, k, n, 4), naive_matmul(&a, &b, m, k, n));
+            let batched = matmul_batch(&a, &b, 1, m, k, n);
+            assert_eq!(batched, naive_matmul(&a, &b, m, k, n));
+        }
+        assert!(matmul_batch(&[], &[], 0, 4, 4, 4).is_empty());
     }
 
     #[test]

@@ -168,6 +168,8 @@ fn binary_chunk_body(kind: BinaryKind, a: &[f32], b: &[f32], out: &mut [f32]) {
 /// same loop shape.
 #[inline(always)]
 fn apply1(x: &[f32], out: &mut [f32], f: impl Fn(f32) -> f32) {
+    // zip would silently truncate on a length mismatch; fail loudly instead.
+    assert_eq!(x.len(), out.len(), "unary output length must match input");
     let xchunks = x.chunks_exact(8);
     let rem = xchunks.remainder();
     let main = x.len() - rem.len();
@@ -185,6 +187,9 @@ fn apply1(x: &[f32], out: &mut [f32], f: impl Fn(f32) -> f32) {
 
 #[inline(always)]
 fn apply2(a: &[f32], b: &[f32], out: &mut [f32], f: impl Fn(f32, f32) -> f32) {
+    // zip would silently truncate on a length mismatch; fail loudly instead.
+    assert_eq!(a.len(), b.len(), "binary operands must have the same length");
+    assert_eq!(a.len(), out.len(), "binary output length must match operands");
     let achunks = a.chunks_exact(8);
     let rem = achunks.remainder();
     let main = a.len() - rem.len();
