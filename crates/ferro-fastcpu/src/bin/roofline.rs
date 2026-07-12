@@ -348,6 +348,7 @@ fn main() {
     println!();
 
     ferro_fastcpu::install();
+    ferro_fastcpu::install_backend();
 
     let mut rows = Vec::new();
     bench_matmul(&mut rows, compute_roof);
