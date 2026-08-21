@@ -47,3 +47,10 @@ fn cat_grad() {
         Tensor::cat(&[t[0].clone(), t[1].clone()], 0).unwrap().mul(&w0).unwrap().sum()
     });
 }
+
+#[test]
+fn cat_rejects_non_f32() {
+    let ids = Tensor::from_vec_i64(vec![1, 2], &[2]).unwrap();
+    let more = Tensor::from_vec_i64(vec![3], &[1]).unwrap();
+    assert!(Tensor::cat(&[ids, more], 0).is_err());
+}

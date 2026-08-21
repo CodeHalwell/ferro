@@ -4,6 +4,7 @@
 //! `dx_i = g_i - sm_i * sum_k g_k`, computed per slice over `dim`.
 
 use crate::error::{Error, Result};
+use crate::reduce::pairwise_sum_strided;
 use crate::tensor::Tensor;
 
 impl Tensor {
@@ -19,6 +20,7 @@ impl Tensor {
         let outer = shape[..dim].iter().product::<usize>();
 
         let mut y = vec![0.0f32; x.len()];
+        let mut exps = vec![0.0f32; x.len()];
         for o in 0..outer {
             for i in 0..stride {
                 let base = o * n * stride + i;
@@ -26,10 +28,10 @@ impl Tensor {
                 for k in 0..n {
                     m = m.max(x[base + k * stride]);
                 }
-                let mut sum = 0.0f32;
                 for k in 0..n {
-                    sum += (x[base + k * stride] - m).exp();
+                    exps[base + k * stride] = (x[base + k * stride] - m).exp();
                 }
+                let sum = pairwise_sum_strided(&exps, base, n, stride);
                 let lse = m + sum.ln();
                 for k in 0..n {
                     y[base + k * stride] = x[base + k * stride] - lse;
@@ -52,10 +54,7 @@ impl Tensor {
             for o in 0..outer {
                 for i in 0..stride {
                     let base = o * n * stride + i;
-                    let mut sum_g = 0.0f32;
-                    for k in 0..n {
-                        sum_g += gv[base + k * stride];
-                    }
+                    let sum_g = pairwise_sum_strided(&gv, base, n, stride);
                     for k in 0..n {
                         let idx = base + k * stride;
                         dx[idx] = gv[idx] - smv[idx] * sum_g;

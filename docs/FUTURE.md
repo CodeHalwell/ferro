@@ -4,6 +4,9 @@ This is the forward-looking master plan. It assumes the current state of the
 tree (see Status below) and lays out every major workstream between here and
 an engine that could credibly compete with PyTorch/JAX - plus the honest
 assessment of which axes "best in the world" is actually winnable on.
+CAPABILITY.md is the companion depth document: the mathematics and computer
+science behind each workstream here, the concrete designs, and the
+falsifiable acceptance gates.
 
 ## Where we are (baseline for everything below)
 

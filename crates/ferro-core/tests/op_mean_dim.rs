@@ -20,3 +20,12 @@ fn mean_dim_grad() {
     grad_check(&[a.clone()], |t| t[0].mean_dim(1, false).unwrap().sum());
     grad_check(&[a], |t| t[0].mean_dim(0, true).unwrap().sum());
 }
+
+#[test]
+fn empty_mean_is_nan() {
+    // Matches torch: empty means are NaN (0/0), not a silent 0 that would
+    // make an empty-batch loss look valid.
+    let x = Tensor::from_vec(vec![], &[2, 0]).unwrap();
+    assert!(x.mean_dim(1, false).unwrap().to_vec().iter().all(|v| v.is_nan()));
+    assert!(Tensor::zeros(&[0]).mean().item().is_nan());
+}

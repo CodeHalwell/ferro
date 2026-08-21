@@ -9,6 +9,7 @@ pub mod cat;
 pub mod clamp;
 pub mod conv2d;
 pub mod cumsum;
+pub mod dropout;
 pub mod embedding;
 pub mod gather;
 pub mod gelu;

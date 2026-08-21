@@ -1,5 +1,6 @@
 use crate::dispatch::{BinaryKind, ReduceKind, UnaryKind};
 use crate::error::Result;
+use crate::reduce::pairwise_sum;
 use crate::shape::numel;
 use crate::tensor::{
     raw_binary_k, raw_matmul, raw_matmul_t, raw_reduce_dev, raw_unary_k, unbroadcast, Tensor,
@@ -109,7 +110,7 @@ impl Tensor {
 
     pub fn sum(&self) -> Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Sum)
-            .unwrap_or_else(|| Tensor::scalar(self.to_vec().iter().sum()));
+            .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec())));
         let in_shape = self.shape().to_vec();
         let device = self.device();
         out.record_fn(vec![self.clone()], move |g| {
@@ -118,9 +119,10 @@ impl Tensor {
     }
 
     pub fn mean(&self) -> Tensor {
-        let n = numel(self.shape()).max(1) as f32;
+        // No max(1) guard: torch's empty mean is NaN (0/0), not a silent 0.
+        let n = numel(self.shape()) as f32;
         let out = raw_reduce_dev(self, ReduceKind::Mean)
-            .unwrap_or_else(|| Tensor::scalar(self.to_vec().iter().sum::<f32>() / n));
+            .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec()) / n));
         let in_shape = self.shape().to_vec();
         let device = self.device();
         out.record_fn(vec![self.clone()], move |g| {

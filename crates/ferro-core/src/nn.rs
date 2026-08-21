@@ -144,6 +144,14 @@ impl LayerNorm {
 
 impl Module for LayerNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // Reducing dim 1 while gamma/beta broadcast over the last dim only
+        // agrees when both are the feature dim, i.e. for 2-D input.
+        if x.ndim() != 2 {
+            return Err(Error::InvalidShape {
+                op: "layer_norm",
+                msg: format!("input must be 2-D [batch, dim], got {:?}", x.shape()),
+            });
+        }
         let mu = x.mean_dim(1, true)?;
         let centered = x.sub(&mu)?;
         let var = centered.mul(&centered)?.mean_dim(1, true)?;
@@ -245,7 +253,25 @@ impl Module for Sequential {
 /// the same shape: mean over the batch of -sum(target * log_softmax(logits)).
 /// Composed from autograd ops, so the gradient flows without a custom backward.
 pub fn cross_entropy(logits: &Tensor, targets_one_hot: &Tensor) -> Result<Tensor> {
-    Ok(logits.log_softmax(1)?.mul(targets_one_hot)?.sum_dim(1, false)?.neg().mean())
+    // Exact shape match: mul broadcasts, so a [1, classes] or [classes] target
+    // against a batch would silently train every row on the same label.
+    if targets_one_hot.shape() != logits.shape() {
+        return Err(Error::ShapeMismatch {
+            op: "cross_entropy",
+            lhs: logits.shape().to_vec(),
+            rhs: targets_one_hot.shape().to_vec(),
+        });
+    }
+    let lp = logits.log_softmax(1)?;
+    // log_softmax may fall back to the host for device logits, so realign
+    // constant targets to its device. Targets that require grad cannot be
+    // moved silently (to_device detaches), so those keep the strict path.
+    let targets = if targets_one_hot.device() != lp.device() && !targets_one_hot.requires_grad() {
+        targets_one_hot.to_device(lp.device())?
+    } else {
+        targets_one_hot.clone()
+    };
+    Ok(lp.mul(&targets)?.sum_dim(1, false)?.neg().mean())
 }
 
 /// One-hot encode 1-D I64 class ids `[n]` into an f32 `[n, classes]` tensor.
@@ -468,6 +494,12 @@ pub fn cross_entropy_indices(logits: &Tensor, target_ids: &Tensor) -> Result<Ten
         return Err(Error::InvalidShape {
             op: "cross_entropy_indices",
             msg: format!("logits must be 2-D [batch, classes], got {:?}", logits.shape()),
+        });
+    }
+    if target_ids.numel() != logits.shape()[0] {
+        return Err(Error::InvalidShape {
+            op: "cross_entropy_indices",
+            msg: format!("{} target ids for batch of {}", target_ids.numel(), logits.shape()[0]),
         });
     }
     cross_entropy(logits, &one_hot(target_ids, logits.shape()[1])?)

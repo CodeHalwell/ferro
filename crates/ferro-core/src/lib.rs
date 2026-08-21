@@ -13,6 +13,8 @@ pub mod ops;
 pub mod ops_ext;
 pub mod optim;
 pub mod params;
+pub mod philox;
+mod reduce;
 pub mod rng;
 pub mod safetensors;
 pub mod shape;

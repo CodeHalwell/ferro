@@ -9,7 +9,10 @@ impl Tensor {
         let pa = raw_binary("where_cond", cond, a, |c, x| if c != 0.0 { x } else { 0.0 })?;
         let pb = raw_binary("where_cond", cond, b, |c, x| if c != 0.0 { 0.0 } else { x })?;
         let out = raw_binary("where_cond", &pa, &pb, |x, y| x + y)?;
-        let cond = cond.detach_copy();
+        // The host-closure forward returns cpu tensors even for device inputs
+        // (the documented fallback), so the saved mask must live where the
+        // gradient will: on the output's device, not the input's.
+        let cond = cond.detach_copy().to_device(out.device())?;
         let a_shape = a.shape().to_vec();
         let b_shape = b.shape().to_vec();
         Ok(out.record_fn(vec![a.clone(), b.clone()], move |g| {

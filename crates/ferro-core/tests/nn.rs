@@ -153,6 +153,15 @@ fn layernorm_normalizes() {
 }
 
 #[test]
+fn layernorm_rejects_non_2d() {
+    // Rank > 2 would normalize over dim 1 (e.g. sequence positions) while
+    // gamma/beta broadcast over the last dim, so it must be rejected.
+    let ln = LayerNorm::new(4);
+    assert!(ln.forward(&Tensor::zeros(&[2, 3, 4])).is_err());
+    assert!(ln.forward(&Tensor::zeros(&[4])).is_err());
+}
+
+#[test]
 fn layernorm_grad() {
     let ln = LayerNorm::new(3);
     let x = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
@@ -422,4 +431,13 @@ fn state_dict_names_and_roundtrip() {
     let wrong_size = TransformerBlock::new(8, 2, &Rng::new(1)).unwrap();
     assert!(matches!(load_module(&path, &wrong_size), Err(ferro_core::Error::Format { .. })));
     std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn cross_entropy_rejects_broadcastable_targets() {
+    let logits = Tensor::zeros(&[4, 3]);
+    assert!(cross_entropy(&logits, &Tensor::zeros(&[1, 3])).is_err());
+    assert!(cross_entropy(&logits, &Tensor::zeros(&[3])).is_err());
+    let short_ids = Tensor::from_vec_i64(vec![0], &[1]).unwrap();
+    assert!(cross_entropy_indices(&logits, &short_ids).is_err());
 }

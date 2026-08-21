@@ -13,6 +13,7 @@ removal of the named neg() alias.
 """
 
 import resource
+import sys
 
 import numpy as np
 
@@ -77,10 +78,12 @@ def test_dlpack_export_no_leak():
     # Warm up allocator/import machinery before measuring.
     for _ in range(1000):
         np.from_dlpack(t)
-    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is kilobytes on Linux but bytes on macOS.
+    rss_scale = 1024 if sys.platform == "darwin" else 1
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // rss_scale
     for _ in range(200_000):
         np.from_dlpack(t)
-    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // rss_scale
     grown_kb = after - before
     # Pre-fix this leaked the DLManagedTensor box every export (~15+ MB here).
     assert grown_kb < 4096, f"RSS grew {grown_kb} KB over 200k exports; leak?"
