@@ -1,4 +1,4 @@
-//! Optimizers (SGD, Adam) operating on parameter tensors and their `.grad()`.
+//! Optimizers (SGD, Adam, AdamW) operating on parameter tensors and their `.grad()`.
 //!
 //! Tensors are immutable and `Arc`-shared, so a step never mutates in place:
 //! it reads `param.tensor()` and `param.grad()` as `Vec<f32>`, computes the new
@@ -111,6 +111,71 @@ impl Adam {
                 let m_hat = m[j] / bc1;
                 let v_hat = v[j] / bc2;
                 vals[j] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
+            }
+            set_leaf(p, vals, cur.shape());
+        }
+    }
+}
+
+/// AdamW: Adam with decoupled weight decay (Loshchilov-Hutter) - the decay
+/// term `lr * wd * param` is applied directly to the parameter instead of
+/// being folded into the gradient, so it never enters the moment estimates.
+/// Defaults match torch: beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01.
+pub struct AdamW {
+    params: Vec<Param>,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    t: u32,
+    m: Vec<Vec<f32>>,
+    v: Vec<Vec<f32>>,
+}
+
+impl AdamW {
+    pub fn new(params: Vec<Param>, lr: f32) -> AdamW {
+        let m = params.iter().map(|p| vec![0.0; p.tensor().numel()]).collect();
+        let v = params.iter().map(|p| vec![0.0; p.tensor().numel()]).collect();
+        AdamW { params, lr, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.01, t: 0, m, v }
+    }
+
+    pub fn with_weight_decay(mut self, wd: f32) -> AdamW {
+        self.weight_decay = wd;
+        self
+    }
+
+    pub fn with_betas(mut self, beta1: f32, beta2: f32) -> AdamW {
+        self.beta1 = beta1;
+        self.beta2 = beta2;
+        self
+    }
+
+    pub fn zero_grad(&self) {
+        for p in &self.params {
+            p.zero_grad();
+        }
+    }
+
+    pub fn step(&mut self) {
+        self.t += 1;
+        let bc1 = 1.0 - self.beta1.powi(self.t as i32);
+        let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+        for (i, p) in self.params.iter().enumerate() {
+            let grad = match p.grad() {
+                Some(g) => g.to_vec(),
+                None => continue,
+            };
+            let cur = p.tensor();
+            let mut vals = cur.to_vec();
+            let m = &mut self.m[i];
+            let v = &mut self.v[i];
+            for j in 0..vals.len() {
+                m[j] = self.beta1 * m[j] + (1.0 - self.beta1) * grad[j];
+                v[j] = self.beta2 * v[j] + (1.0 - self.beta2) * grad[j] * grad[j];
+                let m_hat = m[j] / bc1;
+                let v_hat = v[j] / bc2;
+                vals[j] -= self.lr * (m_hat / (v_hat.sqrt() + self.eps) + self.weight_decay * vals[j]);
             }
             set_leaf(p, vals, cur.shape());
         }

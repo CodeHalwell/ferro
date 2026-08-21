@@ -22,6 +22,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -q maturin && maturin develop --release
 python ../examples/ops_vs_torch.py    # numeric parity vs torch (pip install torch)
 python ../examples/py_regression.py   # binding regression suite
+python ../examples/safetensors_vs_python.py  # file-format parity (pip install safetensors)
 ```
 
 # Architecture invariants (do not break these)

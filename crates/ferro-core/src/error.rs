@@ -15,6 +15,10 @@ pub enum Error {
     DeviceMismatch { op: &'static str, lhs: Device, rhs: Device },
     /// An operand has the wrong dtype for the op (float math is f32-only).
     DtypeMismatch { op: &'static str, expected: DType, got: DType },
+    /// A filesystem read/write failed (path and OS error in the message).
+    Io { op: &'static str, msg: String },
+    /// A serialized file is malformed or uses an unsupported encoding.
+    Format { op: &'static str, msg: String },
 }
 
 impl fmt::Display for Error {
@@ -31,6 +35,8 @@ impl fmt::Display for Error {
             Error::DtypeMismatch { op, expected, got } => {
                 write!(f, "{op}: expected {expected} tensor, got {got}")
             }
+            Error::Io { op, msg } => write!(f, "{op}: io error: {msg}"),
+            Error::Format { op, msg } => write!(f, "{op}: malformed file: {msg}"),
         }
     }
 }

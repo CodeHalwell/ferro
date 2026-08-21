@@ -10,8 +10,10 @@ falsifiable acceptance gates.
 
 ## Where we are (baseline for everything below)
 
-- Pure-Rust core: ~35 autograd ops, every one finite-difference checked and
+- Pure-Rust core: ~40 autograd ops, every one finite-difference checked and
   most cross-validated against torch numerically (values AND gradients).
+  The transformer set has landed: gelu, cumsum, argmax/argmin, gather, topk,
+  half-split rope, and a composed causal scaled_dot_product_attention.
 - Engine hardened: single closure-based autograd mechanism, strict grad
   arity/shape/device contracts, iterative topo sort and graph teardown (100k+
   op chains), torch retain_graph accumulation semantics.
@@ -24,8 +26,9 @@ falsifiable acceptance gates.
   CUDA, gated GPU tests staged).
 - Dtypes: F32 everywhere; F64/I64 storage + casts; I64 index tensors feeding
   embedding / integer-target cross-entropy.
-- nn/optim: Linear, LayerNorm, activations, Sequential, cross_entropy, SGD
-  (+momentum), Adam. MLPs and CNNs train from Rust and Python.
+- nn/optim: Linear, LayerNorm, RmsNorm, Embedding, activations (incl. Gelu),
+  Sequential, cross_entropy, SGD (+momentum), Adam, AdamW. MLPs and CNNs
+  train from Rust and Python.
 - ferro-py: full op bindings, DLPack interop with numpy/torch (leak-free),
   training demos, everything validated against torch.
 
@@ -71,9 +74,10 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
   slice/index_put. Today strided views materialize on read and device views
   fall back to host.
 - (XL, ongoing) Operator long tail, prioritized by workload: transformer set
-  (softmax fused, gelu, rmsnorm, rope, attention masks, cumsum, topk,
-  argmax/argmin, gather/scatter), vision set (conv variants, pooling,
-  interpolate), then breadth. Each op stays one-file/one-agent parallel work.
+  remainder (fused softmax, scatter, exact-erf gelu), vision set (conv
+  variants, pooling, interpolate), then breadth. gelu/rmsnorm/rope/cumsum/
+  topk/argmax/argmin/gather and masked causal attention landed 2026-07.
+  Each op stays one-file/one-agent parallel work.
 - (M) Torch parity fuzzer: property-based random-shape/dtype op tests diffing
   ferro vs torch through DLPack, run in CI. The single highest-leverage
   correctness investment - it turns "validated on examples" into "validated
@@ -129,15 +133,18 @@ a good substrate for an IR.
 
 ## 6. Training stack completeness [P]
 
-- (M) nn: attention block, multi-head attention, Embedding module, Dropout
-  (needs RNG plumbing + train/eval mode), Conv2d module with bias, RMSNorm,
-  GELU; parameter initialization registry.
-- (M) optim: AdamW, weight decay done right, LR schedulers, grad clipping;
+- (M) nn: MultiHeadAttention (RoPE + causal) and a pre-norm TransformerBlock
+  landed 2026-07 - a one-block LM trains and greedy-decodes its target in
+  tests. Remaining: Dropout (needs RNG plumbing + train/eval mode), Conv2d
+  module with bias, parameter initialization registry.
+- (M) optim: AdamW landed 2026-07. Remaining: LR schedulers, grad clipping;
   optimizer state on device (currently host Vecs - must move for GPU
   training).
 - (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
-- (M) Serialization: state_dict save/load; safetensors format read/write
-  (also the model-import path - see milestone below).
+- (M) Serialization: safetensors read/write and named state_dict save/load
+  on the Module trait (strict torch semantics) landed 2026-07, byte-validated
+  against the reference implementation - the model-import path for M3 is
+  open end to end.
 - (M) Data: a minimal DataLoader (batching, shuffling, parallel prefetch).
 - (L) Distributed data parallel once NCCL exists.
 
@@ -189,8 +196,12 @@ a good substrate for an IR.
 - M2: GPU perf floor - caching allocator + streams + real reductions;
   benchmark suite reporting the gap vs torch eager.
 - M3: Transformer inference - load a small real LLM (e.g. a TinyStories-class
-  model) from safetensors and generate tokens correctly. Requires the
-  transformer op set + serialization. This is the credibility milestone.
+  model) from safetensors and generate tokens correctly. The prerequisites
+  (transformer op set, serialization, attention/block modules) landed
+  2026-07, and ferro-fastcpu's char_lm example proves the full pipeline
+  (train -> save -> reload -> generate) on a toy model. Remaining: a real
+  checkpoint's architecture (learned positions or GQA, exact-erf gelu,
+  f16/bf16 weights) plus a tokenizer. This is the credibility milestone.
 - M4: Training parity demo - MNIST/CIFAR conv training on GPU within 2-3x of
   torch eager wall-clock.
 - M5: Compiler MVP - captured, fused forward+backward for an MLP beating
