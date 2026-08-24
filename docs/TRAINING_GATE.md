@@ -64,28 +64,47 @@ bias-free conv wrapper around `Tensor::conv2d` (BatchNorm supplies the shift).
 Fix belongs in core: either broadcast the bias as [1, c, 1, 1] or make add
 handle full right-aligned broadcasting.
 
-Resume semantics note: `Checkpoint` restores model parameters and the global
-step; optimizer moment buffers are not restored because `Sgd`/`AdamW` keep
-them private (see the scope note in checkpoint.rs). Resumed runs therefore
-warm-restart Adam moments; the loss trajectory still continues smoothly.
+Resume semantics note: `Checkpoint` restores model parameters, the global
+step, and optimizer moment buffers via the `OptimizerState` trait
+(`from_module_with_optim` / `load_optim_into`); train_gpt2_small saves and
+restores moments this way (train_classifier_cnn still warm-restarts them).
+Dropout is counter-based Philox keyed by explicit (seed, offset): bit-exact
+resume through stochastic training holds when the caller checkpoints the
+offset alongside the seed (`with_rng_offset`, persisted as `rng_offset` in
+checkpoint.json) - see
+tests/checkpoint.rs::resumed_run_with_dropout_matches_uninterrupted_bitwise.
+Sequential-PRNG state (`Rng`) is not captured, so anything driven by Rng
+stream position (e.g. weight init mid-run) cannot be made bit-exact by
+checkpointing; only init-time draws are reproducible via the seed.
 
 ## Checklist toward the >=50% torch-throughput gate
 
 Done:
 - [x] Autograd-correct modules compose into a real architecture (transformer,
       convnet) and train end to end on CPU.
-- [x] Loss decreases across runs; checkpoints round-trip and resume works.
+- [x] Loss decreases across runs; checkpoints round-trip and resume works -
+      including optimizer moment buffers (`OptimizerState` snapshot/restore in
+      checkpoint.rs, implemented by Sgd/Adam/AdamW).
 - [x] Both programs compile warning-free and run green on CPU.
+- [x] Benchmark harness measuring tokens/sec for the transformer with a torch
+      baseline on identical workload shapes (benchmarks/, twin harnesses with
+      identical param count 1,313,536).
+- [x] ferro-fastcpu wired as the default CPU backend for these workloads;
+      softmax/log_softmax/gelu additionally run as CUDA device kernels
+      (nvrtc), removing their per-op host round-trips.
+- [x] GPU parity progress: the transformer trains end to end on CUDA via i64
+      device residency (token ids/targets stay on device); measured
+      3,554 tok/s on RTX 3090 vs 3,411 tok/s ferro-CPU vs 79,917 tok/s
+      torch-CPU (warmup 10 / timed 30; see benchmarks/README.md).
 
-Remaining once `benchmarks/` lands:
-- [ ] Benchmark harness measuring tokens/sec for the transformer example and
-      images/sec for the CNN, with a torch baseline on identical workload
-      shapes (same batch, seq, dims, dtype f32).
-- [ ] ferro-fastcpu wired as the default backend for these workloads and the
-      gap measured per op class (matmul, softmax, layernorm, conv).
-- [ ] Profile top offenders; candidate fixes: fused ops (fused_ops.rs),
-      strided fastpaths instead of materializing transposes, threaded GEMM.
+Remaining:
+- [ ] Profile top offenders; candidate fixes: fused SDPA/fused AdamW,
+      strided fastpaths instead of materializing transposes, batched kernel
+      launches, threaded host loops.
 - [ ] Gate check: transformer tokens/sec >= 50% of torch on the same machine;
-      record numbers and hardware in benchmarks/README.
+      record numbers and hardware in benchmarks/README. Current standing:
+      ~4% (cpu) and ~4.4% (cuda vs torch-cpu) - op-graph dispatch overhead,
+      not kernels, is the dominant cost.
 - [ ] Optional GPU parity: same programs run unchanged on the cuda backend via
-      Device selection, throughput recorded.
+      Device selection (transformer done; CNN example not yet benchmarked),
+      throughput recorded.

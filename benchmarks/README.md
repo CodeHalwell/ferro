@@ -46,8 +46,29 @@ Timing notes:
 
 Machine: Windows 11, RTX 3090 (CUDA 13.1) - CPU runs below used the CPU
 backend only. Default config unless noted:
-batch=8 seq=128 d_model=256 heads=4 vocab=1024, warmup=100 timed=500,
-params = 1,313,536 (identical count on both sides).
+batch=8 seq=128 d_model=256 heads=4 vocab=1024, params = 1,313,536
+(identical count on both sides). Each table states its warmup/timed steps.
+
+### Post-kernel wave (softmax/log_softmax/gelu now run as device kernels)
+
+warmup=10 timed=30 on both sides:
+
+| Harness | Device | tok/s | step mean ms | p50 | p90 | p99 |
+|---|---|---|---|---|---|---|
+| ferro | cuda:0 | 3,554 | 288.16 | 279.56 | 335.28 | 341.81 |
+| ferro | cpu | 3,411 | 300.20 | 300.28 | 303.70 | 304.52 |
+| PyTorch 2.13.0+cpu | cpu | 79,917 | 12.81 | 13.01 | 13.48 | 13.90 |
+
+CUDA is no longer blocked by i64 transfer and now trains end to end on GPU,
+edging out ferro's own CPU path. Moving softmax/log_softmax/gelu onto nvrtc
+device kernels removed the per-op host round-trips that previously dominated
+the CUDA step time (~2,440-2,630 tok/s before, at ~0% GPU utilisation).
+Remaining overhead is still op-graph dispatch rather than kernels; the
+remaining host-composed ops in the attention path are the next lever.
+
+### Earlier baseline (pre-kernel wave)
+
+warmup=100 timed=500, CPU backend only:
 
 | Harness | Device | tok/s | step mean ms | p50 | p90 | p99 |
 |---|---|---|---|---|---|---|
@@ -55,23 +76,22 @@ params = 1,313,536 (identical count on both sides).
 | PyTorch 2.13.0+cpu | cpu | 74,647 | 13.72 | 13.85 | 14.52 | 15.99 |
 | ferro (cuda attempted) | cpu (fell back: no i64 device transfer yet) | 2,750* | - | - | - | - |
 
-\* cuda attempt ran the CPU fallback path; see "Known gaps".
+\* cuda attempt ran the CPU fallback path; i64 device residency has since
+landed (see PARITY_SESSION_REPORT.md Round 4).
 
-**Measured ratio (cpu): ferro runs at ~3.7% of PyTorch eager CPU throughput
-(PyTorch is ~27x faster).** The gap is dominated by ferro's per-op overhead -
-elementwise kernels, softmax/RMSNorm/embedding paths, and AdamW are all
-single-threaded host loops re-materializing tensors per op, while torch uses
-vectorized multithreaded ATen kernels throughout. Matmul itself already goes
-through ferro-fastcpu's blocked AVX2 kernel.
+**Measured ratio: ferro CPU sits at ~4% of PyTorch eager CPU throughput
+(PyTorch ~20x faster); ferro CUDA reaches ~4.4% of torch CPU.** The CPU gap
+is dominated by per-op overhead - elementwise kernels, RMSNorm/embedding
+paths, and AdamW are single-threaded host loops re-materializing tensors per
+op, while torch uses vectorized multithreaded ATen kernels throughout. Matmul
+goes through ferro-fastcpu's blocked AVX2 kernel; softmax/gelu now also have
+fastcpu/device paths.
 
-### Known gaps found while building this harness
+### Known gaps
 
-- `ferro-cuda` registers and initializes fine on this machine, but
-  `to_device` rejects I64 tensors (`DtypeMismatch`), which blocks token ids /
-  cross-entropy targets from reaching the GPU, so the transformer cannot train
-  on CUDA yet.
 - No fused SDPA / fused AdamW on the Rust side; every backward materializes
   full-size intermediates.
+- Reduction ops still compose on host between device launches.
 
 ## Results table template
 

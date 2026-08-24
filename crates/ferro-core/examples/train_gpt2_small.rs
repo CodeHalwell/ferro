@@ -275,6 +275,7 @@ fn main() -> Result<()> {
     if let Some(dir) = &args.resume {
         let cp = Checkpoint::load_from_dir(dir)?;
         cp.load_into_module(&model)?;
+        cp.load_optim_into(&mut opt)?;
         start_step = cp.step;
         println!("resumed from {dir} at step {start_step}");
     }
@@ -311,13 +312,13 @@ fn main() -> Result<()> {
                 loss_n = 0;
             }
             if args.ckpt_every > 0 && step % args.ckpt_every as u64 == 0 {
-                Checkpoint::from_module(step, &model)
+                Checkpoint::from_module_with_optim(step, &model, &opt)
                     .with_rng_seed(seed)
                     .save_to_dir(&args.out)?;
             }
         }
     }
-    Checkpoint::from_module(step, &model)
+    Checkpoint::from_module_with_optim(step, &model, &opt)
         .with_rng_seed(seed)
         .save_to_dir(&args.out)?;
     println!("done at step {step}; checkpoint in {}", args.out);

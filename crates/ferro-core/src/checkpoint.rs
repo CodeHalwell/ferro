@@ -8,7 +8,8 @@
 //! Note on scope: `Sgd`/`Adam` keep their buffers private and `Rng` does not
 //! expose its internal state, so this module is a container over named
 //! tensors - the caller snapshots and restores optimizer buffers through it,
-//! and records the RNG seed rather than stream position.
+//! and records the RNG seed plus the counter-based dropout stream `offset`
+//! rather than sequential PRNG state.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,10 @@ pub struct Checkpoint {
     pub step: u64,
     /// Seed the training run was started from (`None` if not tracked).
     pub rng_seed: Option<u64>,
+    /// Counter-based RNG stream position (e.g. the Philox `offset` passed to
+    /// `Tensor::dropout`), so recomputed masks land on the same elements
+    /// (`None` if not tracked).
+    pub rng_offset: Option<u64>,
     /// Parameters and optimizer buffers, one entry per named array.
     pub tensors: Vec<(String, Tensor)>,
 }
@@ -43,6 +48,7 @@ impl Checkpoint {
             version: FORMAT_VERSION,
             step,
             rng_seed: None,
+            rng_offset: None,
             tensors: Vec::new(),
         }
     }
@@ -57,6 +63,11 @@ impl Checkpoint {
         self
     }
 
+    pub fn with_rng_offset(mut self, offset: u64) -> Checkpoint {
+        self.rng_offset = Some(offset);
+        self
+    }
+
     /// Snapshot a module's parameters under `model.` names.
     pub fn from_module(step: u64, module: &dyn Module) -> Checkpoint {
         let mut cp = Checkpoint::new(step);
@@ -67,9 +78,16 @@ impl Checkpoint {
     }
 
     /// Restore parameters into a module, strictly: every module parameter must
-    /// be present with matching shape/dtype and nothing extra may remain.
+    /// be present with matching shape/dtype and nothing else may remain -
+    /// except optimizer buffers (`optim.` prefix), which belong to
+    /// `load_optim_into`.
     pub fn load_into_module(&self, module: &dyn Module) -> Result<()> {
-        let mut remaining = self.tensors.clone();
+        let mut remaining = self
+            .tensors
+            .iter()
+            .filter(|(n, _)| !n.starts_with(OPTIM_PREFIX))
+            .cloned()
+            .collect::<Vec<_>>();
         for (name, param) in module.named_parameters() {
             let full = format!("model.{name}");
             let pos = remaining
@@ -181,14 +199,16 @@ impl Checkpoint {
             op: OP,
             msg: format!("{}: {e}", dir.display()),
         })?;
+        let opt_field = |v: Option<u64>| match v {
+            Some(s) => s.to_string(),
+            None => "null".to_string(),
+        };
         let meta = format!(
-            "{{\n  \"version\": {},\n  \"step\": {},\n  \"rng_seed\": {}\n}}\n",
+            "{{\n  \"version\": {},\n  \"step\": {},\n  \"rng_seed\": {},\n  \"rng_offset\": {}\n}}\n",
             self.version,
             self.step,
-            match self.rng_seed {
-                Some(s) => s.to_string(),
-                None => "null".to_string(),
-            }
+            opt_field(self.rng_seed),
+            opt_field(self.rng_offset),
         );
         // Temp file + rename in the target directory: a crash mid-write leaves
         // the previous checkpoint intact rather than a truncated file.
@@ -243,6 +263,7 @@ impl Checkpoint {
             version: meta.version,
             step: meta.step,
             rng_seed: meta.rng_seed,
+            rng_offset: meta.rng_offset,
             tensors,
         })
     }
@@ -252,6 +273,7 @@ struct Meta {
     version: u32,
     step: u64,
     rng_seed: Option<u64>,
+    rng_offset: Option<u64>,
 }
 
 impl Meta {
@@ -279,17 +301,22 @@ impl Meta {
                 .and_then(|v| v.parse::<u64>().ok())
                 .ok_or_else(|| ferr(format!("sidecar missing integer {key:?}")))
         };
-        let rng_seed = match field("rng_seed")? {
-            None | Some("null") => None,
-            Some(v) => Some(
-                v.parse::<u64>()
-                    .map_err(|_| ferr(format!("bad rng_seed {v:?}")))?,
-            ),
+        let opt_num = |key: &str| -> Result<Option<u64>> {
+            match field(key)? {
+                None | Some("null") => Ok(None),
+                Some(v) => v
+                    .parse::<u64>()
+                    .map(Some)
+                    .map_err(|_| ferr(format!("bad {key} {v:?}"))),
+            }
         };
+        let rng_seed = opt_num("rng_seed")?;
+        let rng_offset = opt_num("rng_offset")?;
         Ok(Meta {
             version: num("version")? as u32,
             step: num("step")?,
             rng_seed,
+            rng_offset,
         })
     }
 }

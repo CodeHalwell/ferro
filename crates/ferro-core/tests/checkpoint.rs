@@ -84,6 +84,162 @@ fn round_trip_is_bit_exact() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The OptimizerState path end-to-end: real Adam moments saved through
+/// `from_module_with_optim`, round-tripped via save_to_dir/load_from_dir,
+/// restored with `load_optim_into`, then proven to keep training identically.
+#[test]
+fn optimizer_state_round_trips_and_resumes_bit_exactly() {
+    use ferro_core::optim::{AdamW, OptimizerState};
+
+    let dir = std::env::temp_dir().join(format!("ferro_ckpt_optim_{}", std::process::id()));
+    let mk_model = || -> ModuleList {
+        let mut rng = Rng::new(11);
+        ModuleList::new(vec![Box::new(Linear::new(2, 2, &mut rng))])
+    };
+    let batch = || {
+        Tensor::from_vec(vec![0.5f32, -1.0, 2.0, 0.25, -0.75, 1.5], &[3, 2]).unwrap()
+    };
+
+    let train_step = |model: &ModuleList, opt: &mut AdamW| -> f32 {
+        let x = batch();
+        let target = Tensor::from_vec(vec![0.3f32, -0.6, 0.9, -0.1, 0.4, 0.8], &[3, 2]).unwrap();
+        let out = model.forward(&x).unwrap();
+        let loss = out.sub(&target).unwrap().mul(&out.sub(&target).unwrap()).unwrap().mean();
+        let l = loss.item();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+        l
+    };
+
+    // Uninterrupted reference run.
+    let model_ref = mk_model();
+    let mut opt_ref =
+        AdamW::new(model_ref.parameters(), 0.05).with_weight_decay(0.01);
+    let ref_losses: Vec<f32> = (0..10).map(|_| train_step(&model_ref, &mut opt_ref)).collect();
+
+    // Interrupted at step 4: save params + moments, restore into fresh state.
+    let model_a = mk_model();
+    let mut opt_a = AdamW::new(model_a.parameters(), 0.05).with_weight_decay(0.01);
+    let mut losses = Vec::new();
+    for _ in 0..4 {
+        losses.push(train_step(&model_a, &mut opt_a));
+    }
+    Checkpoint::from_module_with_optim(4, &model_a, &opt_a)
+        .with_rng_seed(123)
+        .with_rng_offset(4096)
+        .save_to_dir(&dir)
+        .unwrap();
+    let cp = Checkpoint::load_from_dir(&dir).unwrap();
+    assert_eq!(cp.rng_seed, Some(123));
+    assert_eq!(cp.rng_offset, Some(4096));
+
+    // Strictness first: an extra optim tensor must be rejected, and a
+    // mismatched optimizer type (Sgd-shaped state) cannot be loaded.
+    let mut extra = cp.clone();
+    extra.tensors.push(("optim.bogus".into(), Tensor::scalar(1.0)));
+    let model_b = mk_model();
+    let mut opt_b = AdamW::new(model_b.parameters(), 0.05).with_weight_decay(0.01);
+    assert!(extra.load_optim_into(&mut opt_b).is_err());
+
+    let mut missing = cp.clone();
+    missing.tensors.retain(|(n, _)| !n.starts_with("optim.v."));
+    assert!(missing.load_optim_into(&mut opt_b).is_err());
+
+    // Real restore, then continue and compare bitwise against the reference.
+    cp.load_into_module(&model_b).unwrap();
+    cp.load_optim_into(&mut opt_b).unwrap();
+    for _ in 4..10 {
+        losses.push(train_step(&model_b, &mut opt_b));
+    }
+    for (i, (a, b)) in losses.iter().zip(&ref_losses).enumerate() {
+        assert!(
+            bit_eq(std::slice::from_ref(a), std::slice::from_ref(b)),
+            "step {i}: {a} vs {b}"
+        );
+    }
+    // Moments themselves are identical after re-convergence.
+    assert_eq!(
+        opt_b.snapshot().len(),
+        opt_ref.snapshot().len() + 0,
+        "same array count"
+    );
+    for ((n, t), (rn, rt)) in opt_b.snapshot().iter().zip(opt_ref.snapshot()) {
+        assert_eq!(n.as_str(), rn);
+        assert!(bit_eq(&t.to_vec(), &rt.to_vec()), "{n} diverged");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Dropout is counter-based Philox keyed by explicit (seed, offset), so a
+/// resumed run is bit-exact through stochastic training provided the offset
+/// counter is checkpointed alongside the seed. This is that proof.
+#[test]
+fn resumed_run_with_dropout_matches_uninterrupted_bitwise() {
+    use ferro_core::optim::AdamW;
+
+    let dir = std::env::temp_dir().join(format!("ferro_ckpt_dropout_{}", std::process::id()));
+    const SEED: u64 = 5;
+    // Each step consumes a disjoint 1024-wide slice of the Philox stream.
+    let offset_for = |step: u64| step * 1024;
+
+    let mk = |seed: u64| -> (ModuleList, AdamW) {
+        let mut rng = Rng::new(seed);
+        let model = ModuleList::new(vec![Box::new(Linear::new(2, 1, &mut rng))]);
+        let opt = AdamW::new(model.parameters(), 0.05).with_weight_decay(0.01);
+        (model, opt)
+    };
+    let x = Tensor::from_vec(
+        vec![0.5f32, -1.0, 2.0, 0.25, -0.75, 1.5, 1.1, -0.4],
+        &[4, 2],
+    )
+    .unwrap();
+    let y = Tensor::from_vec(vec![0.3f32, -0.6, 0.9, 0.2], &[4, 1]).unwrap();
+    let step_loss = |model: &ModuleList, opt: &mut AdamW, step: u64| -> f32 {
+        let dropped = x.dropout(0.25, true, SEED, offset_for(step)).unwrap();
+        let pred = dropped.matmul(&model.named_parameters()[0].1.tensor()).unwrap().add(&model.named_parameters()[1].1.tensor()).unwrap();
+        let loss = pred.sub(&y).unwrap().mul(&pred.sub(&y).unwrap()).unwrap().mean();
+        let l = loss.item();
+        opt.zero_grad();
+        loss.backward();
+        opt.step();
+        l
+    };
+
+    let (ref_model, mut ref_opt) = mk(11);
+    let ref_losses: Vec<f32> = (0..10).map(|s| step_loss(&ref_model, &mut ref_opt, s)).collect();
+
+    let (part_model, mut part_opt) = mk(11);
+    let mut losses = Vec::new();
+    for s in 0..5u64 {
+        losses.push(step_loss(&part_model, &mut part_opt, s));
+    }
+    Checkpoint::from_module_with_optim(5, &part_model, &part_opt)
+        .with_rng_seed(SEED)
+        .with_rng_offset(offset_for(5))
+        .save_to_dir(&dir)
+        .unwrap();
+
+    let cp = Checkpoint::load_from_dir(&dir).unwrap();
+    let (resumed_model, mut resumed_opt) = mk(999); // different init seed on purpose
+    cp.load_into_module(&resumed_model).unwrap();
+    cp.load_optim_into(&mut resumed_opt).unwrap();
+    for s in 5..10u64 {
+        losses.push(step_loss(&resumed_model, &mut resumed_opt, s));
+    }
+    for (i, (a, b)) in losses.iter().zip(&ref_losses).enumerate() {
+        assert!(
+            bit_eq(std::slice::from_ref(a), std::slice::from_ref(b)),
+            "step {i}: {a} vs {b}"
+        );
+    }
+    assert!(bit_eq(
+        &resumed_model.named_parameters()[0].1.tensor().to_vec(),
+        &ref_model.named_parameters()[0].1.tensor().to_vec()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn atomic_write_leaves_no_temp_files_and_newer_version_is_rejected() {
     let dir = std::env::temp_dir().join(format!("ferro_ckpt_atomic_{}", std::process::id()));

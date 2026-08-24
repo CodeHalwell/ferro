@@ -107,7 +107,24 @@ Lesson recorded: `-1.0f32.exp()` parses as `-(1.0f32.exp())` — write `f32::exp
   cuBLAS); the gap is op-graph overhead, not kernels. Next lever: move
   softmax/gelu/reductions onto nvrtc kernels and batch launches.
 
+## Round 5 (device kernels + optimizer-state checkpoints)
+
+|| Suite | Result |
+||---|---|
+|| Benchmark (cuda, warmup 10 / timed 30) | ferro **3,554 tok/s** on RTX 3090 |
+|| Benchmark (cpu, same config) | ferro 3,411 tok/s vs torch CPU 79,917 |
+
+- softmax/log_softmax now run as two-pass row-statistics nvrtc kernels and
+  gelu through the unary device kernel (`ferro-cuda/src/kernels.rs`), with
+  GPU forward+grad tests against CPU. This removed the host round-trips that
+  capped the CUDA run at ~2,440-2,630 tok/s in Round 4.
+- Optimizer state is checkpointed: `OptimizerState` trait implemented by
+  Sgd/Adam/AdamW; `Checkpoint::from_module_with_optim` snapshots parameter +
+  moment buffers into a separate `optimizer.safetensors`, restored strictly
+  via `load_optim_into`. The Round 3 "moments not checkpointed" limit is
+  closed.
+
 ## Remaining for Tier 1 (per PARITY_ROADMAP.md)
-- GPU kernels for softmax/log_softmax/gelu/reduce ops (removes host round-trips)
-- Optimizer state in checkpoints; DLPack CUDA producer; indexing autograd
+- DLPack CUDA producer (export still CPU-only)
+- Indexing autograd (indexing returns detached copies today)
 - Distributed DDP, graph compiler prototype (Tier 2)

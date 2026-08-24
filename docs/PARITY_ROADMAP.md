@@ -21,6 +21,17 @@ The strategy throughout: **match the API surface users touch, not PyTorch's inte
 
 ## 1. Current State (from the deep-dive review)
 
+*Status update (24 August 2026, parity-wave-1): Phase 0 hygiene items and the
+Phase 1 GPU bridge are done - DLPack import validated, leaf-only
+`requires_grad_`, mutexed fake-backend registration, CUDA host-slice
+`Result`s, parallel `reduce_dev`, device-resident backward seeding, i64 device
+residency (embedding/attention run on GPU). Phase 2-4 landed for the common
+path (ops, modules, AdamW/schedulers/clipping, DataLoader, checkpoints incl.
+optimizer state); softmax/log_softmax/gelu now run as CUDA device kernels and
+the transformer trains end to end on RTX 3090 (~3.6k tok/s, see
+benchmarks/README.md). Still open toward T1: DLPack CUDA producer, indexing
+autograd, fused SDPA/AdamW, and the >=50% throughput gate.*
+
 **Strengths to build on**
 - Clean zero-dep core with enforced invariants (structural tests!)
 - Sound single-path autograd (`record_fn`, arity/shape asserted, version counters)
