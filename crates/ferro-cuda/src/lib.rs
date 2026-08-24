@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use cudarc::cublas::sys::cublasOperation_t;
-use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
+use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, StridedBatchedConfig};
 use cudarc::driver::{CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::compile_ptx;
 use ferro_core::dispatch::{DeviceBuffer, ReduceKind};
@@ -201,6 +201,31 @@ impl CudaBackend {
         Ok(c)
     }
 
+    /// Batched GEMM over contiguous per-batch slabs: one strided-batched
+    /// cuBLAS call for the whole (batch,m,k) @ (batch,k,n) product. Operand
+    /// swap matches `sgemm`.
+    #[allow(clippy::too_many_arguments)] // mirrors the Backend::bmm_dev seam
+    fn sgemm_batched(
+        &self,
+        op: &'static str,
+        a: &CudaSlice<f32>,
+        b: &CudaSlice<f32>,
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+        ta: bool,
+        tb: bool,
+    ) -> Result<CudaSlice<f32>> {
+        as_i32(op, batch.max(m.max(k.max(n))))?;
+        let mut c = self.stream.alloc_zeros::<f32>(batch * m * n).map_err(|e| cuda_err(op, e))?;
+        if k > 0 && batch > 0 {
+            let cfg = row_major_sgemm_strided_cfg(batch, m, k, n, ta, tb);
+            unsafe { self.blas.gemm_strided_batched(cfg, b, a, &mut c) }.map_err(|e| cuda_err(op, e))?;
+        }
+        Ok(c)
+    }
+
     fn htod(&self, op: &'static str, data: &[f32]) -> Result<CudaSlice<f32>> {
         self.stream.clone_htod(data).map_err(|e| cuda_err(op, e))
     }
@@ -293,6 +318,25 @@ fn row_major_sgemm_cfg(m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Gemm
         ldb: if ta { m } else { k } as i32,
         beta: 0.0,
         ldc: n as i32,
+    }
+}
+
+/// Same mapping as `row_major_sgemm_cfg` plus per-batch strides. Batch slabs
+/// are contiguous (batch*m*k etc.), so the strides are just the slab sizes.
+fn row_major_sgemm_strided_cfg(
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+    ta: bool,
+    tb: bool,
+) -> StridedBatchedConfig<f32> {
+    StridedBatchedConfig {
+        gemm: row_major_sgemm_cfg(m, k, n, ta, tb),
+        batch_size: batch as i32,
+        stride_a: (k * n) as i64,
+        stride_b: (m * k) as i64,
+        stride_c: (m * n) as i64,
     }
 }
 
@@ -407,6 +451,12 @@ impl Backend for CudaBackend {
         let a = self.resident("matmul_dev", a)?;
         let b = self.resident("matmul_dev", b)?;
         Ok(self.wrap(self.sgemm("matmul_dev", &a.data, &b.data, m, k, n, ta, tb)?))
+    }
+
+    fn bmm_dev(&self, a: &dyn DeviceBuffer, b: &dyn DeviceBuffer, batch: usize, m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Result<Box<dyn DeviceBuffer>> {
+        let a = self.resident("bmm_dev", a)?;
+        let b = self.resident("bmm_dev", b)?;
+        Ok(self.wrap(self.sgemm_batched("bmm_dev", &a.data, &b.data, batch, m, k, n, ta, tb)?))
     }
 
     fn binary_bc_dev(&self, kind: BinaryKind, a: &dyn DeviceBuffer, sa: &[usize], b: &dyn DeviceBuffer, sb: &[usize], out_shape: &[usize]) -> Result<Box<dyn DeviceBuffer>> {
