@@ -16,12 +16,20 @@ impl Tensor {
             // Forward reads through to_vec (an f32 cast), so non-f32 inputs
             // must be rejected rather than silently converted.
             if t.dtype() != DType::F32 {
-                return Err(Error::DtypeMismatch { op: "cat", expected: DType::F32, got: t.dtype() });
+                return Err(Error::DtypeMismatch {
+                    op: "cat",
+                    expected: DType::F32,
+                    got: t.dtype(),
+                });
             }
         }
         for t in &tensors[1..] {
             if t.device() != first.device() {
-                return Err(Error::DeviceMismatch { op: "cat", lhs: first.device(), rhs: t.device() });
+                return Err(Error::DeviceMismatch {
+                    op: "cat",
+                    lhs: first.device(),
+                    rhs: t.device(),
+                });
             }
         }
         let base = first.shape().to_vec();
@@ -35,7 +43,10 @@ impl Tensor {
             let s = t.shape();
             let same_rank = s.len() == base.len();
             let ok = same_rank
-                && s.iter().zip(&base).enumerate().all(|(d, (a, b))| d == dim || a == b);
+                && s.iter()
+                    .zip(&base)
+                    .enumerate()
+                    .all(|(d, (a, b))| d == dim || a == b);
             if !ok {
                 return Err(Error::ShapeMismatch {
                     op: "cat",

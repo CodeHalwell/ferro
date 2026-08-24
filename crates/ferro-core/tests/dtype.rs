@@ -66,7 +66,10 @@ fn to_dtype_converts_and_detaches() {
     assert_eq!(back.to_vec_i64(), vec![0, 1, 2, 3]);
 
     // Casting from a grad-tracked f32 tensor drops autograd history.
-    let leaf = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap().requires_grad_(true);
+    let leaf = Tensor::from_vec(vec![1.0, 2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     assert!(!leaf.to_dtype(DType::F64).requires_grad());
 }
 
@@ -96,9 +99,8 @@ fn reshape_of_strided_view_keeps_dtype() {
 }
 
 #[test]
-#[should_panic(expected = "autograd is f32-only")]
-fn requires_grad_on_i64_panics() {
-    Tensor::arange(3).requires_grad_(true);
+fn requires_grad_on_i64_errors() {
+    assert!(Tensor::arange(3).requires_grad_(true).is_err());
 }
 
 #[test]
@@ -122,17 +124,26 @@ fn float_ops_reject_non_f32() {
 fn index_select_t_values_and_errors() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]).unwrap();
 
-    let s = a.index_select_t(0, &Tensor::from_vec_i64(vec![2, 0], &[2]).unwrap()).unwrap();
+    let s = a
+        .index_select_t(0, &Tensor::from_vec_i64(vec![2, 0], &[2]).unwrap())
+        .unwrap();
     assert_eq!(s.shape(), &[2, 2]);
     assert_eq!(s.to_vec(), vec![5.0, 6.0, 1.0, 2.0]);
 
     let f32_ids = Tensor::from_vec(vec![0.0], &[1]).unwrap();
-    assert!(matches!(a.index_select_t(0, &f32_ids), Err(Error::DtypeMismatch { .. })));
+    assert!(matches!(
+        a.index_select_t(0, &f32_ids),
+        Err(Error::DtypeMismatch { .. })
+    ));
 
     let ids_2d = Tensor::from_vec_i64(vec![0, 1], &[1, 2]).unwrap();
     assert!(a.index_select_t(0, &ids_2d).is_err());
-    assert!(a.index_select_t(0, &Tensor::from_vec_i64(vec![-1], &[1]).unwrap()).is_err());
-    assert!(a.index_select_t(0, &Tensor::from_vec_i64(vec![3], &[1]).unwrap()).is_err());
+    assert!(a
+        .index_select_t(0, &Tensor::from_vec_i64(vec![-1], &[1]).unwrap())
+        .is_err());
+    assert!(a
+        .index_select_t(0, &Tensor::from_vec_i64(vec![3], &[1]).unwrap())
+        .is_err());
 }
 
 #[test]
@@ -140,13 +151,14 @@ fn index_select_t_grad() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]).unwrap();
     let ids = Tensor::from_vec_i64(vec![1, 1, 0], &[3]).unwrap();
     let w = Tensor::from_vec(vec![0.5, -1.0, 2.0, 3.0, -0.7, 1.2], &[3, 2]).unwrap();
-    grad_check(&[a], |t| t[0].index_select_t(0, &ids).unwrap().mul(&w).unwrap().sum());
+    grad_check(&[a], |t| {
+        t[0].index_select_t(0, &ids).unwrap().mul(&w).unwrap().sum()
+    });
 }
 
 #[test]
 fn embedding_forward_and_grad() {
-    let weight =
-        Tensor::from_vec(vec![0.0, 0.1, 1.0, 1.1, 2.0, 2.1, 3.0, 3.1], &[4, 2]).unwrap();
+    let weight = Tensor::from_vec(vec![0.0, 0.1, 1.0, 1.1, 2.0, 2.1, 3.0, 3.1], &[4, 2]).unwrap();
     let ids = Tensor::from_vec_i64(vec![3, 0, 3], &[3]).unwrap();
     let out = embedding(&weight, &ids).unwrap();
     assert_eq!(out.shape(), &[3, 2]);
@@ -156,5 +168,7 @@ fn embedding_forward_and_grad() {
     assert!(embedding(&weight, &Tensor::from_vec_i64(vec![4], &[1]).unwrap()).is_err());
 
     let w = Tensor::from_vec(vec![0.5, -1.0, 2.0, 3.0, -0.7, 1.2], &[3, 2]).unwrap();
-    grad_check(&[weight], |t| embedding(&t[0], &ids).unwrap().mul(&w).unwrap().sum());
+    grad_check(&[weight], |t| {
+        embedding(&t[0], &ids).unwrap().mul(&w).unwrap().sum()
+    });
 }

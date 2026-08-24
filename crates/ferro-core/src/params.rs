@@ -12,7 +12,9 @@ pub struct Param(Rc<RefCell<Tensor>>);
 
 impl Param {
     pub fn new(t: Tensor) -> Param {
-        Param(Rc::new(RefCell::new(t.requires_grad_(true))))
+        Param(Rc::new(RefCell::new(
+            t.requires_grad_(true).expect("Param::new takes a leaf"),
+        )))
     }
 
     /// The current leaf tensor (cheap clone; shares autograd identity).
@@ -22,7 +24,7 @@ impl Param {
 
     /// Install a new value, re-flagging it as a grad-requiring leaf.
     pub fn set(&self, t: Tensor) {
-        *self.0.borrow_mut() = t.requires_grad_(true);
+        *self.0.borrow_mut() = t.requires_grad_(true).expect("Param::set takes a leaf");
     }
 
     pub fn grad(&self) -> Option<Tensor> {

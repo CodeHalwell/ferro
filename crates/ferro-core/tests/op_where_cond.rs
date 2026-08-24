@@ -28,7 +28,11 @@ fn where_grad() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]).unwrap();
     let b = Tensor::from_vec(vec![-1.0, -2.0, -3.0, -4.0], &[4]).unwrap();
     grad_check(&[a, b], |t| {
-        Tensor::where_cond(&mask, &t[0], &t[1]).unwrap().mul(&w).unwrap().sum()
+        Tensor::where_cond(&mask, &t[0], &t[1])
+            .unwrap()
+            .mul(&w)
+            .unwrap()
+            .sum()
     });
 }
 
@@ -40,6 +44,10 @@ fn where_grad_broadcast() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 4]).unwrap();
     let b = Tensor::from_vec(vec![0.5], &[1]).unwrap();
     grad_check(&[a, b], |t| {
-        Tensor::where_cond(&mask, &t[0], &t[1]).unwrap().mul(&w).unwrap().sum()
+        Tensor::where_cond(&mask, &t[0], &t[1])
+            .unwrap()
+            .mul(&w)
+            .unwrap()
+            .sum()
     });
 }

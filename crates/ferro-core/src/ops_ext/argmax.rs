@@ -16,15 +16,27 @@ impl Tensor {
     }
 }
 
-fn arg_reduce(t: &Tensor, op: &'static str, dim: usize, keepdim: bool, better: impl Fn(f32, f32) -> bool) -> Result<Tensor> {
+fn arg_reduce(
+    t: &Tensor,
+    op: &'static str,
+    dim: usize,
+    keepdim: bool,
+    better: impl Fn(f32, f32) -> bool,
+) -> Result<Tensor> {
     let ndim = t.ndim();
     if dim >= ndim {
-        return Err(Error::InvalidShape { op, msg: format!("dim {dim} out of range for rank {ndim}") });
+        return Err(Error::InvalidShape {
+            op,
+            msg: format!("dim {dim} out of range for rank {ndim}"),
+        });
     }
     let shape = t.shape().to_vec();
     let size = shape[dim];
     if size == 0 {
-        return Err(Error::InvalidShape { op, msg: "cannot reduce an empty dimension".into() });
+        return Err(Error::InvalidShape {
+            op,
+            msg: "cannot reduce an empty dimension".into(),
+        });
     }
     let stride: usize = shape[dim + 1..].iter().product();
     let outer: usize = shape[..dim].iter().product();

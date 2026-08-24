@@ -1,5 +1,8 @@
 use ferro_core::nn::{cross_entropy, cross_entropy_indices, one_hot};
-use ferro_core::nn::{load_module, save_module, scaled_dot_product_attention, Embedding, Gelu, LayerNorm, Linear, Module, MultiHeadAttention, Relu, RmsNorm, Sequential, TransformerBlock};
+use ferro_core::nn::{
+    load_module, save_module, scaled_dot_product_attention, Embedding, Gelu, LayerNorm, Linear,
+    Module, MultiHeadAttention, Relu, RmsNorm, Sequential, TransformerBlock,
+};
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
 
@@ -17,7 +20,11 @@ fn cross_entropy_value_and_grad() {
     let logits = Tensor::zeros(&[2, 2]);
     let targets = Tensor::from_vec(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]).unwrap();
     let loss = cross_entropy(&logits, &targets).unwrap();
-    assert!((loss.item() - 2f32.ln()).abs() < 1e-5, "expected ln2, got {}", loss.item());
+    assert!(
+        (loss.item() - 2f32.ln()).abs() < 1e-5,
+        "expected ln2, got {}",
+        loss.item()
+    );
 
     let logits = Tensor::from_vec(vec![0.5, -0.3, 1.2, 0.1, -0.8, 0.4], &[2, 3]).unwrap();
     let t = Tensor::from_vec(vec![0.0, 1.0, 0.0, 1.0, 0.0, 0.0], &[2, 3]).unwrap();
@@ -44,7 +51,10 @@ fn cross_entropy_training_separates_classes() {
         }
         last = loss.item();
     }
-    assert!(last < 0.05 && last < first * 0.2, "loss did not converge: {first} -> {last}");
+    assert!(
+        last < 0.05 && last < first * 0.2,
+        "loss did not converge: {first} -> {last}"
+    );
 }
 
 #[test]
@@ -128,14 +138,21 @@ fn training_loop_decreases_loss() {
             let grad = p.grad().unwrap().to_vec();
             let cur = p.tensor();
             let shape = cur.shape().to_vec();
-            let updated: Vec<f32> =
-                cur.to_vec().iter().zip(grad.iter()).map(|(w, g)| w - lr * g).collect();
+            let updated: Vec<f32> = cur
+                .to_vec()
+                .iter()
+                .zip(grad.iter())
+                .map(|(w, g)| w - lr * g)
+                .collect();
             p.set(Tensor::from_vec(updated, &shape).unwrap());
             p.zero_grad();
         }
     }
 
-    assert!(last_loss < first_loss * 0.5, "loss did not decrease: {first_loss} -> {last_loss}");
+    assert!(
+        last_loss < first_loss * 0.5,
+        "loss did not decrease: {first_loss} -> {last_loss}"
+    );
 }
 
 #[test]
@@ -204,13 +221,22 @@ fn layernorm_in_mlp_trains() {
         opt.step();
     }
 
-    assert!(last_loss < first_loss * 0.5, "loss did not decrease: {first_loss} -> {last_loss}");
+    assert!(
+        last_loss < first_loss * 0.5,
+        "loss did not decrease: {first_loss} -> {last_loss}"
+    );
 }
 
 #[test]
 fn rmsnorm_normalizes_any_rank() {
     let rn = RmsNorm::new(4);
-    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, -0.5, 0.7, 2.3, -1.1, 0.2, 0.9, -0.4, 1.6], &[1, 3, 4]).unwrap();
+    let x = Tensor::from_vec(
+        vec![
+            1.0, 2.0, 3.0, 4.0, -0.5, 0.7, 2.3, -1.1, 0.2, 0.9, -0.4, 1.6,
+        ],
+        &[1, 3, 4],
+    )
+    .unwrap();
     let out = rn.forward(&x).unwrap();
     assert_eq!(out.shape(), &[1, 3, 4]);
     for row in out.to_vec().chunks(4) {
@@ -263,12 +289,16 @@ fn attention_uniform_when_query_is_zero() {
     let k = Tensor::from_vec(vec![0.3, -0.9, 1.2, 0.4, -0.5, 0.8], &[1, 3, 2]).unwrap();
     let v = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[1, 3, 2]).unwrap();
 
-    let full = scaled_dot_product_attention(&q, &k, &v, false).unwrap().to_vec();
+    let full = scaled_dot_product_attention(&q, &k, &v, false)
+        .unwrap()
+        .to_vec();
     for row in full.chunks(2) {
         assert!((row[0] - 3.0).abs() < 1e-5 && (row[1] - 4.0).abs() < 1e-5);
     }
 
-    let causal = scaled_dot_product_attention(&q, &k, &v, true).unwrap().to_vec();
+    let causal = scaled_dot_product_attention(&q, &k, &v, true)
+        .unwrap()
+        .to_vec();
     let want = [1.0, 2.0, 2.0, 3.0, 3.0, 4.0];
     for (g, w) in causal.iter().zip(want) {
         assert!((g - w).abs() < 1e-5, "got {g}, want {w}");
@@ -289,9 +319,17 @@ fn attention_rejects_mismatched_shapes() {
 #[test]
 fn attention_grad() {
     let q = Tensor::from_vec(vec![0.4, -0.7, 1.1, 0.2, -0.3, 0.9, 0.6, -1.2], &[1, 2, 4]).unwrap();
-    let k = Tensor::from_vec((0..12).map(|i| ((i * 5 % 7) as f32 - 3.0) / 3.0).collect(), &[1, 3, 4]).unwrap();
+    let k = Tensor::from_vec(
+        (0..12).map(|i| ((i * 5 % 7) as f32 - 3.0) / 3.0).collect(),
+        &[1, 3, 4],
+    )
+    .unwrap();
     let v = Tensor::from_vec((0..6).map(|i| i as f32 / 3.0 - 1.0).collect(), &[1, 3, 2]).unwrap();
-    grad_check(&[q, k, v], |t| scaled_dot_product_attention(&t[0], &t[1], &t[2], true).unwrap().sum());
+    grad_check(&[q, k, v], |t| {
+        scaled_dot_product_attention(&t[0], &t[1], &t[2], true)
+            .unwrap()
+            .sum()
+    });
 }
 
 #[test]
@@ -307,7 +345,9 @@ fn transformer_primitives_compose_end_to_end() {
     let h = rn.forward(&emb.forward(&ids).unwrap()).unwrap();
     let q = h.rope(&pos, 10000.0).unwrap();
     let k = h.rope(&pos, 10000.0).unwrap();
-    let out = scaled_dot_product_attention(&q, &k, &h, true).unwrap().gelu();
+    let out = scaled_dot_product_attention(&q, &k, &h, true)
+        .unwrap()
+        .gelu();
     assert_eq!(out.shape(), &[1, 3, 4]);
 
     out.sum().backward();
@@ -327,7 +367,9 @@ fn mha_single_head_with_identity_projections_matches_sdpa() {
     }
     let x = Tensor::from_vec(vec![0.4, -0.7, 1.1, 0.2, -0.3, 0.9], &[1, 2, 3]).unwrap();
     let got = mha.forward(&x).unwrap().to_vec();
-    let want = scaled_dot_product_attention(&x, &x, &x, true).unwrap().to_vec();
+    let want = scaled_dot_product_attention(&x, &x, &x, true)
+        .unwrap()
+        .to_vec();
     for (g, w) in got.iter().zip(&want) {
         assert!((g - w).abs() < 1e-5, "got {g}, want {w}");
     }
@@ -336,14 +378,29 @@ fn mha_single_head_with_identity_projections_matches_sdpa() {
 #[test]
 fn mha_is_causal_and_rejects_bad_shapes() {
     let rng = Rng::new(4);
-    let mha = MultiHeadAttention::new(4, 2, true, &rng).unwrap().with_rope(10000.0);
+    let mha = MultiHeadAttention::new(4, 2, true, &rng)
+        .unwrap()
+        .with_rope(10000.0);
     let base: Vec<f32> = (0..12).map(|i| ((i * 7 % 11) as f32 - 5.0) / 4.0).collect();
     let mut bumped = base.clone();
     bumped[9] += 1.0; // last token, batch stays [1, 3, 4]
-    let a = mha.forward(&Tensor::from_vec(base, &[1, 3, 4]).unwrap()).unwrap().to_vec();
-    let b = mha.forward(&Tensor::from_vec(bumped, &[1, 3, 4]).unwrap()).unwrap().to_vec();
-    assert_eq!(&a[..8], &b[..8], "perturbing token 2 changed outputs for tokens 0/1");
-    assert!(a[8..].iter().zip(&b[8..]).any(|(x, y)| x != y), "perturbation never reached token 2");
+    let a = mha
+        .forward(&Tensor::from_vec(base, &[1, 3, 4]).unwrap())
+        .unwrap()
+        .to_vec();
+    let b = mha
+        .forward(&Tensor::from_vec(bumped, &[1, 3, 4]).unwrap())
+        .unwrap()
+        .to_vec();
+    assert_eq!(
+        &a[..8],
+        &b[..8],
+        "perturbing token 2 changed outputs for tokens 0/1"
+    );
+    assert!(
+        a[8..].iter().zip(&b[8..]).any(|(x, y)| x != y),
+        "perturbation never reached token 2"
+    );
 
     assert!(MultiHeadAttention::new(5, 2, true, &rng).is_err());
     assert!(MultiHeadAttention::new(4, 0, true, &rng).is_err());
@@ -354,8 +411,14 @@ fn mha_is_causal_and_rejects_bad_shapes() {
 #[test]
 fn mha_grad() {
     let rng = Rng::new(5);
-    let mha = MultiHeadAttention::new(4, 2, true, &rng).unwrap().with_rope(10000.0);
-    let x = Tensor::from_vec((0..8).map(|i| ((i * 3 % 7) as f32 - 3.0) / 3.0).collect(), &[1, 2, 4]).unwrap();
+    let mha = MultiHeadAttention::new(4, 2, true, &rng)
+        .unwrap()
+        .with_rope(10000.0);
+    let x = Tensor::from_vec(
+        (0..8).map(|i| ((i * 3 % 7) as f32 - 3.0) / 3.0).collect(),
+        &[1, 2, 4],
+    )
+    .unwrap();
     grad_check(&[x], |t| mha.forward(&t[0]).unwrap().sum());
 }
 
@@ -392,7 +455,10 @@ fn transformer_block_learns_next_token() {
         loss.backward();
         opt.step();
     }
-    assert!(last < 0.1 && last < first * 0.1, "LM did not learn: {first} -> {last}");
+    assert!(
+        last < 0.1 && last < first * 0.1,
+        "LM did not learn: {first} -> {last}"
+    );
 
     // Greedy decode from the trained model: every position predicts its target.
     let h = block.forward(&emb.forward(&ids).unwrap()).unwrap();
@@ -405,13 +471,32 @@ fn transformer_block_learns_next_token() {
 fn state_dict_names_and_roundtrip() {
     let rng = Rng::new(10);
     let block = TransformerBlock::new(4, 2, &rng).unwrap();
-    let names: Vec<String> = block.named_parameters().into_iter().map(|(n, _)| n).collect();
+    let names: Vec<String> = block
+        .named_parameters()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
     assert_eq!(
         names,
-        ["norm1.weight", "attn.q_proj", "attn.k_proj", "attn.v_proj", "attn.o_proj", "norm2.weight", "mlp.up.weight", "mlp.up.bias", "mlp.down.weight", "mlp.down.bias"]
+        [
+            "norm1.weight",
+            "attn.q_proj",
+            "attn.k_proj",
+            "attn.v_proj",
+            "attn.o_proj",
+            "norm2.weight",
+            "mlp.up.weight",
+            "mlp.up.bias",
+            "mlp.down.weight",
+            "mlp.down.bias"
+        ]
     );
 
-    let seq = Sequential::new(vec![Box::new(Linear::new(2, 2, &rng)), Box::new(Relu), Box::new(Linear::new(2, 1, &rng))]);
+    let seq = Sequential::new(vec![
+        Box::new(Linear::new(2, 2, &rng)),
+        Box::new(Relu),
+        Box::new(Linear::new(2, 1, &rng)),
+    ]);
     let seq_names: Vec<String> = seq.named_parameters().into_iter().map(|(n, _)| n).collect();
     assert_eq!(seq_names, ["0.weight", "0.bias", "2.weight", "2.bias"]);
 
@@ -421,15 +506,27 @@ fn state_dict_names_and_roundtrip() {
 
     let x = Tensor::from_vec((0..12).map(|i| i as f32 / 6.0 - 1.0).collect(), &[1, 3, 4]).unwrap();
     let fresh = TransformerBlock::new(4, 2, &Rng::new(999)).unwrap();
-    assert_ne!(fresh.forward(&x).unwrap().to_vec(), block.forward(&x).unwrap().to_vec());
+    assert_ne!(
+        fresh.forward(&x).unwrap().to_vec(),
+        block.forward(&x).unwrap().to_vec()
+    );
     load_module(&path, &fresh).unwrap();
-    assert_eq!(fresh.forward(&x).unwrap().to_vec(), block.forward(&x).unwrap().to_vec());
+    assert_eq!(
+        fresh.forward(&x).unwrap().to_vec(),
+        block.forward(&x).unwrap().to_vec()
+    );
 
     // Strict loading: wrong architecture fails on names, wrong sizes on shape.
     let wrong_arch = Linear::new(4, 4, &rng);
-    assert!(matches!(load_module(&path, &wrong_arch), Err(ferro_core::Error::Format { .. })));
+    assert!(matches!(
+        load_module(&path, &wrong_arch),
+        Err(ferro_core::Error::Format { .. })
+    ));
     let wrong_size = TransformerBlock::new(8, 2, &Rng::new(1)).unwrap();
-    assert!(matches!(load_module(&path, &wrong_size), Err(ferro_core::Error::Format { .. })));
+    assert!(matches!(
+        load_module(&path, &wrong_size),
+        Err(ferro_core::Error::Format { .. })
+    ));
     std::fs::remove_file(&path).unwrap();
 }
 

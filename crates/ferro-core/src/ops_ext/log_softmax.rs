@@ -2,16 +2,34 @@
 //! trick: along each slice `m = max(x)`, `lse = m + log(sum(exp(x - m)))`, and
 //! `y_i = x_i - lse`. Backward: with `sm_i = exp(y_i)` (softmax), the gradient is
 //! `dx_i = g_i - sm_i * sum_k g_k`, computed per slice over `dim`.
+//!
+//! Device-resident whole buffers take the backend's `log_softmax_dev` row
+//! kernel (last-dim only); the backward is then composed from resident tensor
+//! ops (exp/mul/sub/sum_dim) so no host round trip happens.
 
 use crate::error::{Error, Result};
 use crate::reduce::pairwise_sum_strided;
-use crate::tensor::Tensor;
+use crate::tensor::{raw_row_softmax, Tensor};
 
 impl Tensor {
     pub fn log_softmax(&self, dim: usize) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "log_softmax", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "log_softmax",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
+        }
+        if let Some(out) = raw_row_softmax(self, dim, true) {
+            if !self.requires_grad() {
+                return Ok(out);
+            }
+            let y = out.detach_copy();
+            return Ok(out.record_fn(vec![self.clone()], move |g| {
+                // dx = g - softmax(y) * sum(g, dim), keepdim sum broadcasting.
+                let sg = g.sum_dim(dim, true).unwrap();
+                vec![g.sub(&y.exp().mul(&sg).unwrap()).unwrap()]
+            }));
         }
         let shape = self.shape().to_vec();
         let x = self.to_vec();

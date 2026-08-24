@@ -16,9 +16,22 @@ impl Tensor {
         let a_shape = a.shape().to_vec();
         let b_shape = b.shape().to_vec();
         Ok(out.record_fn(vec![a.clone(), b.clone()], move |g| {
-            let ga = raw_binary("where_bw", g, &cond, |gg, c| if c != 0.0 { gg } else { 0.0 });
-            let gb = raw_binary("where_bw", g, &cond, |gg, c| if c != 0.0 { 0.0 } else { gg });
-            vec![unbroadcast(&ga.unwrap(), &a_shape), unbroadcast(&gb.unwrap(), &b_shape)]
+            let ga = raw_binary(
+                "where_bw",
+                g,
+                &cond,
+                |gg, c| if c != 0.0 { gg } else { 0.0 },
+            );
+            let gb = raw_binary(
+                "where_bw",
+                g,
+                &cond,
+                |gg, c| if c != 0.0 { 0.0 } else { gg },
+            );
+            vec![
+                unbroadcast(&ga.unwrap(), &a_shape),
+                unbroadcast(&gb.unwrap(), &b_shape),
+            ]
         }))
     }
 }

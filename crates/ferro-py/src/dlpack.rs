@@ -206,12 +206,51 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
         return Err(PyValueError::new_err("only float32 DLPack tensors are supported"));
     }
 
+    if t.ndim < 0 {
+        return Err(PyValueError::new_err("DLPack tensor has negative ndim"));
+    }
     let ndim = t.ndim as usize;
     if ndim > 0 && t.shape.is_null() {
         return Err(PyValueError::new_err("DLPack tensor has null shape"));
     }
-    let shape: Vec<usize> = (0..ndim).map(|i| *t.shape.add(i) as usize).collect();
-    let numel: usize = if ndim == 0 { 1 } else { shape.iter().product() };
+    // Validate dims before any arithmetic: a negative or oversized dim must be
+    // rejected rather than wrapped into a huge usize.
+    let mut shape: Vec<usize> = Vec::with_capacity(ndim);
+    for i in 0..ndim {
+        let d = *t.shape.add(i);
+        if d < 0 {
+            return Err(PyValueError::new_err(format!(
+                "DLPack tensor has negative extent ({d}) in dimension {i}"
+            )));
+        }
+        shape.push(d as usize);
+    }
+    let numel: usize = if ndim == 0 {
+        1
+    } else {
+        shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d)).ok_or_else(|| {
+            PyValueError::new_err("DLPack tensor element count overflows usize")
+        })?
+    };
+    // Validate strides (in elements) by bounding every gatherable offset:
+    // the min and max element offset over all index combinations must stay
+    // within [0, numel) relative to base, or pointer arithmetic below could
+    // read outside the producer's buffer.
+    if !t.strides.is_null() {
+        let mut lo: i128 = 0;
+        let mut hi: i128 = 0;
+        for i in 0..ndim {
+            let s = *t.strides.add(i);
+            let span = (shape[i] as i128 - 1) * s as i128;
+            lo += span.min(0);
+            hi += span.max(0);
+        }
+        if lo < 0 || hi >= numel as i128 {
+            return Err(PyValueError::new_err(
+                "DLPack tensor strides reach outside the described element range",
+            ));
+        }
+    }
     // Zero-element tensors may carry a null data pointer; never touch it
     // (pointer arithmetic and from_raw_parts require non-null even for len 0).
     if numel == 0 {
@@ -222,6 +261,9 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
         return Err(PyValueError::new_err("DLPack tensor has null data pointer"));
     }
 
+    if t.byte_offset as usize % std::mem::size_of::<f32>() != 0 {
+        return Err(PyValueError::new_err("DLPack byte_offset is not f32-aligned"));
+    }
     let base = (t.data as *const u8).add(t.byte_offset as usize) as *const f32;
 
     // Gather elements honoring the source strides (in elements) if present;
@@ -251,4 +293,142 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
 
     CoreTensor::from_contiguous(&data, &shape)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // read_managed only reads dl_tensor before the deleter runs, so tests can
+    // pass a zeroed DLManagedTensor plus raw shape/strides scratch buffers.
+    // PyErr construction needs a live interpreter, hence with_gil everywhere.
+    struct Fixture {
+        managed: Box<DLManagedTensor>,
+        shape: Vec<i64>,
+        strides: Vec<i64>,
+        explicit_strides: bool,
+        data: Vec<f32>,
+    }
+
+    fn fixture(shape: Vec<i64>, strides: Option<Vec<i64>>, data: Vec<f32>) -> Fixture {
+        let mut s = vec![1i64; shape.len()];
+        for i in (0..shape.len().saturating_sub(1)).rev() {
+            s[i] = s[i + 1].wrapping_mul(shape[i + 1]);
+        }
+        let explicit_strides = strides.is_some();
+        let strides = strides.unwrap_or(s);
+        Fixture {
+            managed: Box::new(DLManagedTensor {
+                dl_tensor: DLTensor {
+                    data: std::ptr::null_mut(),
+                    device: DLDevice { device_type: K_DL_CPU, device_id: 0 },
+                    ndim: shape.len() as c_int,
+                    dtype: DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 },
+                    shape: std::ptr::null_mut(),
+                    strides: std::ptr::null_mut(),
+                    byte_offset: 0,
+                },
+                manager_ctx: std::ptr::null_mut(),
+                deleter: None,
+            }),
+            shape,
+            strides,
+            explicit_strides,
+            data,
+        }
+    }
+
+    fn run(f: &mut Fixture) -> PyResult<CoreTensor> {
+        let t = &mut f.managed.dl_tensor;
+        t.data = if f.data.is_empty() { std::ptr::null_mut() } else { f.data.as_mut_ptr() as *mut c_void };
+        t.shape = f.shape.as_mut_ptr();
+        t.strides = if f.explicit_strides { f.strides.as_mut_ptr() } else { std::ptr::null_mut() };
+        unsafe { read_managed(f.managed.as_mut() as *mut DLManagedTensor) }
+    }
+
+    // The statically-linked interpreter cannot locate its own installation,
+    // so seed PYTHONHOME from the system python before initializing it.
+    fn init_python() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            if std::env::var_os("PYTHONHOME").is_none() {
+                if let Ok(out) = std::process::Command::new("python")
+                    .args(["-c", "import sys; print(sys.base_prefix)"])
+                    .output()
+                {
+                    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !p.is_empty() {
+                        unsafe { std::env::set_var("PYTHONHOME", p) };
+                    }
+                }
+            }
+            pyo3::prepare_freethreaded_python();
+        });
+    }
+
+    fn err(f: &mut Fixture) -> String {
+        init_python();
+        Python::with_gil(|_| run(f).err().expect("expected error").to_string())
+    }
+
+    fn ok(f: &mut Fixture) -> Vec<f32> {
+        init_python();
+        Python::with_gil(|_| run(f).expect("expected ok").to_vec())
+    }
+
+    #[test]
+    fn contiguous_round_trip() {
+        let mut f = fixture(vec![2, 3], None, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(ok(&mut f), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn rejects_negative_ndim_and_dims() {
+        let mut f = fixture(vec![2], None, vec![0.0]);
+        f.managed.dl_tensor.ndim = -1;
+        assert!(err(&mut f).contains("negative ndim"));
+
+        let mut f = fixture(vec![2, -3], None, vec![0.0; 6]);
+        assert!(err(&mut f).contains("negative extent"));
+    }
+
+    #[test]
+    fn rejects_numel_overflow() {
+        let big = 1i64 << 62;
+        let mut f = fixture(vec![big, big, big, big], Some(vec![0; 4]), vec![]);
+        assert!(err(&mut f).contains("overflows"));
+    }
+
+    #[test]
+    fn rejects_strides_reaching_outside_buffer() {
+        // Each stride alone is within numel, but combined offsets are not.
+        let mut f = fixture(vec![2, 2], Some(vec![4, 1]), vec![0.0; 4]);
+        assert!(err(&mut f).contains("outside"));
+    }
+
+    #[test]
+    fn gathers_with_strides() {
+        // Row-major (2,3) viewed transposed via strides.
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let mut f = fixture(vec![3, 2], Some(vec![1, 3]), data);
+        assert_eq!(ok(&mut f), [1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+
+        let mut f = fixture(vec![2, 3], None, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(ok(&mut f), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn rejects_bad_device_dtype_and_null_data() {
+        let mut f = fixture(vec![2], None, vec![0.0; 2]);
+        f.managed.dl_tensor.device.device_type = 2;
+        assert!(err(&mut f).contains("kDLCPU"));
+
+        let mut f = fixture(vec![2], None, vec![0.0; 2]);
+        f.managed.dl_tensor.dtype.bits = 64;
+        assert!(err(&mut f).contains("float32"));
+
+        let mut f = fixture(vec![2], None, vec![]);
+        f.managed.dl_tensor.data = std::ptr::null_mut();
+        assert!(err(&mut f).contains("null data pointer"));
+    }
 }

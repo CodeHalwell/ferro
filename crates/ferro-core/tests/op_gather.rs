@@ -34,5 +34,11 @@ fn gather_rejects_bad_inputs() {
 fn gather_grad_accumulates_duplicates() {
     let t = Tensor::from_vec(vec![0.7, -1.1, 0.4, 1.3, -0.6, 0.2], &[2, 3]).unwrap();
     let idx = Tensor::from_vec_i64(vec![1, 1, 0, 2], &[2, 2]).unwrap();
-    grad_check(&[t], |x| x[0].gather(1, &idx).unwrap().mul(&x[0].gather(1, &idx).unwrap()).unwrap().sum());
+    grad_check(&[t], |x| {
+        x[0].gather(1, &idx)
+            .unwrap()
+            .mul(&x[0].gather(1, &idx).unwrap())
+            .unwrap()
+            .sum()
+    });
 }

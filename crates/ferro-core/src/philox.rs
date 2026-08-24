@@ -40,14 +40,20 @@ pub struct Philox {
 
 impl Philox {
     pub fn new(seed: u64) -> Self {
-        Philox { key: [seed as u32, (seed >> 32) as u32] }
+        Philox {
+            key: [seed as u32, (seed >> 32) as u32],
+        }
     }
 
     /// Ten Philox rounds over a 128-bit counter split into 4 little-endian
     /// u32 words, returning the mixed 4-word block.
     pub fn block(&self, counter: u128) -> [u32; 4] {
-        let mut ctr =
-            [counter as u32, (counter >> 32) as u32, (counter >> 64) as u32, (counter >> 96) as u32];
+        let mut ctr = [
+            counter as u32,
+            (counter >> 32) as u32,
+            (counter >> 64) as u32,
+            (counter >> 96) as u32,
+        ];
         let mut key = self.key;
         for _ in 0..10 {
             ctr = round(ctr, key);
@@ -73,7 +79,10 @@ mod tests {
     #[test]
     fn known_answer_zero_key_zero_counter() {
         let p = Philox::new(0);
-        assert_eq!(p.block(0), [0x6627_e8d5, 0xe169_c58d, 0xbc57_ac4c, 0x9b00_dbd8]);
+        assert_eq!(
+            p.block(0),
+            [0x6627_e8d5, 0xe169_c58d, 0xbc57_ac4c, 0x9b00_dbd8]
+        );
     }
 
     #[test]

@@ -6,15 +6,27 @@ use crate::dtype::DType;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     /// Two shapes could not be broadcast/aligned for an op.
-    ShapeMismatch { op: &'static str, lhs: Vec<usize>, rhs: Vec<usize> },
+    ShapeMismatch {
+        op: &'static str,
+        lhs: Vec<usize>,
+        rhs: Vec<usize>,
+    },
     /// A shape argument was invalid for the requested op (e.g. bad reshape).
     InvalidShape { op: &'static str, msg: String },
     /// An op does not yet support the given rank/config in this MVP.
     Unsupported { op: &'static str, msg: String },
     /// Operands live on different devices.
-    DeviceMismatch { op: &'static str, lhs: Device, rhs: Device },
+    DeviceMismatch {
+        op: &'static str,
+        lhs: Device,
+        rhs: Device,
+    },
     /// An operand has the wrong dtype for the op (float math is f32-only).
-    DtypeMismatch { op: &'static str, expected: DType, got: DType },
+    DtypeMismatch {
+        op: &'static str,
+        expected: DType,
+        got: DType,
+    },
     /// A filesystem read/write failed (path and OS error in the message).
     Io { op: &'static str, msg: String },
     /// A serialized file is malformed or uses an unsupported encoding.

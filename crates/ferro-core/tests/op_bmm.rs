@@ -17,7 +17,10 @@ fn bmm_values() {
     .unwrap();
     let c = a.bmm(&b).unwrap();
     assert_eq!(c.shape(), &[2, 2, 2]);
-    assert_eq!(c.to_vec(), vec![4.0, 5.0, 10.0, 11.0, 9.0, 12.0, 18.0, 24.0]);
+    assert_eq!(
+        c.to_vec(),
+        vec![4.0, 5.0, 10.0, 11.0, 9.0, 12.0, 18.0, 24.0]
+    );
 }
 
 #[test]
@@ -34,12 +37,16 @@ fn bmm_shape_error() {
 #[test]
 fn bmm_grad() {
     let a = Tensor::from_vec(
-        vec![0.5, -1.0, 2.0, 1.5, 0.3, -0.7, 1.0, 2.0, -1.0, 0.5, 0.8, -0.2],
+        vec![
+            0.5, -1.0, 2.0, 1.5, 0.3, -0.7, 1.0, 2.0, -1.0, 0.5, 0.8, -0.2,
+        ],
         &[2, 2, 3],
     )
     .unwrap();
     let b = Tensor::from_vec(
-        vec![1.0, -0.5, 0.2, 1.3, -1.0, 0.7, 0.4, 0.9, -0.3, 1.1, 0.6, -0.8],
+        vec![
+            1.0, -0.5, 0.2, 1.3, -1.0, 0.7, 0.4, 0.9, -0.3, 1.1, 0.6, -0.8,
+        ],
         &[2, 3, 2],
     )
     .unwrap();
@@ -48,10 +55,14 @@ fn bmm_grad() {
 
 // Deterministic fill, no external rand dep (mirrors ferro-fastcpu's test helper).
 fn lcg_fill(seed: u64, len: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+    let mut state = seed
+        .wrapping_mul(2862933555777941757)
+        .wrapping_add(3037000493);
     (0..len)
         .map(|_| {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((state >> 33) as f32 / (1u64 << 31) as f32) - 0.5
         })
         .collect()
@@ -61,12 +72,22 @@ fn assert_close(actual: &[f32], expected: &[f32], what: &str) {
     assert_eq!(actual.len(), expected.len(), "{what}: length mismatch");
     for (i, (&x, &y)) in actual.iter().zip(expected).enumerate() {
         let tol = 1e-4 * y.abs().max(1.0);
-        assert!((x - y).abs() <= tol, "{what}: mismatch at {i}: {x} vs {y} (tol {tol})");
+        assert!(
+            (x - y).abs() <= tol,
+            "{what}: mismatch at {i}: {x} vs {y} (tol {tol})"
+        );
     }
 }
 
 // Pre-dispatch reference forward (the old bmm.rs ijp triple loop).
-fn naive_batched_matmul(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+fn naive_batched_matmul(
+    a: &[f32],
+    b: &[f32],
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<f32> {
     let mut c = vec![0.0f32; batch * m * n];
     for bi in 0..batch {
         let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
@@ -148,8 +169,14 @@ fn bmm_dispatch_parity() {
             let what = format!("batch={batch} m={m} k={k} n={n}");
             let a_data = lcg_fill(1000 + i as u64, batch * m * k);
             let b_data = lcg_fill(2000 + i as u64, batch * k * n);
-            let a = Tensor::from_vec(a_data.clone(), &[batch, m, k]).unwrap().requires_grad_(true);
-            let b = Tensor::from_vec(b_data.clone(), &[batch, k, n]).unwrap().requires_grad_(true);
+            let a = Tensor::from_vec(a_data.clone(), &[batch, m, k])
+                .unwrap()
+                .requires_grad_(true)
+                .unwrap();
+            let b = Tensor::from_vec(b_data.clone(), &[batch, k, n])
+                .unwrap()
+                .requires_grad_(true)
+                .unwrap();
 
             let c = a.bmm(&b).unwrap();
             let expected_c = naive_batched_matmul(&a_data, &b_data, batch, m, k, n);
@@ -157,9 +184,18 @@ fn bmm_dispatch_parity() {
 
             c.sum().backward();
             let g_data = vec![1.0f32; batch * m * n]; // d(sum)/dC is all-ones.
-            let (expected_da, expected_db) = naive_batched_backward(&a_data, &b_data, &g_data, batch, m, k, n);
-            assert_close(&a.grad().unwrap().to_vec(), &expected_da, &format!("{what} dA"));
-            assert_close(&b.grad().unwrap().to_vec(), &expected_db, &format!("{what} dB"));
+            let (expected_da, expected_db) =
+                naive_batched_backward(&a_data, &b_data, &g_data, batch, m, k, n);
+            assert_close(
+                &a.grad().unwrap().to_vec(),
+                &expected_da,
+                &format!("{what} dA"),
+            );
+            assert_close(
+                &b.grad().unwrap().to_vec(),
+                &expected_db,
+                &format!("{what} dB"),
+            );
         }
     }
 }

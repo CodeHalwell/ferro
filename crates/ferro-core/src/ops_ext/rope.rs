@@ -15,20 +15,36 @@ impl Tensor {
     pub fn rope(&self, positions: &Tensor, base: f32) -> Result<Tensor> {
         let ndim = self.ndim();
         if ndim < 2 {
-            return Err(Error::InvalidShape { op: "rope", msg: format!("input must be at least 2-D [seq, head_dim], got {:?}", self.shape()) });
+            return Err(Error::InvalidShape {
+                op: "rope",
+                msg: format!(
+                    "input must be at least 2-D [seq, head_dim], got {:?}",
+                    self.shape()
+                ),
+            });
         }
         let shape = self.shape().to_vec();
         let (seq, dim) = (shape[ndim - 2], shape[ndim - 1]);
         if dim % 2 != 0 {
-            return Err(Error::InvalidShape { op: "rope", msg: format!("head_dim {dim} must be even") });
+            return Err(Error::InvalidShape {
+                op: "rope",
+                msg: format!("head_dim {dim} must be even"),
+            });
         }
         if positions.dtype() != DType::I64 {
-            return Err(Error::DtypeMismatch { op: "rope", expected: DType::I64, got: positions.dtype() });
+            return Err(Error::DtypeMismatch {
+                op: "rope",
+                expected: DType::I64,
+                got: positions.dtype(),
+            });
         }
         if positions.ndim() != 1 || positions.shape()[0] != seq {
             return Err(Error::InvalidShape {
                 op: "rope",
-                msg: format!("positions must be 1-D of length {seq}, got shape {:?}", positions.shape()),
+                msg: format!(
+                    "positions must be 1-D of length {seq}, got shape {:?}",
+                    positions.shape()
+                ),
             });
         }
 
@@ -47,7 +63,9 @@ impl Tensor {
         let batch: usize = shape[..ndim - 2].iter().product();
         let x = self.to_vec();
         let y = rotate(&x, &cos, &sin, batch, seq, half, 1.0);
-        let out = Tensor::from_vec(y, &shape)?;
+        // RoPE is host-composed; return to the input's device so chained
+        // device-resident ops (attention, matmul) stay on-device.
+        let out = Tensor::from_vec(y, &shape)?.to_device(self.device())?;
         if !self.requires_grad() {
             return Ok(out);
         }
@@ -58,7 +76,15 @@ impl Tensor {
     }
 }
 
-fn rotate(x: &[f32], cos: &[f32], sin: &[f32], batch: usize, seq: usize, half: usize, sign: f32) -> Vec<f32> {
+fn rotate(
+    x: &[f32],
+    cos: &[f32],
+    sin: &[f32],
+    batch: usize,
+    seq: usize,
+    half: usize,
+    sign: f32,
+) -> Vec<f32> {
     let dim = 2 * half;
     let mut y = vec![0.0f32; x.len()];
     for b in 0..batch {

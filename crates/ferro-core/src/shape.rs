@@ -21,8 +21,16 @@ pub fn broadcast_shapes(op: &'static str, a: &[usize], b: &[usize]) -> Result<Ve
     let n = a.len().max(b.len());
     let mut out = vec![0usize; n];
     for i in 0..n {
-        let ad = if i < n - a.len() { 1 } else { a[i - (n - a.len())] };
-        let bd = if i < n - b.len() { 1 } else { b[i - (n - b.len())] };
+        let ad = if i < n - a.len() {
+            1
+        } else {
+            a[i - (n - a.len())]
+        };
+        let bd = if i < n - b.len() {
+            1
+        } else {
+            b[i - (n - b.len())]
+        };
         out[i] = if ad == bd {
             ad
         } else if ad == 1 {
@@ -30,7 +38,11 @@ pub fn broadcast_shapes(op: &'static str, a: &[usize], b: &[usize]) -> Result<Ve
         } else if bd == 1 {
             ad
         } else {
-            return Err(Error::ShapeMismatch { op, lhs: a.to_vec(), rhs: b.to_vec() });
+            return Err(Error::ShapeMismatch {
+                op,
+                lhs: a.to_vec(),
+                rhs: b.to_vec(),
+            });
         };
     }
     Ok(out)

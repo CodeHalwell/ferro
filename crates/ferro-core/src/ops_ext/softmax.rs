@@ -2,21 +2,42 @@
 //! `y = exp(x - max) / sum(exp(x - max))` per 1-D slice along `dim`.
 //! Backward is the softmax Jacobian-vector product:
 //! `dx_i = y_i * (g_i - sum_k g_k * y_k)`.
+//!
+//! Device-resident whole buffers take the backend's `softmax_dev` row kernel
+//! (last-dim only); the backward is then composed from resident tensor ops
+//! (mul/sub/sum_dim) so no host round trip happens in either direction.
 
 use crate::error::{Error, Result};
 use crate::reduce::pairwise_sum_strided;
-use crate::tensor::Tensor;
+use crate::tensor::{raw_row_softmax, Tensor};
 
 impl Tensor {
     pub fn softmax(&self, dim: usize) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "softmax", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "softmax",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         let shape = self.shape().to_vec();
+        if let Some(out) = raw_row_softmax(self, dim, false) {
+            if !self.requires_grad() {
+                return Ok(out);
+            }
+            let y = out.detach_copy();
+            return Ok(out.record_fn(vec![self.clone()], move |g| {
+                // dx = y * (g - sum(g*y, dim)) with keepdim sum broadcasting.
+                let gy = g.mul(&y).unwrap();
+                let s = gy.sum_dim(dim, true).unwrap();
+                vec![g.sub(&s).unwrap().mul(&y).unwrap()]
+            }));
+        }
         let x = self.to_vec();
         let y_data = softmax_forward(&x, &shape, dim);
-        let out = Tensor::from_vec(y_data, &shape).unwrap();
+        // Host-composed op: return to the input's device so chained
+        // device-resident ops stay on-device.
+        let out = Tensor::from_vec(y_data, &shape)?.to_device(self.device())?;
         if !self.requires_grad() {
             return Ok(out);
         }

@@ -113,8 +113,11 @@ impl Tensor {
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec())));
         let in_shape = self.shape().to_vec();
         let device = self.device();
-        out.record_fn(vec![self.clone()], move |g| {
-            vec![Tensor::full_on(&in_shape, g.item(), device).unwrap()]
+        out.record_fn(vec![self.clone()], move |_g| {
+            // d(sum)/dx = 1 everywhere: seed a constant fill instead of reading
+            // g.item(), which forced a device-to-host sync per backward. The
+            // gradient stays on the input's device end to end.
+            vec![Tensor::full_on(&in_shape, 1.0, device).unwrap()]
         })
     }
 
@@ -125,8 +128,10 @@ impl Tensor {
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec()) / n));
         let in_shape = self.shape().to_vec();
         let device = self.device();
-        out.record_fn(vec![self.clone()], move |g| {
-            vec![Tensor::full_on(&in_shape, g.item() / n, device).unwrap()]
+        out.record_fn(vec![self.clone()], move |_g| {
+            // d(mean)/dx = 1/n: same device-resident fill as sum's backward;
+            // no g.item() host sync.
+            vec![Tensor::full_on(&in_shape, 1.0 / n, device).unwrap()]
         })
     }
 }

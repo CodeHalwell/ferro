@@ -14,7 +14,11 @@ fn adversarial_data(n: usize, seed: u64) -> Vec<f32> {
     (0..n)
         .map(|_| {
             let mag = 10f32.powf(-6.0 + 12.0 * rng.uniform());
-            if rng.uniform() < 0.5 { mag } else { -mag }
+            if rng.uniform() < 0.5 {
+                mag
+            } else {
+                -mag
+            }
         })
         .collect()
 }
@@ -36,12 +40,18 @@ fn adversarial_sum_matches_f64_reference() {
     // several orders of magnitude looser than pairwise's ~log2(n) * u.
     let naive: f32 = data.iter().fold(0.0f32, |acc, &v| acc + v);
     let naive_rel = relative_error(naive, reference);
-    assert!(naive_rel > 1e-6, "naive f32 sum unexpectedly within bound: rel = {naive_rel}");
+    assert!(
+        naive_rel > 1e-6,
+        "naive f32 sum unexpectedly within bound: rel = {naive_rel}"
+    );
 
     let t = Tensor::from_vec(data, &[n]).unwrap();
     let got = t.sum().item();
     let rel = relative_error(got, reference);
-    assert!(rel <= 1e-6, "pairwise sum outside bound: rel = {rel} (naive was {naive_rel})");
+    assert!(
+        rel <= 1e-6,
+        "pairwise sum outside bound: rel = {rel} (naive was {naive_rel})"
+    );
 }
 
 #[test]
@@ -57,7 +67,10 @@ fn cancellation_recovers_small_residual() {
     let t = Tensor::from_vec(data, &[1_000_002]).unwrap();
     let got = t.sum().item();
     let rel = relative_error(got, reference);
-    assert!(rel <= 1e-3, "cancellation case too inaccurate: got {got}, rel = {rel}");
+    assert!(
+        rel <= 1e-3,
+        "cancellation case too inaccurate: got {got}, rel = {rel}"
+    );
 }
 
 #[test]
@@ -76,11 +89,15 @@ fn sum_dim_is_bitwise_deterministic_across_calls() {
 
     let r0a = t.sum_dim(0, false).unwrap();
     let r0b = t.sum_dim(0, false).unwrap();
-    assert_eq!(r0a.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-        r0b.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+    assert_eq!(
+        r0a.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        r0b.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
 
     let r1a = t.sum_dim(1, false).unwrap();
     let r1b = t.sum_dim(1, false).unwrap();
-    assert_eq!(r1a.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-        r1b.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+    assert_eq!(
+        r1a.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+        r1b.to_vec().iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+    );
 }

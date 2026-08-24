@@ -149,6 +149,14 @@ fn unary_chunk_body(kind: UnaryKind, x: &[f32], out: &mut [f32]) {
         // torch: min > max yields max everywhere. NaN passes through.
         UnaryKind::Clamp { min, max } => apply1(x, out, |v| if v.is_nan() { v } else { v.max(min).min(max) }),
         UnaryKind::Gtz => apply1(x, out, |v| if v > 0.0 { 1.0 } else { 0.0 }),
+        // Same tanh approximation as the core reference implementation.
+        UnaryKind::Gelu => {
+            apply1(x, out, |v| {
+                let u = 0.797_884_6 * (v + 0.044715 * v * v * v);
+                0.5 * v * (1.0 + u.tanh())
+            })
+        }
+        UnaryKind::Silu => apply1(x, out, |v| v / (1.0 + (-v).exp())),
     }
 }
 

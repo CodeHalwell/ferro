@@ -43,6 +43,11 @@ pub fn unary_expr(kind: UnaryKind) -> String {
             format!("(isnan(v) ? v : fminf(fmaxf(v, {}), {}))", c_f32(min), c_f32(max))
         }
         UnaryKind::Gtz => "(v > 0.0f) ? 1.0f : 0.0f".to_string(),
+        // Tanh-approximation GELU, matching core's ops_ext/gelu.rs constants.
+        UnaryKind::Gelu => {
+            "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))".to_string()
+        }
+        UnaryKind::Silu => "v / (1.0f + expf(-v))".to_string(),
     }
 }
 
@@ -112,23 +117,67 @@ pub fn binary_bc_source(kind: BinaryKind, rank: usize) -> String {
     )
 }
 
-/// Full-tensor reduction to a single element. One thread loops the whole
-/// buffer: correct but serial. Fine for now -- there is no GPU here to
-/// benchmark against, so we take correctness over speed.
-pub fn reduce_source(kind: ReduceKind) -> String {
-    let finish = match kind {
-        ReduceKind::Sum => "acc",
-        // Empty-input mean matches core's CPU path and torch: 0/0 = NaN.
-        ReduceKind::Mean => "acc / (float)n",
-    };
+/// Threads per block for the two-pass full reduction (and its finalize pass).
+pub const REDUCE_BLOCK: u32 = 256;
+
+/// Upper bound on first-pass blocks; beyond this each thread grid-strides
+/// over multiple chunks so the partials buffer stays small and the single-
+/// block finalize pass stays cheap.
+pub const REDUCE_MAX_BLOCKS: u32 = 2048;
+
+/// Pass 1 of the full reduction: one partial sum per block. Each thread
+/// grid-strides over coalesced chunks, the block reduces via a shared-memory
+/// binary tree, and thread 0 writes the block total to out[blockIdx.x].
+pub fn reduce_partial_source() -> String {
     format!(
         r#"extern "C" __global__ void {KERNEL_NAME}(const float* x, float* out, unsigned int n) {{
+    __shared__ float sh[{REDUCE_BLOCK}];
+    unsigned int tid = threadIdx.x;
+    unsigned int stride = gridDim.x * blockDim.x;
     float acc = 0.0f;
-    for (unsigned int i = 0; i < n; ++i) acc += x[i];
-    out[0] = {finish};
+    for (unsigned int i = blockIdx.x * blockDim.x + tid; i < n; i += stride) acc += x[i];
+    sh[tid] = acc;
+    __syncthreads();
+    for (unsigned int s = {REDUCE_BLOCK} / 2; s > 0; s >>= 1) {{
+        if (tid < s) sh[tid] += sh[tid + s];
+        __syncthreads();
+    }}
+    if (tid == 0) out[blockIdx.x] = sh[0];
 }}
 "#
     )
+}
+
+/// Pass 2: one block reduces the per-block partials into out[0]. `n` is the
+/// partial count, `total` the original element count (Mean divides by it).
+pub fn reduce_finalize_source(kind: ReduceKind) -> String {
+    let finish = match kind {
+        ReduceKind::Sum => "out[0] = sh[0];",
+        // Empty-input mean matches core's CPU path and torch: 0/0 = NaN.
+        ReduceKind::Mean => "out[0] = sh[0] / (float)total;",
+    };
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(const float* p, float* out, unsigned int n, unsigned int total) {{
+    __shared__ float sh[{REDUCE_BLOCK}];
+    unsigned int tid = threadIdx.x;
+    float acc = 0.0f;
+    for (unsigned int i = tid; i < n; i += blockDim.x) acc += p[i];
+    sh[tid] = acc;
+    __syncthreads();
+    for (unsigned int s = {REDUCE_BLOCK} / 2; s > 0; s >>= 1) {{
+        if (tid < s) sh[tid] += sh[tid + s];
+        __syncthreads();
+    }}
+    if (tid == 0) {{ {finish} }}
+}}
+"#
+    )
+}
+
+/// Launch geometry for [`reduce_partial_source`]: ceil(n/block) blocks,
+/// capped at [`REDUCE_MAX_BLOCKS`].
+pub fn reduce_grid(n: usize) -> u32 {
+    ((n as u32).div_ceil(REDUCE_BLOCK)).min(REDUCE_MAX_BLOCKS)
 }
 
 /// Sum over one dim via outer/inner decomposition (the FakeDevice reference
@@ -149,6 +198,21 @@ pub fn sum_dim_source() -> String {
     )
 }
 
+/// Row gather for embedding/index_select_t: one thread per output element.
+/// out[i] = w[idx[i / inner] * inner + i % inner]; idx entries were
+/// bounds-checked on the host before launch, so no guard is needed.
+pub fn gather_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(const long long* idx, const float* w, float* out, unsigned int inner, unsigned int n) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    unsigned int o = i / inner;
+    out[i] = w[idx[o] * inner + (i % inner)];
+}}
+"#
+    )
+}
+
 /// Constant fill; the value is a kernel parameter so one compiled function
 /// serves every fill.
 pub fn fill_source() -> String {
@@ -161,7 +225,61 @@ pub fn fill_source() -> String {
     )
 }
 
-/// Host-side companion of [`binary_bc_source`]: element strides for indexing
+/// Softmax pass 1, one block per row of `cols` elements: block-reduce the row
+/// max via shared memory, then (reusing the buffer) block-reduce the sum of
+/// exp(x - max). Writes stats[2*row] = max, stats[2*row+1] = sum so the apply
+/// pass is a pure elementwise kernel -- two launches total, no host traffic.
+pub fn softmax_row_stats_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(const float* x, float* stats, unsigned int cols) {{
+    __shared__ float sh[{REDUCE_BLOCK}];
+    const float* xr = x + blockIdx.x * cols;
+    unsigned int tid = threadIdx.x;
+    float m = __int_as_float(0xff800000);
+    for (unsigned int k = tid; k < cols; k += blockDim.x) m = fmaxf(m, xr[k]);
+    sh[tid] = m;
+    __syncthreads();
+    for (unsigned int s = {REDUCE_BLOCK} / 2; s > 0; s >>= 1) {{
+        if (tid < s) sh[tid] = fmaxf(sh[tid], sh[tid + s]);
+        __syncthreads();
+    }}
+    m = sh[0];
+    __syncthreads();
+    float acc = 0.0f;
+    for (unsigned int k = tid; k < cols; k += blockDim.x) acc += expf(xr[k] - m);
+    sh[tid] = acc;
+    __syncthreads();
+    for (unsigned int s = {REDUCE_BLOCK} / 2; s > 0; s >>= 1) {{
+        if (tid < s) sh[tid] += sh[tid + s];
+        __syncthreads();
+    }}
+    if (tid == 0) {{
+        stats[2 * blockIdx.x] = m;
+        stats[2 * blockIdx.x + 1] = sh[0];
+    }}
+}}
+"#
+    )
+}
+
+/// Softmax pass 2: elementwise apply of the per-row stats. `log` selects
+/// log_softmax (y = x - (m + log s)) over plain softmax (y = exp(x - m) / s).
+pub fn softmax_apply_source(log: bool) -> String {
+    let body = if log { "x[i] - (m + logf(s))" } else { "expf(x[i] - m) / s" };
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(const float* x, const float* stats, float* out, unsigned int n, unsigned int cols) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    unsigned int row = i / cols;
+    float m = stats[2 * row];
+    float s = stats[2 * row + 1];
+    out[i] = {body};
+}}
+"#
+    )
+}
+
+/// Host-side companion of [`sum_dim_source`]: element strides for indexing
 /// a contiguous buffer of `in_shape` as if broadcast (numpy right-aligned
 /// rules) to `out_shape`. Padded/size-1 dims get stride 0. Returns
 /// `max(out_shape.len(), 1)` entries so rank-0 outputs still launch a rank-1
@@ -198,6 +316,24 @@ mod tests {
         let clamp = UnaryKind::Clamp { min: -1.0, max: 2.0 };
         assert_eq!(unary_expr(clamp), "(isnan(v) ? v : fminf(fmaxf(v, -1.0f), 2.0f))");
         assert_eq!(unary_expr(UnaryKind::Gtz), "(v > 0.0f) ? 1.0f : 0.0f");
+        assert_eq!(
+            unary_expr(UnaryKind::Gelu),
+            "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))"
+        );
+        assert_eq!(unary_expr(UnaryKind::Silu), "v / (1.0f + expf(-v))");
+    }
+
+    #[test]
+    fn softmax_sources_form_a_two_pass_pipeline() {
+        let stats = softmax_row_stats_source();
+        assert!(stats.contains(r#"extern "C" __global__ void ferro_kernel(const float* x, float* stats, unsigned int cols)"#));
+        assert!(stats.contains("stats[2 * blockIdx.x] = m;"));
+        assert!(stats.contains("stats[2 * blockIdx.x + 1] = sh[0];"));
+        // log_softmax and softmax share the stats pass but differ in apply.
+        let (soft, lsoft) = (softmax_apply_source(false), softmax_apply_source(true));
+        assert!(soft.contains("out[i] = expf(x[i] - m) / s;"));
+        assert!(lsoft.contains("out[i] = x[i] - (m + logf(s));"));
+        assert_ne!(soft, lsoft);
     }
 
     #[test]
@@ -249,12 +385,25 @@ mod tests {
     }
 
     #[test]
-    fn reduce_sources_cover_sum_and_mean() {
-        let sum = reduce_source(ReduceKind::Sum);
-        assert!(sum.contains("for (unsigned int i = 0; i < n; ++i) acc += x[i];"));
-        assert!(sum.contains("out[0] = acc;"));
-        let mean = reduce_source(ReduceKind::Mean);
-        assert!(mean.contains("out[0] = acc / (float)n;"));
+    fn reduce_sources_form_a_two_pass_pipeline() {
+        let partial = reduce_partial_source();
+        assert!(partial.contains(r#"extern "C" __global__ void ferro_kernel(const float* x, float* out, unsigned int n)"#));
+        assert!(partial.contains("__shared__ float sh[256];"));
+        assert!(partial.contains("out[blockIdx.x] = sh[0];"));
+        // Finalize is generated per kind and divides by the original count for Mean.
+        assert_ne!(reduce_finalize_source(ReduceKind::Sum), reduce_finalize_source(ReduceKind::Mean));
+        assert!(reduce_finalize_source(ReduceKind::Sum).contains("out[0] = sh[0];"));
+        assert!(reduce_finalize_source(ReduceKind::Mean).contains("out[0] = sh[0] / (float)total;"));
+    }
+
+    #[test]
+    fn reduce_grid_caps_blocks_and_handles_small_n() {
+        assert_eq!(reduce_grid(0), 0);
+        assert_eq!(reduce_grid(1), 1);
+        assert_eq!(reduce_grid(255), 1);
+        assert_eq!(reduce_grid(256), 1);
+        assert_eq!(reduce_grid(257), 2);
+        assert_eq!(reduce_grid(u32::MAX as usize), 2048);
     }
 
     #[test]

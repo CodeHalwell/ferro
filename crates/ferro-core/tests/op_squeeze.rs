@@ -34,5 +34,13 @@ fn squeeze_values() {
 fn squeeze_roundtrip_grad() {
     let a = Tensor::from_vec(vec![0.5, -1.5, 2.0, 3.0, -0.25, 1.0], &[2, 3]).unwrap();
     let w = Tensor::from_vec(vec![1.5, -2.0, 0.5, 1.0, 2.5, -1.0], &[2, 3]).unwrap();
-    grad_check(&[a], |t| t[0].unsqueeze(0).unwrap().squeeze(0).unwrap().mul(&w).unwrap().sum());
+    grad_check(&[a], |t| {
+        t[0].unsqueeze(0)
+            .unwrap()
+            .squeeze(0)
+            .unwrap()
+            .mul(&w)
+            .unwrap()
+            .sum()
+    });
 }

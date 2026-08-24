@@ -10,7 +10,10 @@ pub fn embedding(weight: &Tensor, ids: &Tensor) -> Result<Tensor> {
     if weight.ndim() != 2 {
         return Err(Error::InvalidShape {
             op: "embedding",
-            msg: format!("weight must be 2-D [num_embeddings, dim], got {:?}", weight.shape()),
+            msg: format!(
+                "weight must be 2-D [num_embeddings, dim], got {:?}",
+                weight.shape()
+            ),
         });
     }
     weight.index_select_t(0, ids)

@@ -25,9 +25,16 @@ pub enum UnaryKind {
     Abs,
     Log,
     Powf(f32),
-    Clamp { min: f32, max: f32 },
+    Clamp {
+        min: f32,
+        max: f32,
+    },
     /// Heaviside step (1.0 where x > 0, else 0.0); the relu gradient mask.
     Gtz,
+    /// GELU, tanh approximation: 0.5*v*(1 + tanh(sqrt(2/pi)*(v + 0.044715 v^3))).
+    Gelu,
+    /// SiLU (swish): v * sigmoid(v).
+    Silu,
 }
 
 /// Named elementwise binary kernels.
@@ -56,7 +63,10 @@ pub trait DeviceBuffer: Send + Sync {
 }
 
 fn not_resident<T>(op: &'static str) -> Result<T> {
-    Err(Error::Unsupported { op, msg: "backend does not implement device-resident storage".into() })
+    Err(Error::Unsupported {
+        op,
+        msg: "backend does not implement device-resident storage".into(),
+    })
 }
 
 /// Per-device compute kernels. The slice methods take contiguous row-major
@@ -79,7 +89,15 @@ pub trait Backend: Send + Sync {
     /// repeatedly instead of being materialized to `out_shape` size first -
     /// every existing `Backend` impl keeps working with no code change.
     /// Override for a fused/threaded kernel.
-    fn binary_bc(&self, kind: BinaryKind, a: &[f32], sa: &[usize], b: &[f32], sb: &[usize], out_shape: &[usize]) -> Vec<f32> {
+    fn binary_bc(
+        &self,
+        kind: BinaryKind,
+        a: &[f32],
+        sa: &[usize],
+        b: &[f32],
+        sb: &[usize],
+        out_shape: &[usize],
+    ) -> Vec<f32> {
         binary_bc_odometer(kind, a, sa, b, sb, out_shape)
     }
 
@@ -88,7 +106,15 @@ pub trait Backend: Send + Sync {
     /// threads each `matmul` call internally pays one thread-pool spin-up
     /// per batch element; a backend should override this to parallelize
     /// across the whole batch under a single thread::scope instead.
-    fn matmul_batch(&self, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    fn matmul_batch(
+        &self,
+        a: &[f32],
+        b: &[f32],
+        batch: usize,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Vec<f32> {
         let mut out = vec![0f32; batch * m * n];
         for bi in 0..batch {
             let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
@@ -147,8 +173,33 @@ pub trait Backend: Send + Sync {
     }
 
     /// Reduce the whole buffer to a single element.
-    fn reduce_dev(&self, _kind: ReduceKind, _x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+    fn reduce_dev(
+        &self,
+        _kind: ReduceKind,
+        _x: &dyn DeviceBuffer,
+    ) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("reduce_dev")
+    }
+
+    /// Row-wise softmax over the last dim of a whole contiguous device buffer
+    /// of `rows` x `cols` elements; output has the same layout.
+    fn softmax_dev(
+        &self,
+        _x: &dyn DeviceBuffer,
+        _rows: usize,
+        _cols: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("softmax_dev")
+    }
+
+    /// Row-wise log_softmax over the last dim; same contract as `softmax_dev`.
+    fn log_softmax_dev(
+        &self,
+        _x: &dyn DeviceBuffer,
+        _rows: usize,
+        _cols: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("log_softmax_dev")
     }
 
     /// Sum over one dim of a contiguous row-major buffer of `shape`; output is
@@ -167,6 +218,40 @@ pub trait Backend: Send + Sync {
     fn fill_dev(&self, value: f32, len: usize) -> Result<Box<dyn DeviceBuffer>> {
         self.alloc_from_host(&vec![value; len])
     }
+
+    // --- i64 index buffers --------------------------------------------------
+    // DeviceBuffer stays opaque: i64 device buffers are produced only by
+    // `alloc_i64_from_host` and consumed only by `copy_i64_to_host` /
+    // `gather_rows_dev`, so a backend may tag its concrete buffer type however
+    // it likes without core ever inspecting bytes.
+
+    /// Upload host i64 data (e.g. embedding indices) as a device-resident
+    /// buffer. The result is an opaque DeviceBuffer carrying i64 elements.
+    fn alloc_i64_from_host(&self, _data: &[i64]) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("alloc_i64_from_host")
+    }
+
+    /// Download an i64 buffer previously produced by `alloc_i64_from_host`
+    /// (or a backend-internal equivalent). Passing an f32 buffer is an error.
+    fn copy_i64_to_host(&self, _buf: &dyn DeviceBuffer) -> Result<Vec<i64>> {
+        not_resident("copy_i64_to_host")
+    }
+
+    /// Row-gather over device-resident operands: `w` holds a contiguous
+    /// row-major table of rows `dim_size` x `inner` f32 elements; `idx` holds
+    /// `n` i64 indices; the output is n rows of `inner` f32 elements where
+    /// row o copies w[idx[o]]. Requires the weight to be a single "outer"
+    /// block (outer == 1, which covers embedding); callers needing an outer
+    /// loop fall back to the host path.
+    fn gather_rows_dev(
+        &self,
+        _w: &dyn DeviceBuffer,
+        _idx: &dyn DeviceBuffer,
+        _dim_size: usize,
+        _inner: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("gather_rows_dev")
+    }
 }
 
 /// Reference CPU backend; pre-registered for `Device::Cpu`.
@@ -177,7 +262,13 @@ impl Backend for CpuBackend {
         let f = move |v: f32| match kind {
             UnaryKind::Neg => -v,
             // Not v.max(0.0): f32::max drops NaN, torch's relu propagates it.
-            UnaryKind::Relu => if v > 0.0 || v.is_nan() { v } else { 0.0 },
+            UnaryKind::Relu => {
+                if v > 0.0 || v.is_nan() {
+                    v
+                } else {
+                    0.0
+                }
+            }
             UnaryKind::Exp => v.exp(),
             UnaryKind::Sigmoid => 1.0 / (1.0 + (-v).exp()),
             UnaryKind::Tanh => v.tanh(),
@@ -189,7 +280,11 @@ impl Backend for CpuBackend {
             // matches torch: min > max yields max everywhere. NaN passes
             // through explicitly since f32::max/min would drop it.
             UnaryKind::Clamp { min, max } => {
-                if v.is_nan() { v } else { v.max(min).min(max) }
+                if v.is_nan() {
+                    v
+                } else {
+                    v.max(min).min(max)
+                }
             }
             UnaryKind::Gtz => {
                 if v > 0.0 {
@@ -198,6 +293,11 @@ impl Backend for CpuBackend {
                     0.0
                 }
             }
+            UnaryKind::Gelu => {
+                let u = 0.797_884_6 * (v + 0.044715 * v * v * v);
+                0.5 * v * (1.0 + u.tanh())
+            }
+            UnaryKind::Silu => v / (1.0 + (-v).exp()),
         };
         x.iter().map(|&v| f(v)).collect()
     }
@@ -231,10 +331,15 @@ pub fn register_backend(device: Device, backend: Arc<dyn Backend>) {
 
 /// Look up the backend serving `device`. Cpu is always registered.
 pub fn backend_for(device: Device) -> Result<Arc<dyn Backend>> {
-    BACKENDS.read().unwrap().get(&device).cloned().ok_or_else(|| Error::Unsupported {
-        op: "backend_for",
-        msg: format!("no backend registered for device {device}"),
-    })
+    BACKENDS
+        .read()
+        .unwrap()
+        .get(&device)
+        .cloned()
+        .ok_or_else(|| Error::Unsupported {
+            op: "backend_for",
+            msg: format!("no backend registered for device {device}"),
+        })
 }
 
 /// Row-major (m,k) @ (k,n) -> (m,n).
@@ -286,7 +391,13 @@ fn broadcast_strides(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
     let own = contiguous_strides(shape);
     let pad = out_shape.len() - shape.len();
     (0..out_shape.len())
-        .map(|i| if i < pad || shape[i - pad] != out_shape[i] { 0 } else { own[i - pad] })
+        .map(|i| {
+            if i < pad || shape[i - pad] != out_shape[i] {
+                0
+            } else {
+                own[i - pad]
+            }
+        })
         .collect()
 }
 
@@ -295,7 +406,14 @@ fn broadcast_strides(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
 /// through broadcast strides. When the last dim is contiguous (stride 1) in
 /// both inputs - the common bias-add case - the inner loop is a plain slice
 /// walk instead of per-element index arithmetic.
-fn binary_bc_odometer(kind: BinaryKind, a: &[f32], sa: &[usize], b: &[f32], sb: &[usize], out_shape: &[usize]) -> Vec<f32> {
+fn binary_bc_odometer(
+    kind: BinaryKind,
+    a: &[f32],
+    sa: &[usize],
+    b: &[f32],
+    sb: &[usize],
+    out_shape: &[usize],
+) -> Vec<f32> {
     let f = move |x: f32, y: f32| match kind {
         BinaryKind::Add => x + y,
         BinaryKind::Sub => x - y,

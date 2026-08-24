@@ -36,13 +36,25 @@ pub fn to_safetensors_bytes(tensors: &[(&str, &Tensor)]) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     for (i, (name, t)) in tensors.iter().enumerate() {
         if tensors[..i].iter().any(|(n, _)| n == name) {
-            return Err(Error::Format { op: "save_safetensors", msg: format!("duplicate tensor name {name:?}") });
+            return Err(Error::Format {
+                op: "save_safetensors",
+                msg: format!("duplicate tensor name {name:?}"),
+            });
         }
         let start = data.len();
         match t.dtype() {
-            DType::F32 => t.to_vec().iter().for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
-            DType::F64 => t.to_vec_f64().iter().for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
-            DType::I64 => t.to_vec_i64().iter().for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
+            DType::F32 => t
+                .to_vec()
+                .iter()
+                .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
+            DType::F64 => t
+                .to_vec_f64()
+                .iter()
+                .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
+            DType::I64 => t
+                .to_vec_i64()
+                .iter()
+                .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
         }
         if i > 0 {
             header.push(',');
@@ -78,7 +90,10 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
     }
     let hlen = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
     if bytes.len() < 8 + hlen {
-        return Err(ferr(format!("header length {hlen} exceeds file size {}", bytes.len())));
+        return Err(ferr(format!(
+            "header length {hlen} exceeds file size {}",
+            bytes.len()
+        )));
     }
     let data = &bytes[8 + hlen..];
 
@@ -96,7 +111,11 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
             return Err(ferr(format!("entry {name:?} is not an object")));
         };
         let field = |key: &str| {
-            fields.iter().find(|(k, _)| k == key).map(|(_, v)| v).ok_or_else(|| ferr(format!("entry {name:?} missing {key:?}")))
+            fields
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v)
+                .ok_or_else(|| ferr(format!("entry {name:?} missing {key:?}")))
         };
         let Json::Str(dtype) = field("dtype")? else {
             return Err(ferr(format!("entry {name:?}: dtype is not a string")));
@@ -114,9 +133,17 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
         let (start, end) = match field("data_offsets")? {
             Json::Arr(o) => match o.as_slice() {
                 [Json::Num(s), Json::Num(e)] => (*s as usize, *e as usize),
-                _ => return Err(ferr(format!("entry {name:?}: data_offsets is not [start, end]"))),
+                _ => {
+                    return Err(ferr(format!(
+                        "entry {name:?}: data_offsets is not [start, end]"
+                    )))
+                }
             },
-            _ => return Err(ferr(format!("entry {name:?}: data_offsets is not an array"))),
+            _ => {
+                return Err(ferr(format!(
+                    "entry {name:?}: data_offsets is not an array"
+                )))
+            }
         };
 
         let dt = match dtype.as_str() {
@@ -124,7 +151,10 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
             "F64" => DType::F64,
             "I64" => DType::I64,
             other => {
-                return Err(Error::Unsupported { op: OP, msg: format!("entry {name:?}: dtype {other} (storage not implemented)") })
+                return Err(Error::Unsupported {
+                    op: OP,
+                    msg: format!("entry {name:?}: dtype {other} (storage not implemented)"),
+                })
             }
         };
         let numel: usize = shape.iter().product();
@@ -139,15 +169,22 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
 
         let raw = &data[start..end];
         let t = match dt {
-            DType::F32 => {
-                Tensor::from_vec(raw.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(), &shape)?
-            }
+            DType::F32 => Tensor::from_vec(
+                raw.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+                &shape,
+            )?,
             DType::F64 => Tensor::from_vec_f64(
-                raw.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect(),
+                raw.chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
                 &shape,
             )?,
             DType::I64 => Tensor::from_vec_i64(
-                raw.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect(),
+                raw.chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
                 &shape,
             )?,
         };
@@ -193,7 +230,10 @@ impl Json {
         let v = p.value()?;
         p.ws();
         if p.pos != p.b.len() {
-            return Err(format!("trailing bytes after JSON value at offset {}", p.pos));
+            return Err(format!(
+                "trailing bytes after JSON value at offset {}",
+                p.pos
+            ));
         }
         Ok(v)
     }
@@ -228,7 +268,10 @@ impl JsonParser<'_> {
             Some(b'[') => self.array(),
             Some(b'"') => Ok(Json::Str(self.string()?)),
             Some(b'0'..=b'9') => self.number(),
-            Some(&c) => Err(format!("unexpected byte {:?} at offset {}", c as char, self.pos)),
+            Some(&c) => Err(format!(
+                "unexpected byte {:?} at offset {}",
+                c as char, self.pos
+            )),
             None => Err("unexpected end of header".into()),
         }
     }
@@ -305,7 +348,9 @@ impl JsonParser<'_> {
                             let hi = self.hex4()?;
                             let cp = if (0xD800..0xDC00).contains(&hi) {
                                 // Surrogate pair: a second \uXXXX must follow.
-                                if self.b.get(self.pos + 1) != Some(&b'\\') || self.b.get(self.pos + 2) != Some(&b'u') {
+                                if self.b.get(self.pos + 1) != Some(&b'\\')
+                                    || self.b.get(self.pos + 2) != Some(&b'u')
+                                {
                                     return Err("unpaired surrogate".into());
                                 }
                                 self.pos += 2;
@@ -327,14 +372,20 @@ impl JsonParser<'_> {
                     while !matches!(self.b.get(self.pos), None | Some(b'"' | b'\\')) {
                         self.pos += 1;
                     }
-                    out.push_str(std::str::from_utf8(&self.b[start..self.pos]).map_err(|_| "invalid utf-8 in string")?);
+                    out.push_str(
+                        std::str::from_utf8(&self.b[start..self.pos])
+                            .map_err(|_| "invalid utf-8 in string")?,
+                    );
                 }
             }
         }
     }
 
     fn hex4(&mut self) -> std::result::Result<u32, String> {
-        let hex = self.b.get(self.pos + 1..self.pos + 5).ok_or("truncated unicode escape")?;
+        let hex = self
+            .b
+            .get(self.pos + 1..self.pos + 5)
+            .ok_or("truncated unicode escape")?;
         let s = std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
         let v = u32::from_str_radix(s, 16).map_err(|_| "bad unicode escape")?;
         self.pos += 4;

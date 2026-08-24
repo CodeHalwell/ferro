@@ -28,8 +28,18 @@ use crate::tensor::Tensor;
 // position it feeds. col is fully overwritten every call (including its
 // zero-padded taps), so it is safe to reuse across images without clearing.
 fn im2col(
-    x: &[f32], img_off: usize, c_in: usize, h: usize, w: usize, kh: usize, kw: usize,
-    stride: usize, padding: usize, out_h: usize, out_w: usize, col: &mut [f32],
+    x: &[f32],
+    img_off: usize,
+    c_in: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    padding: usize,
+    out_h: usize,
+    out_w: usize,
+    col: &mut [f32],
 ) {
     let out_hw = out_h * out_w;
     for ci in 0..c_in {
@@ -57,8 +67,18 @@ fn im2col(
 // Adjoint of im2col: scatter-add dcol[Cin*KH*KW, OH*OW] into dx at image
 // `img_off`, skipping the same out-of-bounds taps im2col zero-filled.
 fn col2im_add(
-    dcol: &[f32], dx: &mut [f32], img_off: usize, c_in: usize, h: usize, w: usize, kh: usize,
-    kw: usize, stride: usize, padding: usize, out_h: usize, out_w: usize,
+    dcol: &[f32],
+    dx: &mut [f32],
+    img_off: usize,
+    c_in: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    stride: usize,
+    padding: usize,
+    out_h: usize,
+    out_w: usize,
 ) {
     let out_hw = out_h * out_w;
     for ci in 0..c_in {
@@ -96,7 +116,11 @@ fn transpose(src: &[f32], dst: &mut [f32], rows: usize, cols: usize) {
 impl Tensor {
     pub fn conv2d(&self, weight: &Tensor, stride: usize, padding: usize) -> Result<Tensor> {
         if self.device() != weight.device() {
-            return Err(Error::DeviceMismatch { op: "conv2d", lhs: self.device(), rhs: weight.device() });
+            return Err(Error::DeviceMismatch {
+                op: "conv2d",
+                lhs: self.device(),
+                rhs: weight.device(),
+            });
         }
         if self.ndim() != 4 || weight.ndim() != 4 {
             return Err(Error::Unsupported {
@@ -105,7 +129,10 @@ impl Tensor {
             });
         }
         if stride < 1 {
-            return Err(Error::Unsupported { op: "conv2d", msg: "stride must be >= 1".into() });
+            return Err(Error::Unsupported {
+                op: "conv2d",
+                msg: "stride must be >= 1".into(),
+            });
         }
         let (in_shape, w_shape) = (self.shape(), weight.shape());
         let (n, c_in, h, w) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
@@ -136,44 +163,63 @@ impl Tensor {
         let mut out = vec![0.0f32; n * c_out * out_hw];
         let mut col = vec![0.0f32; taps * out_hw];
         for ni in 0..n {
-            im2col(&x, ni * c_in * h * w, c_in, h, w, kh, kw, stride, padding, out_h, out_w, &mut col);
+            im2col(
+                &x,
+                ni * c_in * h * w,
+                c_in,
+                h,
+                w,
+                kh,
+                kw,
+                stride,
+                padding,
+                out_h,
+                out_w,
+                &mut col,
+            );
             let out_i = backend.matmul(&wt, &col, c_out, taps, out_hw);
             out[ni * c_out * out_hw..(ni + 1) * c_out * out_hw].copy_from_slice(&out_i);
         }
         let out_t = Tensor::from_vec(out, &[n, c_out, out_h, out_w])?;
 
-        Ok(out_t.record_fn(vec![self.clone(), weight.clone()], move |g| {
-            let g_data = g.to_vec();
-            let backend = backend_for(Device::Cpu).expect("cpu backend is always registered");
+        Ok(
+            out_t.record_fn(vec![self.clone(), weight.clone()], move |g| {
+                let g_data = g.to_vec();
+                let backend = backend_for(Device::Cpu).expect("cpu backend is always registered");
 
-            let mut wt_t = vec![0.0f32; taps * c_out];
-            transpose(&wt, &mut wt_t, c_out, taps);
+                let mut wt_t = vec![0.0f32; taps * c_out];
+                transpose(&wt, &mut wt_t, c_out, taps);
 
-            let mut dx = vec![0.0f32; n * c_in * h * w];
-            let mut dw = vec![0.0f32; c_out * taps];
-            let mut col = vec![0.0f32; taps * out_hw];
-            let mut col_t = vec![0.0f32; out_hw * taps];
-            for ni in 0..n {
-                let img_off = ni * c_in * h * w;
-                let g_i = &g_data[ni * c_out * out_hw..(ni + 1) * c_out * out_hw];
+                let mut dx = vec![0.0f32; n * c_in * h * w];
+                let mut dw = vec![0.0f32; c_out * taps];
+                let mut col = vec![0.0f32; taps * out_hw];
+                let mut col_t = vec![0.0f32; out_hw * taps];
+                for ni in 0..n {
+                    let img_off = ni * c_in * h * w;
+                    let g_i = &g_data[ni * c_out * out_hw..(ni + 1) * c_out * out_hw];
 
-                im2col(&x, img_off, c_in, h, w, kh, kw, stride, padding, out_h, out_w, &mut col);
+                    im2col(
+                        &x, img_off, c_in, h, w, kh, kw, stride, padding, out_h, out_w, &mut col,
+                    );
 
-                // dW_mat += dOut_i @ col_i^T
-                transpose(&col, &mut col_t, taps, out_hw);
-                let dw_i = backend.matmul(g_i, &col_t, c_out, out_hw, taps);
-                for (acc, v) in dw.iter_mut().zip(dw_i.iter()) {
-                    *acc += v;
+                    // dW_mat += dOut_i @ col_i^T
+                    transpose(&col, &mut col_t, taps, out_hw);
+                    let dw_i = backend.matmul(g_i, &col_t, c_out, out_hw, taps);
+                    for (acc, v) in dw.iter_mut().zip(dw_i.iter()) {
+                        *acc += v;
+                    }
+
+                    // dcol_i = W_mat^T @ dOut_i, then scatter-add into dx.
+                    let dcol = backend.matmul(&wt_t, g_i, taps, c_out, out_hw);
+                    col2im_add(
+                        &dcol, &mut dx, img_off, c_in, h, w, kh, kw, stride, padding, out_h, out_w,
+                    );
                 }
-
-                // dcol_i = W_mat^T @ dOut_i, then scatter-add into dx.
-                let dcol = backend.matmul(&wt_t, g_i, taps, c_out, out_hw);
-                col2im_add(&dcol, &mut dx, img_off, c_in, h, w, kh, kw, stride, padding, out_h, out_w);
-            }
-            vec![
-                Tensor::from_vec(dx, &[n, c_in, h, w]).unwrap(),
-                Tensor::from_vec(dw, &[c_out, c_in, kh, kw]).unwrap(),
-            ]
-        }))
+                vec![
+                    Tensor::from_vec(dx, &[n, c_in, h, w]).unwrap(),
+                    Tensor::from_vec(dw, &[c_out, c_in, kh, kw]).unwrap(),
+                ]
+            }),
+        )
     }
 }

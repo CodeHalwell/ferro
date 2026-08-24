@@ -9,7 +9,10 @@ impl Tensor {
     pub fn sum_dim(&self, dim: usize, keepdim: bool) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "sum_dim", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "sum_dim",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         let out = raw_sum_dim(self, dim, keepdim);
         let in_shape = self.shape().to_vec();

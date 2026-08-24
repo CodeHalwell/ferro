@@ -54,13 +54,22 @@ fn dropout_scaling_and_zero_fraction() {
 fn dropout_grad_check() {
     let a = Tensor::from_vec(vec![0.5, -1.5, 2.0, 3.0, -0.25, 1.25], &[6]).unwrap();
     let w = Tensor::from_vec(vec![1.0, 2.0, -1.0, 0.5, -2.0, 1.5], &[6]).unwrap();
-    grad_check(&[a], |t| t[0].dropout(0.4, true, 99, 11).unwrap().mul(&w).unwrap().sum());
+    grad_check(&[a], |t| {
+        t[0].dropout(0.4, true, 99, 11)
+            .unwrap()
+            .mul(&w)
+            .unwrap()
+            .sum()
+    });
 }
 
 #[test]
 fn dropout_grad_equals_mask_bitwise() {
     let n = 32u64;
-    let x = Tensor::from_vec(vec![1.0; n as usize], &[n as usize]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0; n as usize], &[n as usize])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let seed = 55;
     let offset = 6;
     let p = 0.25;
@@ -71,7 +80,11 @@ fn dropout_grad_equals_mask_bitwise() {
     let philox = Philox::new(seed);
     let scale = 1.0 / (1.0 - p);
     for i in 0..n {
-        let expected = if philox.uniform_at(offset, i) < p { 0.0 } else { scale };
+        let expected = if philox.uniform_at(offset, i) < p {
+            0.0
+        } else {
+            scale
+        };
         assert_eq!(grad[i as usize], expected, "mismatch at {i}");
     }
 }

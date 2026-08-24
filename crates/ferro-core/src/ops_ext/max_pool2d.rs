@@ -10,14 +10,23 @@ impl Tensor {
     pub fn max_pool2d(&self, kernel: usize, stride: usize) -> Result<Tensor> {
         let shape = self.shape().to_vec();
         if shape.len() != 4 {
-            return Err(Error::InvalidShape { op: "max_pool2d", msg: format!("expected NCHW rank-4 input, got rank {}", shape.len()) });
+            return Err(Error::InvalidShape {
+                op: "max_pool2d",
+                msg: format!("expected NCHW rank-4 input, got rank {}", shape.len()),
+            });
         }
         if kernel < 1 || stride < 1 {
-            return Err(Error::InvalidShape { op: "max_pool2d", msg: format!("kernel ({kernel}) and stride ({stride}) must be >= 1") });
+            return Err(Error::InvalidShape {
+                op: "max_pool2d",
+                msg: format!("kernel ({kernel}) and stride ({stride}) must be >= 1"),
+            });
         }
         let (n, c, h, w) = (shape[0], shape[1], shape[2], shape[3]);
         if h < kernel || w < kernel {
-            return Err(Error::InvalidShape { op: "max_pool2d", msg: format!("kernel {kernel} too large for input {h}x{w}") });
+            return Err(Error::InvalidShape {
+                op: "max_pool2d",
+                msg: format!("kernel {kernel} too large for input {h}x{w}"),
+            });
         }
         let out_h = (h - kernel) / stride + 1;
         let out_w = (w - kernel) / stride + 1;

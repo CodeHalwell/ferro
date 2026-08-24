@@ -9,7 +9,10 @@ impl Tensor {
     pub fn mean_dim(&self, dim: usize, keepdim: bool) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "mean_dim", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "mean_dim",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         // No max(1) guard: like mean(), an empty reduced dim yields NaN
         // (0 * inf) to match torch rather than a silent 0.
