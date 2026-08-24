@@ -17,7 +17,10 @@ fn cat_values() {
     let d = Tensor::from_vec(vec![9.0, 10.0], &[1, 2]).unwrap();
     let c3 = Tensor::cat(&[a, b, d], 0).unwrap();
     assert_eq!(c3.shape(), &[5, 2]);
-    assert_eq!(c3.to_vec(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+    assert_eq!(
+        c3.to_vec(),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    );
 }
 
 #[test]
@@ -39,12 +42,20 @@ fn cat_grad() {
     // Weight makes the loss position-dependent so per-slot grads differ.
     let w1 = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 4]).unwrap();
     grad_check(&[a.clone(), b.clone()], |t| {
-        Tensor::cat(&[t[0].clone(), t[1].clone()], 1).unwrap().mul(&w1).unwrap().sum()
+        Tensor::cat(&[t[0].clone(), t[1].clone()], 1)
+            .unwrap()
+            .mul(&w1)
+            .unwrap()
+            .sum()
     });
 
     let w0 = Tensor::from_vec(vec![1.0, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0], &[4, 2]).unwrap();
     grad_check(&[a, b], |t| {
-        Tensor::cat(&[t[0].clone(), t[1].clone()], 0).unwrap().mul(&w0).unwrap().sum()
+        Tensor::cat(&[t[0].clone(), t[1].clone()], 0)
+            .unwrap()
+            .mul(&w0)
+            .unwrap()
+            .sum()
     });
 }
 

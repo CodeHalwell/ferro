@@ -117,7 +117,11 @@ mod tests {
                 let mag_u = ((mag_bits >> 40) as f32) / ((1u32 << 24) as f32);
                 let mag = 10f32.powf(-6.0 + 12.0 * mag_u);
                 let sign_bits = next();
-                if sign_bits & 1 == 0 { mag } else { -mag }
+                if sign_bits & 1 == 0 {
+                    mag
+                } else {
+                    -mag
+                }
             })
             .collect();
 
@@ -126,7 +130,15 @@ mod tests {
         let reference: f64 = x.iter().map(|&v| v as f64).sum();
 
         let rel = |v: f32| ((v as f64) - reference).abs() / reference.abs().max(1.0);
-        assert!(rel(naive) > 1e-6, "naive sum unexpectedly accurate: rel = {}", rel(naive));
-        assert!(rel(pairwise) <= 1e-6, "pairwise sum too inaccurate: rel = {}", rel(pairwise));
+        assert!(
+            rel(naive) > 1e-6,
+            "naive sum unexpectedly accurate: rel = {}",
+            rel(naive)
+        );
+        assert!(
+            rel(pairwise) <= 1e-6,
+            "pairwise sum too inaccurate: rel = {}",
+            rel(pairwise)
+        );
     }
 }

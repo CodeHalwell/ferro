@@ -1,4 +1,6 @@
-use ferro_core::safetensors::{from_safetensors_bytes, load_safetensors, save_safetensors, to_safetensors_bytes};
+use ferro_core::safetensors::{
+    from_safetensors_bytes, load_safetensors, save_safetensors, to_safetensors_bytes,
+};
 use ferro_core::{DType, Error, Tensor};
 
 fn tmp_path(name: &str) -> std::path::PathBuf {
@@ -13,7 +15,8 @@ fn roundtrip_all_dtypes_and_ranks() {
     let d = Tensor::from_vec_f64(vec![1e-300, -2.5, 3.75], &[3]).unwrap();
     let i = Tensor::from_vec_i64(vec![i64::MIN, -1, 0, i64::MAX], &[2, 2]).unwrap();
     let s = Tensor::scalar(7.5);
-    let bytes = to_safetensors_bytes(&[("w", &f), ("prec", &d), ("ids", &i), ("step", &s)]).unwrap();
+    let bytes =
+        to_safetensors_bytes(&[("w", &f), ("prec", &d), ("ids", &i), ("step", &s)]).unwrap();
 
     let got = from_safetensors_bytes(&bytes).unwrap();
     assert_eq!(got.len(), 4);
@@ -50,8 +53,14 @@ fn golden_file_layout() {
     let hlen = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
     assert_eq!((8 + hlen) % 8, 0);
     let header = std::str::from_utf8(&bytes[8..8 + hlen]).unwrap();
-    assert_eq!(header.trim_end(), r#"{"a":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#);
-    assert_eq!(&bytes[8 + hlen..], [1.0f32.to_le_bytes(), 2.0f32.to_le_bytes()].concat());
+    assert_eq!(
+        header.trim_end(),
+        r#"{"a":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#
+    );
+    assert_eq!(
+        &bytes[8 + hlen..],
+        [1.0f32.to_le_bytes(), 2.0f32.to_le_bytes()].concat()
+    );
 }
 
 #[test]
@@ -80,24 +89,57 @@ fn rejects_malformed_files() {
         ("header past eof", 999u64.to_le_bytes().to_vec()),
         ("not json", with_header("hello", &[])),
         ("not an object", with_header("[1]", &[])),
-        ("missing offsets", with_header(r#"{"a":{"dtype":"F32","shape":[1]}}"#, &1.0f32.to_le_bytes())),
-        ("offsets shape mismatch", with_header(r#"{"a":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#, &1.0f32.to_le_bytes())),
-        ("offsets past data", with_header(r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#, &[])),
+        (
+            "missing offsets",
+            with_header(
+                r#"{"a":{"dtype":"F32","shape":[1]}}"#,
+                &1.0f32.to_le_bytes(),
+            ),
+        ),
+        (
+            "offsets shape mismatch",
+            with_header(
+                r#"{"a":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#,
+                &1.0f32.to_le_bytes(),
+            ),
+        ),
+        (
+            "offsets past data",
+            with_header(
+                r#"{"a":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#,
+                &[],
+            ),
+        ),
         ("trailing garbage after json", with_header(r#"{} x"#, &[])),
     ];
     for (name, bytes) in cases {
-        assert!(matches!(from_safetensors_bytes(&bytes), Err(Error::Format { .. })), "case {name} did not error");
+        assert!(
+            matches!(from_safetensors_bytes(&bytes), Err(Error::Format { .. })),
+            "case {name} did not error"
+        );
     }
 
-    let unsupported = with_header(r#"{"a":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]}}"#, &[0, 0, 0, 0]);
-    assert!(matches!(from_safetensors_bytes(&unsupported), Err(Error::Unsupported { .. })));
+    let unsupported = with_header(
+        r#"{"a":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]}}"#,
+        &[0, 0, 0, 0],
+    );
+    assert!(matches!(
+        from_safetensors_bytes(&unsupported),
+        Err(Error::Unsupported { .. })
+    ));
 }
 
 #[test]
 fn rejects_duplicate_names_and_missing_paths() {
     let t = Tensor::scalar(1.0);
-    assert!(matches!(to_safetensors_bytes(&[("a", &t), ("a", &t)]), Err(Error::Format { .. })));
-    assert!(matches!(load_safetensors("/nonexistent/ferro.safetensors"), Err(Error::Io { .. })));
+    assert!(matches!(
+        to_safetensors_bytes(&[("a", &t), ("a", &t)]),
+        Err(Error::Format { .. })
+    ));
+    assert!(matches!(
+        load_safetensors("/nonexistent/ferro.safetensors"),
+        Err(Error::Io { .. })
+    ));
 }
 
 #[test]

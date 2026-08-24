@@ -10,7 +10,10 @@ impl Tensor {
     pub fn cumsum(&self, dim: usize) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "cumsum", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "cumsum",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         let shape = self.shape().to_vec();
         let size = shape[dim];

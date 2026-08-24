@@ -25,6 +25,11 @@ pub enum Storage {
     F64(Vec<f64>),
     I64(Vec<i64>),
     Device(Box<dyn DeviceBuffer>),
+    /// Device-resident i64 indices. Kept as its own variant so the f32
+    /// compute paths can never pick one up by mistake; produced/consumed
+    /// only through `Backend::alloc_i64_from_host`/`copy_i64_to_host`/
+    /// `gather_rows_dev`.
+    DeviceI64(Box<dyn DeviceBuffer>),
 }
 
 impl std::fmt::Debug for Storage {
@@ -34,6 +39,7 @@ impl std::fmt::Debug for Storage {
             Storage::F64(v) => write!(f, "F64({} elems)", v.len()),
             Storage::I64(v) => write!(f, "I64({} elems)", v.len()),
             Storage::Device(b) => write!(f, "Device({} elems on {})", b.len(), b.device()),
+            Storage::DeviceI64(b) => write!(f, "DeviceI64({} elems on {})", b.len(), b.device()),
         }
     }
 }
@@ -43,7 +49,7 @@ impl Storage {
         match self {
             Storage::F32(_) | Storage::Device(_) => DType::F32,
             Storage::F64(_) => DType::F64,
-            Storage::I64(_) => DType::I64,
+            Storage::I64(_) | Storage::DeviceI64(_) => DType::I64,
         }
     }
 
@@ -67,7 +73,10 @@ pub(crate) struct StorageCell {
 
 impl StorageCell {
     fn new(data: Storage) -> StorageCell {
-        StorageCell { data, version: AtomicU64::new(0) }
+        StorageCell {
+            data,
+            version: AtomicU64::new(0),
+        }
     }
 }
 
@@ -129,9 +138,17 @@ impl Tensor {
         }))
     }
 
-    fn contiguous_leaf(op: &'static str, len: usize, storage: Storage, shape: &[usize]) -> Result<Tensor> {
+    fn contiguous_leaf(
+        op: &'static str,
+        len: usize,
+        storage: Storage,
+        shape: &[usize],
+    ) -> Result<Tensor> {
         if len != numel(shape) {
-            return Err(Error::InvalidShape { op, msg: format!("{len} elements do not fit shape {shape:?}") });
+            return Err(Error::InvalidShape {
+                op,
+                msg: format!("{len} elements do not fit shape {shape:?}"),
+            });
         }
         Ok(Tensor::from_parts(
             Arc::new(StorageCell::new(storage)),
@@ -209,15 +226,29 @@ impl Tensor {
     }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
-    /// Returns a fresh leaf sharing storage; only meaningful on leaves.
-    /// Panics on non-f32 tensors: autograd is f32-only.
-    pub fn requires_grad_(&self, req: bool) -> Tensor {
-        assert!(
-            !req || self.dtype() == DType::F32,
-            "requires_grad_ supports only f32 tensors (autograd is f32-only), got {}",
-            self.dtype()
-        );
-        Tensor::from_parts(
+    /// Returns a fresh leaf sharing storage. Interior nodes (tensors with an op
+    /// history) are rejected with an error instead of silently detaching, which
+    /// would cut the graph and drop every gradient upstream of them.
+    /// Errors on non-f32 tensors too: autograd is f32-only.
+    pub fn requires_grad_(&self, req: bool) -> Result<Tensor> {
+        if req {
+            if self.0.op.is_some() {
+                return Err(Error::Unsupported {
+                    op: "requires_grad_",
+                    msg: "leaf-only, but this tensor carries an autograd op history; \
+                          detach first if you really want a fresh leaf"
+                        .to_string(),
+                });
+            }
+            if self.dtype() != DType::F32 {
+                return Err(Error::DtypeMismatch {
+                    op: "requires_grad_",
+                    expected: DType::F32,
+                    got: self.dtype(),
+                });
+            }
+        }
+        Ok(Tensor::from_parts(
             self.0.storage.clone(),
             self.0.shape.clone(),
             self.0.stride.clone(),
@@ -225,7 +256,7 @@ impl Tensor {
             self.0.device,
             req,
             None,
-        )
+        ))
     }
 
     // --- materialization --------------------------------------------------
@@ -270,6 +301,8 @@ impl Tensor {
             Storage::F32(v) => self.gather_view(v),
             Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
+            // Device-i64 index buffers materialize through the i64 channel.
+            Storage::DeviceI64(_) => self.to_vec_i64().into_iter().map(|x| x as f32).collect(),
             Storage::Device(b) => {
                 let host = device_to_host(self.0.device, b.as_ref());
                 self.gather_view(&host)
@@ -284,15 +317,21 @@ impl Tensor {
             Storage::F64(v) => self.gather_view(v),
             Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f64).collect(),
             Storage::Device(_) => self.to_vec().into_iter().map(|x| x as f64).collect(),
+            Storage::DeviceI64(_) => self.to_vec_i64().into_iter().map(|x| x as f64).collect(),
         }
     }
 
-    /// Materialize as row-major i64; floats truncate toward zero.
+    /// Materialize as row-major i64; floats truncate toward zero. Device-i64
+    /// storage downloads through the backend's i64 channel.
     pub fn to_vec_i64(&self) -> Vec<i64> {
         match &self.0.storage.data {
             Storage::F32(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
             Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
             Storage::I64(v) => self.gather_view(v),
+            Storage::DeviceI64(b) => backend_for(self.0.device)
+                .expect("device tensor exists, so its backend must be registered")
+                .copy_i64_to_host(b.as_ref())
+                .expect("device i64-to-host copy failed"),
             Storage::Device(_) => self.to_vec().into_iter().map(|x| x as i64).collect(),
         }
     }
@@ -332,42 +371,62 @@ impl Tensor {
 
     /// Move this tensor's data to `device`, returning a detached contiguous
     /// leaf there (like `to_dtype`, transfers never carry autograd history).
-    /// Only f32 tensors can move off the host. Cross-device goes via the host.
+    /// F32 tensors move via `alloc_from_host`; I64 tensors (indices) move via
+    /// `alloc_i64_from_host`. Cross-device goes via the host.
     pub fn to_device(&self, device: Device) -> Result<Tensor> {
         if self.0.device == device {
             return Ok(self.clone());
         }
-        if self.dtype() != DType::F32 {
-            return Err(Error::DtypeMismatch {
-                op: "to_device",
-                expected: DType::F32,
-                got: self.dtype(),
-            });
-        }
         // Materialize on the host first (a copy back for device sources, a
         // contiguous gather for host views), then upload if the target is not
         // the cpu.
-        let host = self.to_vec();
         let shape = self.0.shape.clone();
-        if device == Device::Cpu {
-            return Tensor::from_vec(host, &shape);
+        match self.dtype() {
+            DType::F32 => {
+                let host = self.to_vec();
+                if device == Device::Cpu {
+                    return Tensor::from_vec(host, &shape);
+                }
+                let buf = backend_for(device)?.alloc_from_host(&host)?;
+                Ok(Tensor::from_parts(
+                    Arc::new(StorageCell::new(Storage::Device(buf))),
+                    shape.clone(),
+                    default_strides(&shape),
+                    0,
+                    device,
+                    false,
+                    None,
+                ))
+            }
+            DType::I64 => {
+                let host = self.to_vec_i64();
+                if device == Device::Cpu {
+                    return Tensor::from_vec_i64(host, &shape);
+                }
+                let buf = backend_for(device)?.alloc_i64_from_host(&host)?;
+                Ok(Tensor::from_parts(
+                    Arc::new(StorageCell::new(Storage::DeviceI64(buf))),
+                    shape.clone(),
+                    default_strides(&shape),
+                    0,
+                    device,
+                    false,
+                    None,
+                ))
+            }
+            dt => Err(Error::DtypeMismatch {
+                op: "to_device",
+                expected: DType::F32,
+                got: dt,
+            }),
         }
-        let buf = backend_for(device)?.alloc_from_host(&host)?;
-        Ok(Tensor::from_parts(
-            Arc::new(StorageCell::new(Storage::Device(buf))),
-            shape.clone(),
-            default_strides(&shape),
-            0,
-            device,
-            false,
-            None,
-        ))
     }
 
     /// True when storage is a backend-owned device buffer usable by the
     /// device kernel paths: those pass the raw buffer, so the view must be
-    /// the whole buffer in natural order.
-    fn device_resident_whole(&self) -> bool {
+    /// the whole buffer in natural order. Only the f32 flavor counts - i64
+    /// index buffers have their own gather seam.
+    pub(crate) fn device_resident_whole(&self) -> bool {
         matches!(&self.0.storage.data, Storage::Device(_))
             && self.0.offset == 0
             && self.is_contiguous()
@@ -413,7 +472,8 @@ impl Tensor {
         let g = if g.device() == self.0.device {
             g
         } else {
-            g.to_device(self.0.device).expect("grad transfer to the tensor's device")
+            g.to_device(self.0.device)
+                .expect("grad transfer to the tensor's device")
         };
         let mut slot = self.0.grad.lock().unwrap();
         *slot = Some(match slot.take() {
@@ -429,7 +489,11 @@ impl Tensor {
     pub(crate) fn broadcast_to(&self, shape: &[usize]) -> Result<Tensor> {
         let cur = &self.0.shape;
         if shape.len() < cur.len() {
-            return Err(Error::ShapeMismatch { op: "broadcast_to", lhs: cur.clone(), rhs: shape.to_vec() });
+            return Err(Error::ShapeMismatch {
+                op: "broadcast_to",
+                lhs: cur.clone(),
+                rhs: shape.to_vec(),
+            });
         }
         let pad = shape.len() - cur.len();
         let mut new_stride = vec![0usize; shape.len()];
@@ -443,7 +507,11 @@ impl Tensor {
                 } else if cur[ci] == 1 {
                     new_stride[i] = 0;
                 } else {
-                    return Err(Error::ShapeMismatch { op: "broadcast_to", lhs: cur.clone(), rhs: shape.to_vec() });
+                    return Err(Error::ShapeMismatch {
+                        op: "broadcast_to",
+                        lhs: cur.clone(),
+                        rhs: shape.to_vec(),
+                    });
                 }
             }
         }
@@ -507,12 +575,22 @@ impl Tensor {
         let mut stride = self.0.stride.clone();
         shape.swap(d0, d1);
         stride.swap(d0, d1);
-        Ok(Tensor::from_parts(self.0.storage.clone(), shape, stride, self.0.offset, self.0.device, false, None))
+        Ok(Tensor::from_parts(
+            self.0.storage.clone(),
+            shape,
+            stride,
+            self.0.offset,
+            self.0.device,
+            false,
+            None,
+        ))
     }
 
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
         let out = self.transpose_view(d0, d1)?;
-        Ok(out.record_fn(vec![self.clone()], move |g| vec![g.transpose_view(d0, d1).unwrap()]))
+        Ok(out.record_fn(vec![self.clone()], move |g| {
+            vec![g.transpose_view(d0, d1).unwrap()]
+        }))
     }
 
     /// A detached, contiguous copy that shares no autograd history or storage.
@@ -622,7 +700,11 @@ fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
 /// `to_dtype(DType::F32)` rather than silently at kernel entry.
 fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
     if t.dtype() != DType::F32 {
-        return Err(Error::DtypeMismatch { op, expected: DType::F32, got: t.dtype() });
+        return Err(Error::DtypeMismatch {
+            op,
+            expected: DType::F32,
+            got: t.dtype(),
+        });
     }
     Ok(())
 }
@@ -631,7 +713,9 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     check_f32("unary", a)?;
     if a.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(buf) = &a.0.storage.data else { unreachable!() };
+        let Storage::Device(buf) = &a.0.storage.data else {
+            unreachable!()
+        };
         let out = backend.unary_dev(kind, buf.as_ref())?;
         return Ok(device_leaf(out, &a.0.shape, a.0.device));
     }
@@ -650,7 +734,7 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
 }
 
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
-fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> Tensor {
+pub(crate) fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> Tensor {
     Tensor::from_parts(
         Arc::new(StorageCell::new(Storage::Device(buf))),
         shape.to_vec(),
@@ -662,23 +746,42 @@ fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> T
     )
 }
 
-pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: BinaryKind) -> Result<Tensor> {
+pub(crate) fn raw_binary_k(
+    op: &'static str,
+    a: &Tensor,
+    b: &Tensor,
+    kind: BinaryKind,
+) -> Result<Tensor> {
     check_f32(op, a)?;
     check_f32(op, b)?;
     if a.0.device != b.0.device {
-        return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
+        return Err(Error::DeviceMismatch {
+            op,
+            lhs: a.0.device,
+            rhs: b.0.device,
+        });
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
-        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else {
+            unreachable!()
+        };
+        let Storage::Device(bb) = &b.0.storage.data else {
+            unreachable!()
+        };
         if a.0.shape == b.0.shape {
             let out = backend.binary_dev(kind, ba.as_ref(), bb.as_ref())?;
             return Ok(device_leaf(out, &a.0.shape, a.0.device));
         }
         let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-        let out =
-            backend.binary_bc_dev(kind, ba.as_ref(), &a.0.shape, bb.as_ref(), &b.0.shape, &out_shape)?;
+        let out = backend.binary_bc_dev(
+            kind,
+            ba.as_ref(),
+            &a.0.shape,
+            bb.as_ref(),
+            &b.0.shape,
+            &out_shape,
+        )?;
         return Ok(device_leaf(out, &out_shape, a.0.device));
     }
     // Contiguous host f32 operands: skip the copy-then-compute path.
@@ -697,7 +800,8 @@ pub(crate) fn raw_binary_k(op: &'static str, a: &Tensor, b: &Tensor, kind: Binar
             // smaller operand is read repeatedly instead of expanded first.
             // Restricted to zero-offset whole buffers - an offset view still
             // takes the materializing fallback below.
-            if a.0.offset == 0 && b.0.offset == 0 && va.len() == a.numel() && vb.len() == b.numel() {
+            if a.0.offset == 0 && b.0.offset == 0 && va.len() == a.numel() && vb.len() == b.numel()
+            {
                 let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
                 let out = cpu.binary_bc(kind, va, &a.0.shape, vb, &b.0.shape, &out_shape);
                 return Tensor::from_vec(out, &out_shape);
@@ -720,7 +824,11 @@ pub(crate) fn raw_binary(
     check_f32(op, a)?;
     check_f32(op, b)?;
     if a.0.device != b.0.device {
-        return Err(Error::DeviceMismatch { op, lhs: a.0.device, rhs: b.0.device });
+        return Err(Error::DeviceMismatch {
+            op,
+            lhs: a.0.device,
+            rhs: b.0.device,
+        });
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
     let va = a.broadcast_to(&out_shape)?.to_vec();
@@ -736,23 +844,38 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     check_f32("matmul", a)?;
     check_f32("matmul", b)?;
     if a.0.device != b.0.device {
-        return Err(Error::DeviceMismatch { op: "matmul", lhs: a.0.device, rhs: b.0.device });
+        return Err(Error::DeviceMismatch {
+            op: "matmul",
+            lhs: a.0.device,
+            rhs: b.0.device,
+        });
     }
     if a.ndim() != 2 || b.ndim() != 2 {
         return Err(Error::Unsupported {
             op: "matmul",
-            msg: format!("only 2-D supported in MVP, got {:?} and {:?}", a.0.shape, b.0.shape),
+            msg: format!(
+                "only 2-D supported in MVP, got {:?} and {:?}",
+                a.0.shape, b.0.shape
+            ),
         });
     }
     let (m, k) = (a.0.shape[0], a.0.shape[1]);
     let (k2, n) = (b.0.shape[0], b.0.shape[1]);
     if k != k2 {
-        return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
+        return Err(Error::ShapeMismatch {
+            op: "matmul",
+            lhs: a.0.shape.clone(),
+            rhs: b.0.shape.clone(),
+        });
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
-        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else {
+            unreachable!()
+        };
+        let Storage::Device(bb) = &b.0.storage.data else {
+            unreachable!()
+        };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
@@ -768,8 +891,12 @@ pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
         return None;
     }
     let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-    let Storage::Device(buf) = &t.0.storage.data else { unreachable!() };
-    let out = backend.reduce_dev(kind, buf.as_ref()).expect("device backend lacks reduce_dev");
+    let Storage::Device(buf) = &t.0.storage.data else {
+        unreachable!()
+    };
+    let out = backend
+        .reduce_dev(kind, buf.as_ref())
+        .expect("device backend lacks reduce_dev");
     Some(device_leaf(out, &[], t.0.device))
 }
 
@@ -779,19 +906,43 @@ pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
 /// views. Used by matmul's backward so gradients never materialize transposes.
 pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result<Tensor> {
     if a.device_resident_whole() && b.device_resident_whole() && a.ndim() == 2 && b.ndim() == 2 {
-        let (m, k) = if ta { (a.0.shape[1], a.0.shape[0]) } else { (a.0.shape[0], a.0.shape[1]) };
-        let (k2, n) = if tb { (b.0.shape[1], b.0.shape[0]) } else { (b.0.shape[0], b.0.shape[1]) };
+        let (m, k) = if ta {
+            (a.0.shape[1], a.0.shape[0])
+        } else {
+            (a.0.shape[0], a.0.shape[1])
+        };
+        let (k2, n) = if tb {
+            (b.0.shape[1], b.0.shape[0])
+        } else {
+            (b.0.shape[0], b.0.shape[1])
+        };
         if k != k2 {
-            return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
+            return Err(Error::ShapeMismatch {
+                op: "matmul",
+                lhs: a.0.shape.clone(),
+                rhs: b.0.shape.clone(),
+            });
         }
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else { unreachable!() };
-        let Storage::Device(bb) = &b.0.storage.data else { unreachable!() };
+        let Storage::Device(ba) = &a.0.storage.data else {
+            unreachable!()
+        };
+        let Storage::Device(bb) = &b.0.storage.data else {
+            unreachable!()
+        };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, ta, tb)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
-    let av = if ta { a.transpose_view(0, 1)? } else { a.clone() };
-    let bv = if tb { b.transpose_view(0, 1)? } else { b.clone() };
+    let av = if ta {
+        a.transpose_view(0, 1)?
+    } else {
+        a.clone()
+    };
+    let bv = if tb {
+        b.transpose_view(0, 1)?
+    } else {
+        b.clone()
+    };
     raw_matmul(&av, &bv)
 }
 
@@ -801,7 +952,9 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
     let ndim = in_shape.len();
     if t.device_resident_whole() {
         let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-        let Storage::Device(buf) = &t.0.storage.data else { unreachable!() };
+        let Storage::Device(buf) = &t.0.storage.data else {
+            unreachable!()
+        };
         let out = backend
             .sum_dim_dev(buf.as_ref(), &in_shape, dim)
             .expect("device backend lacks sum_dim_dev");
@@ -810,7 +963,12 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
         let out_shape: Vec<usize> = if keepdim {
             keep_shape
         } else {
-            in_shape.iter().enumerate().filter(|(d, _)| *d != dim).map(|(_, &s)| s).collect()
+            in_shape
+                .iter()
+                .enumerate()
+                .filter(|(d, _)| *d != dim)
+                .map(|(_, &s)| s)
+                .collect()
         };
         return device_leaf(out, &out_shape, t.0.device);
     }
@@ -838,9 +996,39 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
     let out_shape: Vec<usize> = if keepdim {
         keep_shape
     } else {
-        in_shape.iter().enumerate().filter(|(d, _)| *d != dim).map(|(_, &s)| s).collect()
+        in_shape
+            .iter()
+            .enumerate()
+            .filter(|(d, _)| *d != dim)
+            .map(|(_, &s)| s)
+            .collect()
     };
     Tensor::from_vec(out, &out_shape).unwrap()
+}
+
+/// Row-wise softmax/log_softmax over the last dim of a whole contiguous device
+/// tensor, via the backend's `softmax_dev`/`log_softmax_dev` kernels. Returns
+/// None when the tensor is not resident or the reduced dim is not last (those
+/// keep the host fallback in ops_ext).
+pub(crate) fn raw_row_softmax(t: &Tensor, dim: usize, log: bool) -> Option<Tensor> {
+    if !t.device_resident_whole() || dim + 1 != t.ndim() || !t.is_contiguous() {
+        return None;
+    }
+    let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
+    let Storage::Device(buf) = &t.0.storage.data else {
+        unreachable!()
+    };
+    let cols = t.0.shape[dim];
+    let rows = t.numel() / cols;
+    // A backend without the row kernels (or a launch failure) keeps the
+    // documented fallback: ops_ext computes on the host and re-uploads.
+    let out = if log {
+        backend.log_softmax_dev(buf.as_ref(), rows, cols)
+    } else {
+        backend.softmax_dev(buf.as_ref(), rows, cols)
+    }
+    .ok()?;
+    Some(device_leaf(out, &t.0.shape, t.0.device))
 }
 
 /// Reduce a (broadcasted) gradient back down to `target` shape by summing over
@@ -868,19 +1056,35 @@ mod tests {
     use super::*;
 
     fn offset_view(v: Vec<f32>, offset: usize, shape: &[usize]) -> Tensor {
-        Tensor::from_parts(Arc::new(StorageCell::new(Storage::F32(v))), shape.to_vec(), default_strides(shape), offset, Device::Cpu, false, None)
+        Tensor::from_parts(
+            Arc::new(StorageCell::new(Storage::F32(v))),
+            shape.to_vec(),
+            default_strides(shape),
+            offset,
+            Device::Cpu,
+            false,
+            None,
+        )
     }
 
     #[test]
     fn raw_unary_k_reads_from_the_view_offset_not_index_zero() {
         let a = offset_view(vec![9.0, -1.0, -2.0, 3.0, 9.0], 1, &[3]);
-        assert_eq!(raw_unary_k(&a, UnaryKind::Relu).unwrap().to_vec(), vec![0.0, 0.0, 3.0]);
+        assert_eq!(
+            raw_unary_k(&a, UnaryKind::Relu).unwrap().to_vec(),
+            vec![0.0, 0.0, 3.0]
+        );
     }
 
     #[test]
     fn raw_binary_k_reads_both_operands_from_their_view_offset() {
         let a = offset_view(vec![100.0, 1.0, 2.0, 3.0], 1, &[3]);
         let b = offset_view(vec![100.0, 10.0, 20.0, 30.0], 1, &[3]);
-        assert_eq!(raw_binary_k("add", &a, &b, BinaryKind::Add).unwrap().to_vec(), vec![11.0, 22.0, 33.0]);
+        assert_eq!(
+            raw_binary_k("add", &a, &b, BinaryKind::Add)
+                .unwrap()
+                .to_vec(),
+            vec![11.0, 22.0, 33.0]
+        );
     }
 }

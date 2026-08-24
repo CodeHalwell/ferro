@@ -11,12 +11,18 @@ impl Tensor {
     pub fn topk(&self, k: usize, dim: usize) -> Result<(Tensor, Tensor)> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "topk", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "topk",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         let shape = self.shape().to_vec();
         let size = shape[dim];
         if k > size {
-            return Err(Error::InvalidShape { op: "topk", msg: format!("k {k} out of range for dim {dim} with size {size}") });
+            return Err(Error::InvalidShape {
+                op: "topk",
+                msg: format!("k {k} out of range for dim {dim} with size {size}"),
+            });
         }
         let stride: usize = shape[dim + 1..].iter().product();
         let outer: usize = shape[..dim].iter().product();
@@ -38,7 +44,10 @@ impl Tensor {
                     match (va.is_nan(), vb.is_nan()) {
                         (true, false) => std::cmp::Ordering::Less,
                         (false, true) => std::cmp::Ordering::Greater,
-                        _ => vb.partial_cmp(&va).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)),
+                        _ => vb
+                            .partial_cmp(&va)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(a.cmp(&b)),
                     }
                 });
                 for &j in &order[..k] {

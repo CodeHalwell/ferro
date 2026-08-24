@@ -29,9 +29,21 @@ fn index_select_errors() {
 fn index_select_grad() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]).unwrap();
     let w = Tensor::from_vec(vec![0.5, -1.0, 2.0, 3.0], &[2, 2]).unwrap();
-    grad_check(&[a], move |t| t[0].index_select(0, &[2, 0]).unwrap().mul(&w).unwrap().sum());
+    grad_check(&[a], move |t| {
+        t[0].index_select(0, &[2, 0])
+            .unwrap()
+            .mul(&w)
+            .unwrap()
+            .sum()
+    });
 
     let b = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]).unwrap();
     let w2 = Tensor::from_vec(vec![0.5, -1.0, 2.0, 3.0], &[2, 2]).unwrap();
-    grad_check(&[b], move |t| t[0].index_select(0, &[1, 1]).unwrap().mul(&w2).unwrap().sum());
+    grad_check(&[b], move |t| {
+        t[0].index_select(0, &[1, 1])
+            .unwrap()
+            .mul(&w2)
+            .unwrap()
+            .sum()
+    });
 }

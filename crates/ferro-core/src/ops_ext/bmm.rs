@@ -16,10 +16,17 @@ use crate::tensor::Tensor;
 impl Tensor {
     pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
         if self.device() != other.device() {
-            return Err(Error::DeviceMismatch { op: "bmm", lhs: self.device(), rhs: other.device() });
+            return Err(Error::DeviceMismatch {
+                op: "bmm",
+                lhs: self.device(),
+                rhs: other.device(),
+            });
         }
         if self.ndim() != 3 || other.ndim() != 3 {
-            return Err(Error::Unsupported { op: "bmm", msg: "inputs must be rank 3".into() });
+            return Err(Error::Unsupported {
+                op: "bmm",
+                msg: "inputs must be rank 3".into(),
+            });
         }
         let (a_shape, b_shape) = (self.shape(), other.shape());
         let (batch, m, k) = (a_shape[0], a_shape[1], a_shape[2]);
@@ -36,7 +43,9 @@ impl Tensor {
         let a_data = self.to_vec();
         let b_data = other.to_vec();
         let c_data = cpu.matmul_batch(&a_data, &b_data, batch, m, k, n);
-        let out = Tensor::from_vec(c_data, &[batch, m, n])?;
+        // Host-composed op: return to the inputs' device so chained
+        // device-resident ops stay on-device.
+        let out = Tensor::from_vec(c_data, &[batch, m, n])?.to_device(self.device())?;
 
         let a = self.clone();
         let b = other.clone();

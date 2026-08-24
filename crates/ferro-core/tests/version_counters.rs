@@ -33,15 +33,26 @@ fn detach_copy_has_independent_version() {
     copy._bump_version_for_test();
     copy._bump_version_for_test();
     assert_eq!(copy._version(), 2);
-    assert_eq!(x._version(), 0, "bumping a detached copy must not touch the source");
+    assert_eq!(
+        x._version(),
+        0,
+        "bumping a detached copy must not touch the source"
+    );
 
     x._bump_version_for_test();
     assert_eq!(x._version(), 1);
-    assert_eq!(copy._version(), 2, "copy's counter is unaffected by the source's bump too");
+    assert_eq!(
+        copy._version(),
+        2,
+        "copy's counter is unaffected by the source's bump too"
+    );
 
     // Prove it end to end: a mul recorded against x backward()s fine after the
     // copy (not x) was mutated.
-    let x = Tensor::from_vec(vec![2.0, -1.0], &[2]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![2.0, -1.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let y = x.mul(&x).unwrap();
     let snapshot = y.detach_copy();
     snapshot._bump_version_for_test();
@@ -50,11 +61,16 @@ fn detach_copy_has_independent_version() {
 }
 
 #[test]
-#[should_panic(expected = "one of the variables needed for gradient computation has been modified by an inplace operation")]
+#[should_panic(
+    expected = "one of the variables needed for gradient computation has been modified by an inplace operation"
+)]
 fn mutated_saved_input_panics_on_backward() {
     // mul saves both operands for its backward (d/dx(x*x) = 2x needs x); bump
     // x's version after recording and backward must refuse to trust it.
-    let x = Tensor::from_vec(vec![3.0, -2.0], &[2]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![3.0, -2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let y = x.mul(&x).unwrap();
     x._bump_version_for_test();
     y.sum().backward();
@@ -65,7 +81,10 @@ fn repeated_backward_snapshots_are_per_record_not_per_backward() {
     // Version snapshots are taken once, at record_fn time, not refreshed on
     // every backward() call - so retain-graph-style repeated backward through
     // an untouched graph must stay green across multiple calls.
-    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let loss = x.mul(&x).unwrap().sum();
     loss.backward();
     loss.backward();

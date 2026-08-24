@@ -67,37 +67,51 @@ fn conv2d_grad() {
     let xv: Vec<f32> = (0..16).map(|i| 0.5 - 0.13 * i as f32).collect();
     let x = Tensor::from_vec(xv, &[1, 1, 4, 4]).unwrap();
     let w = Tensor::from_vec(vec![0.7, -0.4, 0.2, 1.1], &[1, 1, 2, 2]).unwrap();
-    grad_check(&[x, w], |t| weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap()));
+    grad_check(&[x, w], |t| {
+        weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap())
+    });
 
     // padding 1, stride 2
     let xv: Vec<f32> = (0..9).map(|i| -0.6 + 0.21 * i as f32).collect();
     let x = Tensor::from_vec(xv, &[1, 1, 3, 3]).unwrap();
     let w = Tensor::from_vec(vec![0.9, -0.3, 0.5, -1.2], &[1, 1, 2, 2]).unwrap();
-    grad_check(&[x, w], |t| weighted_loss(t[0].conv2d(&t[1], 2, 1).unwrap()));
+    grad_check(&[x, w], |t| {
+        weighted_loss(t[0].conv2d(&t[1], 2, 1).unwrap())
+    });
 
     // multichannel: 2 in channels, 2 out channels
     let xv: Vec<f32> = (0..18).map(|i| 0.3 - 0.11 * i as f32).collect();
     let wv: Vec<f32> = (0..16).map(|i| -0.5 + 0.17 * i as f32).collect();
     let x = Tensor::from_vec(xv, &[1, 2, 3, 3]).unwrap();
     let w = Tensor::from_vec(wv, &[2, 2, 2, 2]).unwrap();
-    grad_check(&[x, w], |t| weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap()));
+    grad_check(&[x, w], |t| {
+        weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap())
+    });
 }
 
 #[test]
 fn conv2d_grad_odd_configs() {
     // stride 2, padding 2.
     let xv: Vec<f32> = (0..2 * 5 * 4).map(|i| 0.4 - 0.031 * i as f32).collect();
-    let wv: Vec<f32> = (0..2 * 2 * 3 * 3).map(|i| -0.35 + 0.02 * i as f32).collect();
+    let wv: Vec<f32> = (0..2 * 2 * 3 * 3)
+        .map(|i| -0.35 + 0.02 * i as f32)
+        .collect();
     let x = Tensor::from_vec(xv, &[1, 2, 5, 4]).unwrap();
     let w = Tensor::from_vec(wv, &[2, 2, 3, 3]).unwrap();
-    grad_check(&[x, w], |t| weighted_loss(t[0].conv2d(&t[1], 2, 2).unwrap()));
+    grad_check(&[x, w], |t| {
+        weighted_loss(t[0].conv2d(&t[1], 2, 2).unwrap())
+    });
 
     // 1x1 kernel.
-    let xv: Vec<f32> = (0..2 * 3 * 3 * 3).map(|i| -0.4 + 0.017 * i as f32).collect();
+    let xv: Vec<f32> = (0..2 * 3 * 3 * 3)
+        .map(|i| -0.4 + 0.017 * i as f32)
+        .collect();
     let wv: Vec<f32> = (0..2 * 3).map(|i| 0.5 - 0.15 * i as f32).collect();
     let x = Tensor::from_vec(xv, &[2, 3, 3, 3]).unwrap();
     let w = Tensor::from_vec(wv, &[2, 3, 1, 1]).unwrap();
-    grad_check(&[x, w], |t| weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap()));
+    grad_check(&[x, w], |t| {
+        weighted_loss(t[0].conv2d(&t[1], 1, 0).unwrap())
+    });
 }
 
 fn seq(n: usize, offset: f32, scale: f32) -> Vec<f32> {
@@ -106,7 +120,10 @@ fn seq(n: usize, offset: f32, scale: f32) -> Vec<f32> {
 
 fn assert_close(a: f32, b: f32, tol: f32, what: &str) {
     let scale = a.abs().max(b.abs()).max(1.0);
-    assert!((a - b).abs() <= tol * scale, "{what}: {a} vs {b} (tol {tol}, scale {scale})");
+    assert!(
+        (a - b).abs() <= tol * scale,
+        "{what}: {a} vs {b} (tol {tol}, scale {scale})"
+    );
 }
 
 // Pre-im2col naive direct conv, kept only as a reference oracle for the
@@ -168,24 +185,132 @@ struct ConvCase {
 fn conv2d_matches_naive_forward() {
     let cases = [
         // 1x1 kernel.
-        ConvCase { n: 1, cin: 3, cout: 8, h: 5, w: 7, kh: 1, kw: 1, stride: 1, padding: 0 },
-        ConvCase { n: 2, cin: 3, cout: 1, h: 7, w: 9, kh: 1, kw: 1, stride: 2, padding: 0 },
+        ConvCase {
+            n: 1,
+            cin: 3,
+            cout: 8,
+            h: 5,
+            w: 7,
+            kh: 1,
+            kw: 1,
+            stride: 1,
+            padding: 0,
+        },
+        ConvCase {
+            n: 2,
+            cin: 3,
+            cout: 1,
+            h: 7,
+            w: 9,
+            kh: 1,
+            kw: 1,
+            stride: 2,
+            padding: 0,
+        },
         // kernel == padded input size.
-        ConvCase { n: 2, cin: 3, cout: 3, h: 5, w: 5, kh: 5, kw: 5, stride: 1, padding: 0 },
-        ConvCase { n: 1, cin: 1, cout: 3, h: 3, w: 4, kh: 5, kw: 6, stride: 1, padding: 1 },
+        ConvCase {
+            n: 2,
+            cin: 3,
+            cout: 3,
+            h: 5,
+            w: 5,
+            kh: 5,
+            kw: 5,
+            stride: 1,
+            padding: 0,
+        },
+        ConvCase {
+            n: 1,
+            cin: 1,
+            cout: 3,
+            h: 3,
+            w: 4,
+            kh: 5,
+            kw: 6,
+            stride: 1,
+            padding: 1,
+        },
         // padding >= kernel - 1.
-        ConvCase { n: 1, cin: 1, cout: 3, h: 4, w: 6, kh: 3, kw: 3, stride: 1, padding: 3 },
-        ConvCase { n: 1, cin: 3, cout: 3, h: 3, w: 3, kh: 2, kw: 2, stride: 1, padding: 5 },
+        ConvCase {
+            n: 1,
+            cin: 1,
+            cout: 3,
+            h: 4,
+            w: 6,
+            kh: 3,
+            kw: 3,
+            stride: 1,
+            padding: 3,
+        },
+        ConvCase {
+            n: 1,
+            cin: 3,
+            cout: 3,
+            h: 3,
+            w: 3,
+            kh: 2,
+            kw: 2,
+            stride: 1,
+            padding: 5,
+        },
         // stride grid, non-square h != w, varied channel counts.
-        ConvCase { n: 2, cin: 8, cout: 3, h: 9, w: 6, kh: 3, kw: 3, stride: 2, padding: 1 },
-        ConvCase { n: 1, cin: 3, cout: 1, h: 10, w: 13, kh: 4, kw: 4, stride: 3, padding: 2 },
-        ConvCase { n: 1, cin: 1, cout: 1, h: 6, w: 5, kh: 2, kw: 3, stride: 1, padding: 1 },
-        ConvCase { n: 2, cin: 8, cout: 8, h: 8, w: 11, kh: 3, kw: 3, stride: 1, padding: 1 },
+        ConvCase {
+            n: 2,
+            cin: 8,
+            cout: 3,
+            h: 9,
+            w: 6,
+            kh: 3,
+            kw: 3,
+            stride: 2,
+            padding: 1,
+        },
+        ConvCase {
+            n: 1,
+            cin: 3,
+            cout: 1,
+            h: 10,
+            w: 13,
+            kh: 4,
+            kw: 4,
+            stride: 3,
+            padding: 2,
+        },
+        ConvCase {
+            n: 1,
+            cin: 1,
+            cout: 1,
+            h: 6,
+            w: 5,
+            kh: 2,
+            kw: 3,
+            stride: 1,
+            padding: 1,
+        },
+        ConvCase {
+            n: 2,
+            cin: 8,
+            cout: 8,
+            h: 8,
+            w: 11,
+            kh: 3,
+            kw: 3,
+            stride: 1,
+            padding: 1,
+        },
     ];
 
     for (i, case) in cases.iter().enumerate() {
-        let xv = seq(case.n * case.cin * case.h * case.w, -1.3, 0.037 + i as f32 * 0.001);
-        let wv = seq(case.cout * case.cin * case.kh * case.kw, 0.7, -0.021 - i as f32 * 0.0007);
+        let xv = seq(
+            case.n * case.cin * case.h * case.w,
+            -1.3,
+            0.037 + i as f32 * 0.001,
+        );
+        let wv = seq(
+            case.cout * case.cin * case.kh * case.kw,
+            0.7,
+            -0.021 - i as f32 * 0.0007,
+        );
         let x = Tensor::from_vec(xv, &[case.n, case.cin, case.h, case.w]).unwrap();
         let w = Tensor::from_vec(wv, &[case.cout, case.cin, case.kh, case.kw]).unwrap();
 
@@ -221,7 +346,12 @@ fn conv_timing_im2col_vs_naive() {
         assert_close(*a, *b, 1e-4, "timing parity");
     }
 
-    println!("naive: {naive_dt:?}, im2col+gemm: {new_dt:?}, speedup: {:.1}x",
-        naive_dt.as_secs_f64() / new_dt.as_secs_f64());
-    assert!(new_dt < naive_dt, "im2col+gemm should be faster than naive direct conv");
+    println!(
+        "naive: {naive_dt:?}, im2col+gemm: {new_dt:?}, speedup: {:.1}x",
+        naive_dt.as_secs_f64() / new_dt.as_secs_f64()
+    );
+    assert!(
+        new_dt < naive_dt,
+        "im2col+gemm should be faster than naive direct conv"
+    );
 }

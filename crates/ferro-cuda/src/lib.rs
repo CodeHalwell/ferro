@@ -39,6 +39,20 @@ fn cuda_err(op: &'static str, e: impl std::fmt::Display) -> Error {
     Error::Unsupported { op, msg: format!("CUDA error: {e}") }
 }
 
+/// Kernel element counts are passed as `unsigned int` kernel arguments, so a
+/// larger buffer cannot be launched; report it instead of truncating.
+fn as_u32(op: &'static str, n: usize) -> Result<u32> {
+    u32::try_from(n).map_err(|_| Error::Unsupported {
+        op,
+        msg: format!("{n} elements exceeds the u32 kernel argument limit ({})", u32::MAX),
+    })
+}
+
+/// cuBLAS takes i32 leading dimensions and extents.
+fn as_i32(op: &'static str, n: usize) -> Result<i32> {
+    i32::try_from(n).map_err(|_| Error::Unsupported { op, msg: format!("{n} exceeds the cuBLAS i32 dimension limit") })
+}
+
 /// Device-resident buffer: a `CudaSlice<f32>` tagged with the `Device` it
 /// lives on. Core hands these back through `&dyn DeviceBuffer`; the backend
 /// recovers the slice by downcasting via `as_any`.
@@ -48,6 +62,26 @@ pub struct CudaBuf {
 }
 
 impl DeviceBuffer for CudaBuf {
+    fn device(&self) -> Device {
+        self.device
+    }
+    fn len(&self) -> usize {
+        self.data.len()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Device-resident i64 index buffer. A separate type (rather than a tag on
+/// `CudaBuf`) so `resident`'s downcast rejects dtype mismatches structurally:
+/// an f32 buffer can never be passed where an index buffer is expected.
+pub struct CudaBufI64 {
+    data: CudaSlice<i64>,
+    device: Device,
+}
+
+impl DeviceBuffer for CudaBufI64 {
     fn device(&self) -> Device {
         self.device
     }
@@ -141,7 +175,7 @@ impl CudaBackend {
         if n == 0 {
             return Ok(out);
         }
-        let n_arg = n as u32;
+        let n_arg = as_u32(op, n)?;
         let mut launch = self.stream.launch_builder(&func);
         for d in inputs {
             launch.arg(*d);
@@ -156,6 +190,8 @@ impl CudaBackend {
     /// operands; `ta`/`tb` mark an operand as stored transposed.
     #[allow(clippy::too_many_arguments)] // mirrors the Backend::matmul_dev seam
     fn sgemm(&self, op: &'static str, a: &CudaSlice<f32>, b: &CudaSlice<f32>, m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Result<CudaSlice<f32>> {
+        // cuBLAS extents and leading dimensions are i32.
+        as_i32(op, m.max(k).max(n))?;
         let mut c = self.stream.alloc_zeros::<f32>(m * n).map_err(|e| cuda_err(op, e))?;
         if k > 0 {
             let cfg = row_major_sgemm_cfg(m, k, n, ta, tb);
@@ -170,6 +206,56 @@ impl CudaBackend {
     }
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
+        self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
+    }
+
+    fn htod_i64(&self, op: &'static str, data: &[i64]) -> Result<CudaSlice<i64>> {
+        self.stream.clone_htod(data).map_err(|e| cuda_err(op, e))
+    }
+
+    /// Row-wise softmax/log_softmax over a device-resident rows x cols buffer:
+    /// pass 1 block-reduces per-row max and exp-sum into a stats buffer, pass 2
+    /// applies them elementwise. Two launches, zero host round trips.
+    fn run_row_softmax(&self, op: &'static str, x: &CudaSlice<f32>, rows: usize, cols: usize, log: bool) -> Result<CudaSlice<f32>> {
+        let n = rows * cols;
+        if n == 0 || rows == 0 {
+            return self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(op, e));
+        }
+        as_u32(op, n)?;
+        let (rows_arg, cols_arg) = (as_u32(op, rows)?, as_u32(op, cols)?);
+        let stats = self.stream.alloc_zeros::<f32>(2 * rows).map_err(|e| cuda_err(op, e))?;
+        let sfunc = self.get_kernel(op, &kernels::softmax_row_stats_source())?;
+        let mut launch = self.stream.launch_builder(&sfunc);
+        launch.arg(x);
+        launch.arg(&stats);
+        launch.arg(&cols_arg);
+        let cfg = LaunchConfig { grid_dim: (rows_arg, 1, 1), block_dim: (kernels::REDUCE_BLOCK, 1, 1), shared_mem_bytes: 0 };
+        unsafe { launch.launch(cfg) }.map_err(|e| cuda_err(op, e))?;
+        let out = self.launch_elementwise_apply(op, &kernels::softmax_apply_source(log), &[x, &stats], n, cols_arg)?;
+        Ok(out)
+    }
+
+    /// `launch_elementwise` with one extra trailing scalar arg (the apply
+    /// kernel's `cols`); kept local so the shared helper stays untouched.
+    fn launch_elementwise_apply(&self, op: &'static str, src: &str, inputs: &[&CudaSlice<f32>], n: usize, extra: u32) -> Result<CudaSlice<f32>> {
+        let func = self.get_kernel(op, src)?;
+        let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(op, e))?;
+        if n == 0 {
+            return Ok(out);
+        }
+        let n_arg = as_u32(op, n)?;
+        let mut launch = self.stream.launch_builder(&func);
+        for d in inputs {
+            launch.arg(*d);
+        }
+        launch.arg(&mut out);
+        launch.arg(&n_arg);
+        launch.arg(&extra);
+        unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }.map_err(|e| cuda_err(op, e))?;
+        Ok(out)
+    }
+
+    fn dtoh_i64(&self, op: &'static str, data: &CudaSlice<i64>) -> Result<Vec<i64>> {
         self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
     }
 }
@@ -210,37 +296,83 @@ fn row_major_sgemm_cfg(m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Gemm
     }
 }
 
+impl CudaBackend {
+    /// Fallible host-slice compute used by the `Backend` fallback impls below.
+    pub fn unary_res(&self, kind: UnaryKind, x: &[f32]) -> Result<Vec<f32>> {
+        if x.is_empty() {
+            return Ok(Vec::new());
+        }
+        let xd = self.htod("unary", x)?;
+        let out = self.launch_elementwise("unary", &kernels::unary_source(kind), &[&xd], x.len())?;
+        self.dtoh("unary", &out)
+    }
+
+    pub fn binary_res(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Result<Vec<f32>> {
+        if a.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ad = self.htod("binary", a)?;
+        let bd = self.htod("binary", b)?;
+        let out = self.launch_elementwise("binary", &kernels::binary_source(kind), &[&ad, &bd], a.len())?;
+        self.dtoh("binary", &out)
+    }
+
+    pub fn matmul_res(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Result<Vec<f32>> {
+        if m == 0 || n == 0 {
+            return Ok(Vec::new());
+        }
+        let ad = self.htod("matmul", a)?;
+        let bd = self.htod("matmul", b)?;
+        let c = self.sgemm("matmul", &ad, &bd, m, k, n, false, false)?;
+        self.dtoh("matmul", &c)
+    }
+
+    /// Device-resident gradient seeding: allocate a fresh `CudaBuf` of `len`
+    /// elements all equal to `value` via the device-side fill kernel -- no
+    /// host round trip. This is what WS-B's tensor.rs should call through the
+    /// Backend trait seam; the proposed trait addition in ferro-core's
+    /// dispatch::Backend is:
+    ///
+    /// ```text
+    /// /// Allocate a device buffer of `len` elements all equal to `value`
+    ///   /// (device-side fill, no host round trip); used to seed backward
+    ///   /// gradient buffers residently.
+    ///   fn seed_grad_dev(&self, len: usize, value: f32) -> Result<Box<dyn DeviceBuffer>> {
+    ///       self.fill_dev(value, len)
+    ///   }
+    /// ```
+    ///
+    /// The default delegating to fill_dev keeps every existing backend valid.
+    pub fn seed_grad_dev(&self, len: usize, value: f32) -> Result<Box<dyn DeviceBuffer>> {
+        self.fill_dev(value, len)
+    }
+}
+
 impl Backend for CudaBackend {
     // Host-slice fallbacks: htod, run the same device kernels as the *_dev
-    // path, dtoh. The seam returns bare Vec<f32> (no error channel), so a
-    // driver failure here can only panic; the *_dev methods return Err.
+    // path, dtoh. The Backend seam returns bare Vec<f32> (no error channel),
+    // so a driver failure cannot be propagated here; the real error path is
+    // the *_res methods above (and the *_dev methods). A failure degrades to
+    // an empty result with a stderr diagnostic rather than a panic.
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32> {
-        if x.is_empty() {
-            return Vec::new();
-        }
-        let xd = self.htod("unary", x).expect("htod copy failed");
-        let out = self.launch_elementwise("unary", &kernels::unary_source(kind), &[&xd], x.len());
-        self.dtoh("unary", &out.expect("kernel launch failed")).expect("dtoh copy failed")
+        self.unary_res(kind, x).unwrap_or_else(|e| {
+            eprintln!("ferro-cuda: unary host fallback failed: {e}");
+            Vec::new()
+        })
     }
 
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-        if a.is_empty() {
-            return Vec::new();
-        }
-        let ad = self.htod("binary", a).expect("htod copy failed");
-        let bd = self.htod("binary", b).expect("htod copy failed");
-        let out = self.launch_elementwise("binary", &kernels::binary_source(kind), &[&ad, &bd], a.len());
-        self.dtoh("binary", &out.expect("kernel launch failed")).expect("dtoh copy failed")
+        self.binary_res(kind, a, b).unwrap_or_else(|e| {
+            eprintln!("ferro-cuda: binary host fallback failed: {e}");
+            Vec::new()
+        })
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-        if m == 0 || n == 0 {
-            return Vec::new();
-        }
-        let ad = self.htod("matmul", a).expect("htod copy failed");
-        let bd = self.htod("matmul", b).expect("htod copy failed");
-        let c = self.sgemm("matmul", &ad, &bd, m, k, n, false, false).expect("cublas sgemm failed");
-        self.dtoh("matmul", &c).expect("dtoh copy failed")
+        self.matmul_res(a, b, m, k, n).unwrap_or_else(|e| {
+            eprintln!("ferro-cuda: matmul host fallback failed: {e}");
+            Vec::new()
+        })
     }
 
     fn alloc_from_host(&self, data: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
@@ -292,7 +424,7 @@ impl Backend for CudaBackend {
         let func = self.get_kernel(OP, &kernels::binary_bc_source(kind, dims.len()))?;
         let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(OP, e))?;
         if n > 0 {
-            let n_arg = n as u32;
+            let n_arg = as_u32(OP, n)?;
             let mut launch = self.stream.launch_builder(&func);
             launch.arg(&a.data);
             launch.arg(&b.data);
@@ -309,15 +441,36 @@ impl Backend for CudaBackend {
     fn reduce_dev(&self, kind: ReduceKind, x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "reduce_dev";
         let x = self.resident(OP, x)?;
-        let func = self.get_kernel(OP, &kernels::reduce_source(kind))?;
-        let mut out = self.stream.alloc_zeros::<f32>(1).map_err(|e| cuda_err(OP, e))?;
-        let n_arg = x.data.len() as u32;
-        let mut launch = self.stream.launch_builder(&func);
+        let n = x.data.len();
+        // Two-pass tree reduction (see kernels.rs): pass 1 writes one partial
+        // sum per block, pass 2 reduces the partials in a single block.
+        if n == 0 {
+            // Empty-input Sum is 0; Mean is 0/0 = NaN, matching core/torch.
+            return match kind {
+                ReduceKind::Sum => Ok(self.wrap(self.stream.alloc_zeros::<f32>(1).map_err(|e| cuda_err(OP, e))?)),
+                ReduceKind::Mean => Ok(self.wrap(self.htod(OP, &[f32::NAN])?)),
+            };
+        }
+        as_u32(OP, n)?;
+        let blocks = kernels::reduce_grid(n);
+        let partials = self.stream.alloc_zeros::<f32>(blocks as usize).map_err(|e| cuda_err(OP, e))?;
+        let pfunc = self.get_kernel(OP, &kernels::reduce_partial_source())?;
+        let mut launch = self.stream.launch_builder(&pfunc);
         launch.arg(&x.data);
-        launch.arg(&mut out);
+        launch.arg(&partials);
+        let n_arg = n as u32;
         launch.arg(&n_arg);
-        // The reduce kernel is single-threaded (see kernels.rs).
-        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (1, 1, 1), shared_mem_bytes: 0 };
+        let cfg = LaunchConfig { grid_dim: (blocks, 1, 1), block_dim: (kernels::REDUCE_BLOCK, 1, 1), shared_mem_bytes: 0 };
+        unsafe { launch.launch(cfg) }.map_err(|e| cuda_err(OP, e))?;
+        let ffunc = self.get_kernel("reduce_finalize", &kernels::reduce_finalize_source(kind))?;
+        let mut out = self.stream.alloc_zeros::<f32>(1).map_err(|e| cuda_err(OP, e))?;
+        let mut launch = self.stream.launch_builder(&ffunc);
+        launch.arg(&partials);
+        launch.arg(&mut out);
+        launch.arg(&blocks);
+        let total = n as u32;
+        launch.arg(&total);
+        let cfg = LaunchConfig { grid_dim: (1, 1, 1), block_dim: (kernels::REDUCE_BLOCK, 1, 1), shared_mem_bytes: 0 };
         unsafe { launch.launch(cfg) }.map_err(|e| cuda_err(OP, e))?;
         Ok(self.wrap(out))
     }
@@ -331,7 +484,8 @@ impl Backend for CudaBackend {
         let func = self.get_kernel(OP, &kernels::sum_dim_source())?;
         let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(OP, e))?;
         if n > 0 {
-            let (n_arg, red, inner) = (n as u32, shape[dim] as u32, inner as u32);
+            let (red, inner) = (as_u32(OP, shape[dim])?, as_u32(OP, inner)?);
+            let n_arg = as_u32(OP, n)?;
             let mut launch = self.stream.launch_builder(&func);
             launch.arg(&x.data);
             launch.arg(&mut out);
@@ -343,16 +497,78 @@ impl Backend for CudaBackend {
         Ok(self.wrap(out))
     }
 
+    fn softmax_dev(&self, x: &dyn DeviceBuffer, rows: usize, cols: usize) -> Result<Box<dyn DeviceBuffer>> {
+        let x = self.resident("softmax_dev", x)?;
+        Ok(self.wrap(self.run_row_softmax("softmax_dev", &x.data, rows, cols, false)?))
+    }
+
+    fn log_softmax_dev(&self, x: &dyn DeviceBuffer, rows: usize, cols: usize) -> Result<Box<dyn DeviceBuffer>> {
+        let x = self.resident("log_softmax_dev", x)?;
+        Ok(self.wrap(self.run_row_softmax("log_softmax_dev", &x.data, rows, cols, true)?))
+    }
+
     fn fill_dev(&self, value: f32, len: usize) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "fill_dev";
         let func = self.get_kernel(OP, &kernels::fill_source())?;
         let mut out = self.stream.alloc_zeros::<f32>(len).map_err(|e| cuda_err(OP, e))?;
         if len > 0 {
-            let n_arg = len as u32;
+            let n_arg = as_u32(OP, len)?;
             let mut launch = self.stream.launch_builder(&func);
             launch.arg(&mut out);
             launch.arg(&n_arg);
             launch.arg(&value);
+            unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }.map_err(|e| cuda_err(OP, e))?;
+        }
+        Ok(self.wrap(out))
+    }
+
+    fn alloc_i64_from_host(&self, data: &[i64]) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(Box::new(CudaBufI64 { data: self.htod_i64("alloc_i64_from_host", data)?, device: self.device }))
+    }
+
+    fn copy_i64_to_host(&self, buf: &dyn DeviceBuffer) -> Result<Vec<i64>> {
+        let buf = buf.as_any().downcast_ref::<CudaBufI64>().ok_or_else(|| Error::Unsupported {
+            op: "copy_i64_to_host",
+            msg: "buffer was not an i64 buffer allocated by the CUDA backend".into(),
+        })?;
+        if buf.device != self.device {
+            return Err(Error::Unsupported {
+                op: "copy_i64_to_host",
+                msg: format!("buffer lives on {} but this backend serves {}", buf.device, self.device),
+            });
+        }
+        self.dtoh_i64("copy_i64_to_host", &buf.data)
+    }
+
+    fn gather_rows_dev(&self, w: &dyn DeviceBuffer, idx: &dyn DeviceBuffer, dim_size: usize, inner: usize) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "gather_rows_dev";
+        let w = self.resident(OP, w)?;
+        let idx = idx.as_any().downcast_ref::<CudaBufI64>().ok_or_else(|| Error::Unsupported {
+            op: OP,
+            msg: "index buffer was not an i64 buffer allocated by the CUDA backend".into(),
+        })?;
+        if idx.device != self.device {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("buffer lives on {} but this backend serves {}", idx.device, self.device),
+            });
+        }
+        // The kernel indexes w by idx[o]*inner + j with unsigned int math;
+        // dim_size * inner must stay inside that range.
+        as_u32(OP, inner)?;
+        let rows = idx.data.len();
+        let n = rows * inner;
+        let func = self.get_kernel(OP, &kernels::gather_source())?;
+        let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| cuda_err(OP, e))?;
+        if n > 0 {
+            let (inner_arg, n_arg) = (as_u32(OP, inner)?, as_u32(OP, n)?);
+            let _ = dim_size; // bounds were validated on the host before upload
+            let mut launch = self.stream.launch_builder(&func);
+            launch.arg(&idx.data);
+            launch.arg(&w.data);
+            launch.arg(&mut out);
+            launch.arg(&inner_arg);
+            launch.arg(&n_arg);
             unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }.map_err(|e| cuda_err(OP, e))?;
         }
         Ok(self.wrap(out))
@@ -554,8 +770,8 @@ mod tests {
             let xd = place(x.clone());
             let yd = place(y.clone());
             let lr = place(Tensor::scalar(0.1));
-            let mut w = place(Tensor::from_vec(vec![0.0, 0.0], &[2, 1]).unwrap()).requires_grad_(true);
-            let mut b = place(Tensor::from_vec(vec![0.0], &[1]).unwrap()).requires_grad_(true);
+            let mut w = place(Tensor::from_vec(vec![0.0, 0.0], &[2, 1]).unwrap()).requires_grad_(true).unwrap();
+            let mut b = place(Tensor::from_vec(vec![0.0], &[1]).unwrap()).requires_grad_(true).unwrap();
             let (mut first, mut last) = (f32::NAN, f32::NAN);
             for step in 0..40 {
                 let pred = xd.matmul(&w).unwrap().add(&b).unwrap();
@@ -567,8 +783,8 @@ mod tests {
                     assert_eq!(gw.device(), d);
                     assert_eq!(gb.device(), d);
                 }
-                w = w.detach_copy().sub(&gw.mul(&lr).unwrap()).unwrap().requires_grad_(true);
-                b = b.detach_copy().sub(&gb.mul(&lr).unwrap()).unwrap().requires_grad_(true);
+                w = w.detach_copy().sub(&gw.mul(&lr).unwrap()).unwrap().requires_grad_(true).unwrap();
+                b = b.detach_copy().sub(&gb.mul(&lr).unwrap()).unwrap().requires_grad_(true).unwrap();
                 let l = loss.item();
                 if step == 0 {
                     first = l;
@@ -591,5 +807,196 @@ mod tests {
         for (d, c) in b_dev.iter().zip(b_cpu.iter()) {
             assert!((d - c).abs() < 1e-4, "b: device {d} vs cpu {c}");
         }
+    }
+
+    const TOL: f32 = 1e-6;
+
+    fn close(a: &[f32], b: &[f32], what: &str) {
+        assert_eq!(a.len(), b.len(), "{what} length");
+        for (i, (&d, &c)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (d - c).abs() < TOL,
+                "{what}[{i}]: device {d} vs cpu {c}"
+            );
+        }
+    }
+
+    // Forward + backward parity vs CPU for the row kernels and activations,
+    // on a [batch, seq, dim] tensor so the last-dim softmax path and the
+    // keepdim sum_dim used by norms are both exercised.
+    #[test]
+    fn gpu_softmax_gelu_activations_match_cpu_forward_and_grad() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let dev = Device::Cuda(0);
+        register_backend(dev, backend);
+        let data: Vec<f32> = (0..120).map(|i| ((i as f32) * 0.37).sin() * 2.0 - 0.1).collect();
+        let shape = [4usize, 5, 6];
+        let coef: Vec<f32> = (0..120).map(|i| ((i as f32) * 0.11).cos()).collect();
+        let ch = coef.clone();
+        let wd = Tensor::from_vec(coef, &shape).unwrap().to_device(dev).unwrap();
+        let wc = Tensor::from_vec(ch.clone(), &shape).unwrap();
+
+        let run_op = |f: &dyn Fn(&Tensor) -> Tensor| -> (Vec<f32>, Vec<f32>) {
+            let xd = Tensor::from_vec(data.clone(), &shape)
+                .unwrap()
+                .to_device(dev)
+                .unwrap()
+                .requires_grad_(true)
+                .unwrap();
+            let out = f(&xd);
+            assert_eq!(out.device(), dev, "output left the device");
+            out.mul(&wd).unwrap().sum().backward();
+            let gx = xd.grad().unwrap();
+            assert_eq!(gx.device(), dev, "grad left the device");
+            let gv = gx.to_vec();
+            let xc = Tensor::from_vec(data.clone(), &shape).unwrap().requires_grad_(true).unwrap();
+            let oc = f(&xc);
+            oc.mul(&wc).unwrap().sum().backward();
+            (oc.to_vec(), gv)
+        };
+
+        let (y, gx) = run_op(&|t| t.softmax(2).unwrap());
+        let (yc, gxc) = run_op_cpu(&data, &shape, &ch, &|t| t.softmax(2).unwrap());
+        close(&y, &yc, "softmax");
+        close(&gx, &gxc, "softmax grad");
+        // Every softmax row sums to 1.
+        for row in y.chunks(6) {
+            let s: f32 = row.iter().sum();
+            assert!((s - 1.0).abs() < TOL, "row sum {s}");
+        }
+
+        let (y, gx) = run_op(&|t| t.log_softmax(2).unwrap());
+        let (yc, gxc) = run_op_cpu(&data, &shape, &ch, &|t| t.log_softmax(2).unwrap());
+        close(&y, &yc, "log_softmax");
+        close(&gx, &gxc, "log_softmax grad");
+
+        let (y, gx) = run_op(&|t| t.gelu());
+        let (yc, gxc) = run_op_cpu(&data, &shape, &ch, &|t| t.gelu());
+        close(&y, &yc, "gelu");
+        close(&gx, &gxc, "gelu grad");
+
+        let (y, gx) = run_op(&|t| t.silu());
+        let (yc, gxc) = run_op_cpu(&data, &shape, &ch, &|t| t.silu());
+        close(&y, &yc, "silu");
+        close(&gx, &gxc, "silu grad");
+
+        let (y, gx) = run_op(&|t| t.sigmoid());
+        let (yc, gxc) = run_op_cpu(&data, &shape, &ch, &|t| t.sigmoid());
+        close(&y, &yc, "sigmoid");
+        close(&gx, &gxc, "sigmoid grad");
+
+        // sum_dim over every dim of the [4,5,6] buffer, keepdim layout.
+        let xdev = Tensor::from_vec(data.clone(), &shape).unwrap().to_device(dev).unwrap();
+        let xcpu = Tensor::from_vec(data.clone(), &shape).unwrap();
+        for dim in 0..3 {
+            let got = xdev.sum_dim(dim, true).unwrap();
+            assert_eq!(got.device(), dev);
+            let mut want_shape = shape.to_vec();
+            want_shape[dim] = 1;
+            assert_eq!(got.shape(), &want_shape[..]);
+            close(&got.to_vec(), &xcpu.sum_dim(dim, true).unwrap().to_vec(), "sum_dim");
+        }
+    }
+
+    // CPU twin of run_op above so each op is compared against identical host
+    // math rather than a duplicated formula.
+    fn run_op_cpu(
+        data: &[f32],
+        shape: &[usize],
+        coef: &[f32],
+        f: &dyn Fn(&Tensor) -> Tensor,
+    ) -> (Vec<f32>, Vec<f32>) {
+        let x = Tensor::from_vec(data.to_vec(), shape).unwrap().requires_grad_(true).unwrap();
+        let out = f(&x);
+        out.mul(&Tensor::from_vec(coef.to_vec(), shape).unwrap())
+            .unwrap()
+            .sum()
+            .backward();
+        (out.to_vec(), x.grad().unwrap().to_vec())
+    }
+
+    // Mini transformer-style block (linear -> gelu -> linear -> cross entropy
+    // via log_softmax) trained fully resident on the GPU: every intermediate,
+    // gradient, and parameter stays on Device::Cuda(0) and the loss converges.
+    #[test]
+    fn gpu_mini_block_forward_backward_fully_resident_converges() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let dev = Device::Cuda(0);
+        register_backend(dev, backend);
+
+        let (batch, din, dhid, classes) = (8usize, 8, 16, 10);
+        let lin = |n: usize, m: usize, scale: f32| -> Vec<f32> {
+            (0..n * m).map(|i| (((i % 17) as f32 / 17.0) - 0.5) * scale).collect()
+        };
+        let labels: Vec<usize> = (0..batch).map(|i| i % classes).collect();
+        let mut onehot = vec![0f32; batch * classes];
+        for (i, &l) in labels.iter().enumerate() {
+            onehot[i * classes + l] = 1.0;
+        }
+
+        let run = |device: Option<Device>| -> f32 {
+            let pl = |t: Tensor| match device {
+                Some(d) => t.to_device(d).unwrap(),
+                None => t,
+            };
+            let xd = pl(Tensor::from_vec(lin(batch, din, 1.0), &[batch, din]).unwrap());
+            let targets = pl(Tensor::from_vec(onehot.clone(), &[batch, classes]).unwrap());
+            let lr = pl(Tensor::scalar(0.5));
+            let mut w1 = pl(Tensor::from_vec(lin(din, dhid, 0.5), &[din, dhid]).unwrap()).requires_grad_(true).unwrap();
+            let mut b1 = pl(Tensor::from_vec(vec![0f32; dhid], &[dhid]).unwrap()).requires_grad_(true).unwrap();
+            let mut w2 = pl(Tensor::from_vec(lin(dhid, classes, 0.5), &[dhid, classes]).unwrap()).requires_grad_(true).unwrap();
+            let mut b2 = pl(Tensor::from_vec(vec![0f32; classes], &[classes]).unwrap()).requires_grad_(true).unwrap();
+            let (mut first, mut last) = (f32::NAN, f32::NAN);
+            for step in 0..150 {
+                let hid = xd.matmul(&w1).unwrap().add(&b1).unwrap().gelu();
+                let logits = hid.matmul(&w2).unwrap().add(&b2).unwrap();
+                if let Some(d) = device {
+                    // If log_softmax fell back to the host, CE would silently
+                    // realign and this assertion would fire.
+                    assert_eq!(logits.device(), d, "logits left the device");
+                }
+                let loss = ferro_core::nn::cross_entropy(&logits, &targets).unwrap();
+                loss.backward();
+                let params = [(w1.grad().unwrap(), "w1"), (b1.grad().unwrap(), "b1"), (w2.grad().unwrap(), "w2"), (b2.grad().unwrap(), "b2")];
+                for (g, name) in &params {
+                    if let Some(d) = device {
+                        assert_eq!(g.device(), d, "{name} grad left the device");
+                    }
+                }
+                let step_t = |p: &Tensor, g: &Tensor| p.detach_copy().sub(&g.mul(&lr).unwrap()).unwrap().requires_grad_(true).unwrap();
+                w1 = step_t(&w1, &w1.grad().unwrap());
+                b1 = step_t(&b1, &b1.grad().unwrap());
+                w2 = step_t(&w2, &w2.grad().unwrap());
+                b2 = step_t(&b2, &b2.grad().unwrap());
+                let l = loss.item();
+                if step == 0 {
+                    first = l;
+                }
+                last = l;
+            }
+            if let Some(d) = device {
+                for (p, name) in [&w1, &b1, &w2, &b2].map(|p| (p, "")) {
+                    let _ = name;
+                    assert_eq!(p.device(), d);
+                }
+            }
+            assert!(last < first * 0.25, "loss did not converge: {first} -> {last}");
+            first.min(last)
+        };
+
+        run(Some(dev));
+        run(None);
     }
 }

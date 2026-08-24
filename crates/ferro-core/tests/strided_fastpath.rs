@@ -10,10 +10,14 @@ use ferro_core::testkit::grad_check;
 use ferro_core::{Backend, BinaryKind, CpuBackend, Tensor, UnaryKind};
 
 fn lcg_fill(seed: u64, n: usize) -> Vec<f32> {
-    let mut state = seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
+    let mut state = seed
+        .wrapping_mul(2862933555777941757)
+        .wrapping_add(3037000493);
     (0..n)
         .map(|_| {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((state >> 33) as f32 / (1u64 << 31) as f32) - 0.5
         })
         .collect()
@@ -21,15 +25,26 @@ fn lcg_fill(seed: u64, n: usize) -> Vec<f32> {
 
 /// Like `lcg_fill` but shifted away from zero, for safe division denominators.
 fn lcg_fill_nonzero(seed: u64, n: usize) -> Vec<f32> {
-    lcg_fill(seed, n).into_iter().map(|v| if v >= 0.0 { v + 0.2 } else { v - 0.2 }).collect()
+    lcg_fill(seed, n)
+        .into_iter()
+        .map(|v| if v >= 0.0 { v + 0.2 } else { v - 0.2 })
+        .collect()
 }
 
 fn numpy_broadcast_shape(a: &[usize], b: &[usize]) -> Vec<usize> {
     let n = a.len().max(b.len());
     (0..n)
         .map(|i| {
-            let ad = if i < n - a.len() { 1 } else { a[i - (n - a.len())] };
-            let bd = if i < n - b.len() { 1 } else { b[i - (n - b.len())] };
+            let ad = if i < n - a.len() {
+                1
+            } else {
+                a[i - (n - a.len())]
+            };
+            let bd = if i < n - b.len() {
+                1
+            } else {
+                b[i - (n - b.len())]
+            };
             // Mirrors shape.rs's broadcast_shapes: equal wins outright, else
             // whichever side isn't the 1 wins (a 0-size dim is never a 1, so
             // this stays correct for empty-tensor broadcasts too - unlike a
@@ -57,7 +72,13 @@ fn broadcast_materialize(v: &[f32], shape: &[usize], out_shape: &[usize]) -> Vec
         acc *= shape[i];
     }
     let bstride: Vec<usize> = (0..out_shape.len())
-        .map(|i| if i < pad || shape[i - pad] != out_shape[i] { 0 } else { stride[i - pad] })
+        .map(|i| {
+            if i < pad || shape[i - pad] != out_shape[i] {
+                0
+            } else {
+                stride[i - pad]
+            }
+        })
         .collect();
     let ndim = out_shape.len();
     let n: usize = out_shape.iter().product();
@@ -77,7 +98,13 @@ fn broadcast_materialize(v: &[f32], shape: &[usize], out_shape: &[usize]) -> Vec
     out
 }
 
-fn reference_binary(kind: BinaryKind, a: &[f32], sa: &[usize], b: &[f32], sb: &[usize]) -> Vec<f32> {
+fn reference_binary(
+    kind: BinaryKind,
+    a: &[f32],
+    sa: &[usize],
+    b: &[f32],
+    sb: &[usize],
+) -> Vec<f32> {
     let out_shape = numpy_broadcast_shape(sa, sb);
     let ba = broadcast_materialize(a, sa, &out_shape);
     let bb = broadcast_materialize(b, sb, &out_shape);
@@ -112,7 +139,10 @@ fn check_binary(a: &Tensor, va: &[f32], b: &Tensor, vb: &[f32]) {
 
 fn check_unary(t: &Tensor) {
     let host = t.to_vec();
-    assert_bitwise(&t.relu().to_vec(), &CpuBackend.unary(UnaryKind::Relu, &host));
+    assert_bitwise(
+        &t.relu().to_vec(),
+        &CpuBackend.unary(UnaryKind::Relu, &host),
+    );
     assert_bitwise(&t.exp().to_vec(), &CpuBackend.unary(UnaryKind::Exp, &host));
 }
 
@@ -186,7 +216,10 @@ fn transpose_view_falls_back_and_stays_correct() {
     // A non-square transpose is never contiguous, so this must take the
     // materializing fallback path - checked for correctness, not speed.
     let va = lcg_fill(13, 12);
-    let a = Tensor::from_vec(va, &[4, 3]).unwrap().transpose(0, 1).unwrap();
+    let a = Tensor::from_vec(va, &[4, 3])
+        .unwrap()
+        .transpose(0, 1)
+        .unwrap();
     assert!(a.shape() == [3, 4]);
     let vb = lcg_fill_nonzero(14, 12);
     let b = Tensor::from_vec(vb.clone(), &[3, 4]).unwrap();
@@ -204,7 +237,10 @@ fn transpose_view_that_stays_contiguous() {
     // arithmetic itself is exercised directly in tensor.rs's own
     // #[cfg(test)] unit tests, which can reach pub(crate) Tensor::from_parts.
     let va = lcg_fill(15, 6);
-    let a = Tensor::from_vec(va, &[1, 6]).unwrap().transpose(0, 1).unwrap();
+    let a = Tensor::from_vec(va, &[1, 6])
+        .unwrap()
+        .transpose(0, 1)
+        .unwrap();
     assert!(a.shape() == [6, 1]);
     assert!(a.numel() == 6);
 
@@ -222,7 +258,10 @@ fn transpose_view_that_stays_contiguous() {
 #[test]
 fn reshape_shares_storage() {
     let va = lcg_fill(19, 24);
-    let a = Tensor::from_vec(va, &[2, 3, 4]).unwrap().reshape(&[4, 6]).unwrap();
+    let a = Tensor::from_vec(va, &[2, 3, 4])
+        .unwrap()
+        .reshape(&[4, 6])
+        .unwrap();
     let vb = lcg_fill_nonzero(20, 24);
     let b = Tensor::from_vec(vb.clone(), &[4, 6]).unwrap();
     check_binary(&a, &a.to_vec(), &b, &vb);
@@ -230,7 +269,10 @@ fn reshape_shares_storage() {
 
     // A reshaped tensor as the smaller side of a broadcast op.
     let vbias = lcg_fill_nonzero(21, 6);
-    let bias = Tensor::from_vec(vbias.clone(), &[2, 3]).unwrap().reshape(&[6]).unwrap();
+    let bias = Tensor::from_vec(vbias.clone(), &[2, 3])
+        .unwrap()
+        .reshape(&[6])
+        .unwrap();
     let vc = lcg_fill(22, 24);
     let c = Tensor::from_vec(vc.clone(), &[4, 6]).unwrap();
     check_binary(&c, &vc, &bias, &vbias);
@@ -246,6 +288,12 @@ fn grad_check_bias_add_composition() {
     let w = Tensor::from_vec(lcg_fill(29, 4 * 5), &[4, 5]);
     let bias = Tensor::from_vec(lcg_fill(31, 5), &[5]);
     grad_check(&[x.unwrap(), w.unwrap(), bias.unwrap()], |leaves| {
-        leaves[0].matmul(&leaves[1]).unwrap().add(&leaves[2]).unwrap().exp().sum()
+        leaves[0]
+            .matmul(&leaves[1])
+            .unwrap()
+            .add(&leaves[2])
+            .unwrap()
+            .exp()
+            .sum()
     });
 }

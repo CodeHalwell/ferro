@@ -18,7 +18,10 @@ impl Rng {
             x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             x ^ (x >> 31)
         };
-        Rng { s0: Cell::new(split() | 1), s1: Cell::new(split() | 1) }
+        Rng {
+            s0: Cell::new(split() | 1),
+            s1: Cell::new(split() | 1),
+        }
     }
 
     fn next_u64(&self) -> u64 {

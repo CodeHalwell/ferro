@@ -9,14 +9,18 @@ fn assert_close(a: f32, b: f32, tol: f32, what: &str) {
 fn add_mul_broadcast() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
     let b = Tensor::from_vec(vec![10.0, 20.0, 30.0], &[3]).unwrap();
-    grad_check(&[a, b], |t| t[0].add(&t[1]).unwrap().mul(&t[0]).unwrap().sum());
+    grad_check(&[a, b], |t| {
+        t[0].add(&t[1]).unwrap().mul(&t[0]).unwrap().sum()
+    });
 }
 
 #[test]
 fn sub_div() {
     let a = Tensor::from_vec(vec![2.0, 4.0, 6.0, 8.0], &[2, 2]).unwrap();
     let b = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
-    grad_check(&[a, b], |t| t[0].sub(&t[1]).unwrap().div(&t[1]).unwrap().sum());
+    grad_check(&[a, b], |t| {
+        t[0].sub(&t[1]).unwrap().div(&t[1]).unwrap().sum()
+    });
 }
 
 #[test]
@@ -35,13 +39,18 @@ fn exp_sigmoid_mean() {
 #[test]
 fn transpose_matmul() {
     let a = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
-    grad_check(&[a], |t| t[0].transpose(0, 1).unwrap().matmul(&t[0]).unwrap().sum());
+    grad_check(&[a], |t| {
+        t[0].transpose(0, 1).unwrap().matmul(&t[0]).unwrap().sum()
+    });
 }
 
 #[test]
 fn reused_leaf_accumulates() {
     // x used twice: grad of x*x at x is 2x.
-    let x = Tensor::from_vec(vec![3.0, -2.0], &[2]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![3.0, -2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let y = x.mul(&x).unwrap().sum();
     y.backward();
     let g = x.grad().unwrap().to_vec();
@@ -52,7 +61,10 @@ fn reused_leaf_accumulates() {
 #[test]
 #[should_panic(expected = "scalar output")]
 fn backward_on_non_scalar_panics() {
-    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
+    let a = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     a.mul(&a).unwrap().backward();
 }
 
@@ -60,7 +72,10 @@ fn backward_on_non_scalar_panics() {
 fn double_backward_accumulates_like_torch() {
     // Leaf grads accumulate across backward calls; interior grads are recomputed
     // fresh, so two backwards of x^2 give exactly 2 * 2x, not compounded junk.
-    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0, 2.0, 3.0], &[3])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let loss = x.mul(&x).unwrap().sum();
     loss.backward();
     loss.backward();
@@ -71,7 +86,10 @@ fn double_backward_accumulates_like_torch() {
 fn deep_graph_backward_and_drop() {
     // 100k chained ops: both the topological sort and graph teardown must be
     // iterative or this overflows the native stack.
-    let x = Tensor::from_vec(vec![1.0], &[1]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0], &[1])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let mut y = x.clone();
     for _ in 0..100_000 {
         y = y.add(&x).unwrap();
@@ -83,8 +101,14 @@ fn deep_graph_backward_and_drop() {
 #[test]
 #[should_panic(expected = "one gradient per input")]
 fn record_fn_arity_mismatch_panics() {
-    let a = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap().requires_grad_(true);
-    let b = Tensor::from_vec(vec![3.0, 4.0], &[2]).unwrap().requires_grad_(true);
+    let a = Tensor::from_vec(vec![1.0, 2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    let b = Tensor::from_vec(vec![3.0, 4.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let out = Tensor::from_vec(vec![4.0, 6.0], &[2]).unwrap();
     let out = out.record_fn(vec![a.clone(), b.clone()], |g| vec![g.detach_copy()]);
     out.sum().backward();
@@ -93,7 +117,10 @@ fn record_fn_arity_mismatch_panics() {
 #[test]
 #[should_panic(expected = "does not match tensor shape")]
 fn record_fn_wrong_grad_shape_panics() {
-    let a = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap().requires_grad_(true);
+    let a = Tensor::from_vec(vec![1.0, 2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let out = Tensor::from_vec(vec![1.0, 2.0], &[2]).unwrap();
     let out = out.record_fn(vec![a.clone()], |_| vec![Tensor::ones(&[3, 2])]);
     out.sum().backward();
@@ -109,24 +136,40 @@ fn linear_regression_converges() {
     let w_true = Tensor::from_vec(vec![2.0, -3.0], &[2, 1]).unwrap();
     let y = x.matmul(&w_true).unwrap();
 
-    let mut w = Tensor::randn(&[2, 1], &rng).requires_grad_(true);
+    let mut w = Tensor::randn(&[2, 1], &rng).requires_grad_(true).unwrap();
     let lr = 0.1f32;
     let mut first = 0.0f32;
     let mut last = 0.0f32;
     for step in 0..200 {
         let pred = x.matmul(&w).unwrap();
-        let loss = pred.sub(&y).unwrap().mul(&pred.sub(&y).unwrap()).unwrap().mean();
+        let loss = pred
+            .sub(&y)
+            .unwrap()
+            .mul(&pred.sub(&y).unwrap())
+            .unwrap()
+            .mean();
         w.zero_grad();
         loss.backward();
         let g = w.grad().unwrap().to_vec();
-        let updated: Vec<f32> = w.to_vec().iter().zip(g).map(|(p, gg)| p - lr * gg).collect();
-        w = Tensor::from_vec(updated, &[2, 1]).unwrap().requires_grad_(true);
+        let updated: Vec<f32> = w
+            .to_vec()
+            .iter()
+            .zip(g)
+            .map(|(p, gg)| p - lr * gg)
+            .collect();
+        w = Tensor::from_vec(updated, &[2, 1])
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
         if step == 0 {
             first = loss.item();
         }
         last = loss.item();
     }
-    assert!(last < first * 1e-3, "loss did not converge: {first} -> {last}");
+    assert!(
+        last < first * 1e-3,
+        "loss did not converge: {first} -> {last}"
+    );
     assert_close(w.to_vec()[0], 2.0, 1e-1, "w0");
     assert_close(w.to_vec()[1], -3.0, 1e-1, "w1");
 }
@@ -135,7 +178,7 @@ fn linear_regression_converges() {
 fn leaf_root_backward_accumulates() {
     // backward() directly on a scalar leaf accumulates into its grad like any
     // other leaf, rather than overwriting the seed.
-    let x = Tensor::scalar(3.0).requires_grad_(true);
+    let x = Tensor::scalar(3.0).requires_grad_(true).unwrap();
     x.backward();
     x.backward();
     assert_eq!(x.grad().unwrap().to_vec(), vec![2.0]);

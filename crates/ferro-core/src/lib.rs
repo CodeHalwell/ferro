@@ -2,12 +2,17 @@
 //! autograd runtime in Rust. This is the authoritative compute/differentiation
 //! layer; Python bindings and device backends live in sibling crates.
 
-mod autograd;
+pub mod amp;
+pub mod autograd;
+pub mod checkpoint;
+pub mod data;
 pub mod device;
 pub mod dispatch;
 pub mod dtype;
 pub mod error;
+pub mod fused_ops;
 pub mod interop;
+pub mod modules;
 pub mod nn;
 pub mod ops;
 pub mod ops_ext;

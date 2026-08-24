@@ -32,11 +32,18 @@ fn sgd_fits_linear_regression() {
         opt.step();
     }
     let final_loss = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
-    assert!(final_loss < initial * 1e-3, "loss {final_loss} vs initial {initial}");
+    assert!(
+        final_loss < initial * 1e-3,
+        "loss {final_loss} vs initial {initial}"
+    );
 
     let learned = w.tensor().to_vec();
     for (i, &t) in w_true.iter().enumerate() {
-        assert!((learned[i] - t).abs() < 1e-2, "w[{i}] {} vs {t}", learned[i]);
+        assert!(
+            (learned[i] - t).abs() < 1e-2,
+            "w[{i}] {} vs {t}",
+            learned[i]
+        );
     }
 }
 
@@ -55,11 +62,18 @@ fn sgd_momentum_fits_linear_regression() {
         opt.step();
     }
     let final_loss = mse(&x.matmul(&w.tensor()).unwrap(), &y).item();
-    assert!(final_loss < initial * 1e-3, "loss {final_loss} vs initial {initial}");
+    assert!(
+        final_loss < initial * 1e-3,
+        "loss {final_loss} vs initial {initial}"
+    );
 
     let learned = w.tensor().to_vec();
     for (i, &t) in w_true.iter().enumerate() {
-        assert!((learned[i] - t).abs() < 1e-2, "w[{i}] {} vs {t}", learned[i]);
+        assert!(
+            (learned[i] - t).abs() < 1e-2,
+            "w[{i}] {} vs {t}",
+            learned[i]
+        );
     }
 }
 
@@ -78,7 +92,11 @@ fn adam_minimizes_quadratic() {
     }
     let learned = w.tensor().to_vec();
     for (i, t) in target.to_vec().iter().enumerate() {
-        assert!((learned[i] - t).abs() < 1e-3, "w[{i}] {} vs {t}", learned[i]);
+        assert!(
+            (learned[i] - t).abs() < 1e-3,
+            "w[{i}] {} vs {t}",
+            learned[i]
+        );
     }
 }
 
@@ -97,7 +115,11 @@ fn adamw_minimizes_quadratic() {
     }
     let learned = w.tensor().to_vec();
     for (i, t) in target.to_vec().iter().enumerate() {
-        assert!((learned[i] - t).abs() < 1e-3, "w[{i}] {} vs {t}", learned[i]);
+        assert!(
+            (learned[i] - t).abs() < 1e-3,
+            "w[{i}] {} vs {t}",
+            learned[i]
+        );
     }
 }
 
@@ -116,14 +138,21 @@ fn adamw_decay_is_decoupled_from_moments() {
     let (lr, wd) = (0.1, 0.04);
 
     let plain = make();
-    AdamW::new(vec![plain.clone()], lr).with_weight_decay(0.0).step();
+    AdamW::new(vec![plain.clone()], lr)
+        .with_weight_decay(0.0)
+        .step();
     let decayed = make();
-    AdamW::new(vec![decayed.clone()], lr).with_weight_decay(wd).step();
+    AdamW::new(vec![decayed.clone()], lr)
+        .with_weight_decay(wd)
+        .step();
 
     let p = plain.tensor().item();
     let d = decayed.tensor().item();
     assert!((p - (1.0 - lr)).abs() < 1e-4, "no-decay step: {p}");
-    assert!((d - (p - lr * wd * 1.0)).abs() < 1e-6, "decoupled decay: {d} vs {p}");
+    assert!(
+        (d - (p - lr * wd * 1.0)).abs() < 1e-6,
+        "decoupled decay: {d} vs {p}"
+    );
 }
 
 #[test]

@@ -12,10 +12,17 @@ impl Tensor {
     pub fn gather(&self, dim: usize, index: &Tensor) -> Result<Tensor> {
         let ndim = self.ndim();
         if dim >= ndim {
-            return Err(Error::InvalidShape { op: "gather", msg: format!("dim {dim} out of range for rank {ndim}") });
+            return Err(Error::InvalidShape {
+                op: "gather",
+                msg: format!("dim {dim} out of range for rank {ndim}"),
+            });
         }
         if index.dtype() != DType::I64 {
-            return Err(Error::DtypeMismatch { op: "gather", expected: DType::I64, got: index.dtype() });
+            return Err(Error::DtypeMismatch {
+                op: "gather",
+                expected: DType::I64,
+                got: index.dtype(),
+            });
         }
         if index.ndim() != ndim {
             return Err(Error::InvalidShape {
@@ -29,7 +36,9 @@ impl Tensor {
             if d != dim && out_shape[d] > in_shape[d] {
                 return Err(Error::InvalidShape {
                     op: "gather",
-                    msg: format!("index shape {out_shape:?} exceeds input shape {in_shape:?} at dim {d}"),
+                    msg: format!(
+                        "index shape {out_shape:?} exceeds input shape {in_shape:?} at dim {d}"
+                    ),
                 });
             }
         }

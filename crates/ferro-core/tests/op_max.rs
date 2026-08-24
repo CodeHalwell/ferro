@@ -33,20 +33,32 @@ fn max_grad() {
 
 #[test]
 fn max_ties_split_gradient() {
-    let x = Tensor::from_vec(vec![1.0, 0.5, 1.0, 1.0], &[4]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0, 0.5, 1.0, 1.0], &[4])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     x.max().unwrap().backward();
-    assert_eq!(x.grad().unwrap().to_vec(), vec![1.0 / 3.0, 0.0, 1.0 / 3.0, 1.0 / 3.0]);
+    assert_eq!(
+        x.grad().unwrap().to_vec(),
+        vec![1.0 / 3.0, 0.0, 1.0 / 3.0, 1.0 / 3.0]
+    );
 }
 
 #[test]
 fn max_nan_result_routes_gradient_to_nans() {
-    let x = Tensor::from_vec(vec![1.0, f32::NAN], &[2]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![1.0, f32::NAN], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     let m = x.max().unwrap();
     assert!(m.item().is_nan());
     m.backward();
     assert_eq!(x.grad().unwrap().to_vec(), vec![0.0, 1.0]);
 
-    let y = Tensor::from_vec(vec![f32::NAN, 2.0, f32::NAN], &[3]).unwrap().requires_grad_(true);
+    let y = Tensor::from_vec(vec![f32::NAN, 2.0, f32::NAN], &[3])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     y.max().unwrap().backward();
     assert_eq!(y.grad().unwrap().to_vec(), vec![0.5, 0.0, 0.5]);
 }

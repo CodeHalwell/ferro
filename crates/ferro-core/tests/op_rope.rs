@@ -40,7 +40,13 @@ fn rope_preserves_pair_norms() {
 #[test]
 fn rope_explicit_positions_offset_decode() {
     // A single decode step at position 2 must match row 2 of a full pass.
-    let full = Tensor::from_vec(vec![0.4, 1.1, -0.6, 0.9, 0.2, -1.3, 0.7, 0.5, 1.0, -0.2, 0.3, 0.8], &[3, 4]).unwrap();
+    let full = Tensor::from_vec(
+        vec![
+            0.4, 1.1, -0.6, 0.9, 0.2, -1.3, 0.7, 0.5, 1.0, -0.2, 0.3, 0.8,
+        ],
+        &[3, 4],
+    )
+    .unwrap();
     let all_pos = Tensor::from_vec_i64(vec![0, 1, 2], &[3]).unwrap();
     let want = &full.rope(&all_pos, 10000.0).unwrap().to_vec()[8..12];
     let step = Tensor::from_vec(vec![1.0, -0.2, 0.3, 0.8], &[1, 4]).unwrap();
@@ -65,7 +71,13 @@ fn rope_rejects_bad_inputs() {
 
 #[test]
 fn rope_grad() {
-    let x = Tensor::from_vec((0..24).map(|i| ((i * 7 % 11) as f32 - 5.0) / 4.0).collect(), &[2, 3, 4]).unwrap();
+    let x = Tensor::from_vec(
+        (0..24).map(|i| ((i * 7 % 11) as f32 - 5.0) / 4.0).collect(),
+        &[2, 3, 4],
+    )
+    .unwrap();
     let pos = Tensor::from_vec_i64(vec![0, 1, 2], &[3]).unwrap();
-    grad_check(&[x.clone()], |t| t[0].rope(&pos, 10000.0).unwrap().mul(&t[0]).unwrap().sum());
+    grad_check(&[x.clone()], |t| {
+        t[0].rope(&pos, 10000.0).unwrap().mul(&t[0]).unwrap().sum()
+    });
 }

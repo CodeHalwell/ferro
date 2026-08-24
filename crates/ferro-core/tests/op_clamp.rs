@@ -25,7 +25,10 @@ fn clamp_grad() {
 
 #[test]
 fn clamp_boundary_passes_gradient() {
-    let x = Tensor::from_vec(vec![0.0, 0.5, 1.0, -0.1, 1.1], &[5]).unwrap().requires_grad_(true);
+    let x = Tensor::from_vec(vec![0.0, 0.5, 1.0, -0.1, 1.1], &[5])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
     x.clamp(0.0, 1.0).sum().backward();
     assert_eq!(x.grad().unwrap().to_vec(), vec![1.0, 1.0, 1.0, 0.0, 0.0]);
 }

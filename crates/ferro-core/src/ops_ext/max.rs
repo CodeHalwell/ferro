@@ -13,7 +13,10 @@ impl Tensor {
     pub fn max(&self) -> Result<Tensor> {
         let xv = self.to_vec();
         if xv.is_empty() {
-            return Err(Error::InvalidShape { op: "max", msg: "cannot reduce an empty tensor".into() });
+            return Err(Error::InvalidShape {
+                op: "max",
+                msg: "cannot reduce an empty tensor".into(),
+            });
         }
         let mut m = xv[0];
         for &v in &xv {
@@ -30,8 +33,12 @@ impl Tensor {
         // A NaN max matches torch's evenly_distribute_backward: the mask
         // becomes isnan(input), so the gradient routes to the NaN entries.
         let tie = |v: f32| if m.is_nan() { v.is_nan() } else { v == m };
-        let ties: Vec<usize> =
-            xv.iter().enumerate().filter(|(_, &v)| tie(v)).map(|(i, _)| i).collect();
+        let ties: Vec<usize> = xv
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| tie(v))
+            .map(|(i, _)| i)
+            .collect();
         let len = xv.len();
         let out = Tensor::scalar(m);
         let shape = self.shape().to_vec();

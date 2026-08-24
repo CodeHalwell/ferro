@@ -13,7 +13,11 @@ impl Tensor {
         let x = self.clone();
         out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("clamp_bw", g, &x, |gg, xx| {
-                if xx >= min && xx <= max { gg } else { 0.0 }
+                if xx >= min && xx <= max {
+                    gg
+                } else {
+                    0.0
+                }
             })
             .unwrap()]
         })

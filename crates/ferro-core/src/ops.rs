@@ -112,9 +112,14 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Sum)
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec())));
         let in_shape = self.shape().to_vec();
-        let device = self.device();
         out.record_fn(vec![self.clone()], move |g| {
-            vec![Tensor::full_on(&in_shape, g.item(), device).unwrap()]
+            // d(sum)/dx = g: build a whole device buffer (fill+mul) rather
+            // than broadcasting a stride-0 view - downstream backwards only
+            // take the device fastpath on whole contiguous buffers, and a
+            // view would push them onto the host path (per-step uploads).
+            vec![g
+                .mul(&Tensor::full_on(&in_shape, 1.0, g.device()).unwrap())
+                .unwrap()]
         })
     }
 
@@ -124,9 +129,12 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Mean)
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec()) / n));
         let in_shape = self.shape().to_vec();
-        let device = self.device();
         out.record_fn(vec![self.clone()], move |g| {
-            vec![Tensor::full_on(&in_shape, g.item() / n, device).unwrap()]
+            // d(mean)/dx = g/n: same whole-buffer construction as sum's
+            // backward; no g.item() host sync, no broadcast views.
+            vec![g
+                .mul(&Tensor::full_on(&in_shape, 1.0 / n, g.device()).unwrap())
+                .unwrap()]
         })
     }
 }

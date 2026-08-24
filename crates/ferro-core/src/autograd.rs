@@ -28,7 +28,11 @@ impl Op {
         backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
     ) -> Op {
         let saved_versions = inputs.iter().map(|t| t.version()).collect();
-        Op { inputs, saved_versions, backward }
+        Op {
+            inputs,
+            saved_versions,
+            backward,
+        }
     }
 
     pub(crate) fn inputs(&self) -> &[Tensor] {
@@ -127,7 +131,9 @@ impl Tensor {
         self.accumulate_grad(cotangent.detach_copy());
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
-            let g = t.grad().expect("every op node on the path receives a gradient");
+            let g = t
+                .grad()
+                .expect("every op node on the path receives a gradient");
             let inputs = op.inputs();
             for (i, (inp, &saved)) in inputs.iter().zip(op.saved_versions()).enumerate() {
                 let now = inp.version();

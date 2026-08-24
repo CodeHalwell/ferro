@@ -17,15 +17,64 @@ pub trait Module {
     /// a Sequential); the contract behind state_dict save/load.
     fn named_parameters(&self) -> Vec<(String, Param)>;
 
+    /// Switch between training and evaluation behaviour (dropout masking,
+    /// BatchNorm running stats). Default: stateless layer, nothing to do.
+    fn set_training(&self, _training: bool) {}
+
     fn parameters(&self) -> Vec<Param> {
-        self.named_parameters().into_iter().map(|(_, p)| p).collect()
+        self.named_parameters()
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect()
+    }
+}
+
+/// Put a module tree into training mode.
+pub fn train(m: &dyn Module) {
+    m.set_training(true);
+}
+
+/// Put a module tree into evaluation mode.
+pub fn eval(m: &dyn Module) {
+    m.set_training(false);
+}
+
+/// Weight-initialization schemes. `std` gives the standard deviation of the
+/// normal distribution to draw each weight from.
+///
+/// - Normal(std): plain N(0, std^2), the transformer-style small-init default.
+/// - Kaiming: He et al. 2015 normal init for relu nets, std = sqrt(2/fan_in).
+/// - Xavier: Glorot normal, std = sqrt(2/(fan_in+fan_out)).
+#[derive(Clone, Copy, Debug)]
+pub enum Init {
+    Normal(f32),
+    Kaiming,
+    Xavier,
+}
+
+impl Init {
+    pub fn std(&self, fan_in: usize, fan_out: usize) -> f32 {
+        match *self {
+            Init::Normal(s) => s,
+            Init::Kaiming => (2.0 / fan_in as f32).sqrt(),
+            Init::Xavier => (2.0 / (fan_in + fan_out) as f32).sqrt(),
+        }
+    }
+
+    pub fn fill(&self, rng: &Rng, shape: &[usize], fan_in: usize, fan_out: usize) -> Tensor {
+        let s = self.std(fan_in, fan_out);
+        let data: Vec<f32> = (0..crate::shape::numel(shape))
+            .map(|_| rng.normal() * s)
+            .collect();
+        Tensor::from_vec(data, shape).expect("init shape is valid")
     }
 }
 
 /// Save a module's parameters as a safetensors state dict.
 pub fn save_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
     let named = module.named_parameters();
-    let tensors: Vec<(String, Tensor)> = named.iter().map(|(n, p)| (n.clone(), p.tensor())).collect();
+    let tensors: Vec<(String, Tensor)> =
+        named.iter().map(|(n, p)| (n.clone(), p.tensor())).collect();
     let refs: Vec<(&str, &Tensor)> = tensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
     crate::safetensors::save_safetensors(path, &refs)
 }
@@ -36,10 +85,13 @@ pub fn save_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> R
 pub fn load_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
     let mut loaded = crate::safetensors::load_safetensors(path)?;
     for (name, param) in module.named_parameters() {
-        let pos = loaded.iter().position(|(n, _)| *n == name).ok_or_else(|| Error::Format {
-            op: "load_module",
-            msg: format!("state dict is missing parameter {name:?}"),
-        })?;
+        let pos = loaded
+            .iter()
+            .position(|(n, _)| *n == name)
+            .ok_or_else(|| Error::Format {
+                op: "load_module",
+                msg: format!("state dict is missing parameter {name:?}"),
+            })?;
         let (_, t) = loaded.swap_remove(pos);
         let want = param.tensor();
         if t.shape() != want.shape() || t.dtype() != want.dtype() {
@@ -57,7 +109,10 @@ pub fn load_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> R
         param.set(t);
     }
     if let Some((name, _)) = loaded.first() {
-        return Err(Error::Format { op: "load_module", msg: format!("state dict has unexpected tensor {name:?}") });
+        return Err(Error::Format {
+            op: "load_module",
+            msg: format!("state dict has unexpected tensor {name:?}"),
+        });
     }
     Ok(())
 }
@@ -71,8 +126,18 @@ pub struct Linear {
 impl Linear {
     pub fn new(in_features: usize, out_features: usize, rng: &Rng) -> Linear {
         let scale = (2.0 / in_features as f32).sqrt();
-        let w: Vec<f32> = (0..in_features * out_features).map(|_| rng.normal() * scale).collect();
+        let w: Vec<f32> = (0..in_features * out_features)
+            .map(|_| rng.normal() * scale)
+            .collect();
         let weight = Param::new(Tensor::from_vec(w, &[in_features, out_features]).unwrap());
+        let bias = Param::new(Tensor::zeros(&[out_features]));
+        Linear { weight, bias }
+    }
+
+    /// Same layer with a caller-chosen weight-init scheme.
+    pub fn with_init(in_features: usize, out_features: usize, rng: &Rng, init: Init) -> Linear {
+        let weight =
+            Param::new(init.fill(rng, &[in_features, out_features], in_features, out_features));
         let bias = Param::new(Tensor::zeros(&[out_features]));
         Linear { weight, bias }
     }
@@ -84,7 +149,10 @@ impl Module for Linear {
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {
-        vec![("weight".into(), self.weight.clone()), ("bias".into(), self.bias.clone())]
+        vec![
+            ("weight".into(), self.weight.clone()),
+            ("bias".into(), self.bias.clone()),
+        ]
     }
 }
 
@@ -138,7 +206,11 @@ impl LayerNorm {
     pub fn new(dim: usize) -> LayerNorm {
         let gamma = Param::new(Tensor::ones(&[dim]));
         let beta = Param::new(Tensor::zeros(&[dim]));
-        LayerNorm { gamma, beta, eps: 1e-5 }
+        LayerNorm {
+            gamma,
+            beta,
+            eps: 1e-5,
+        }
     }
 }
 
@@ -155,12 +227,17 @@ impl Module for LayerNorm {
         let mu = x.mean_dim(1, true)?;
         let centered = x.sub(&mu)?;
         let var = centered.mul(&centered)?.mean_dim(1, true)?;
-        let norm = centered.div(&var.add(&Tensor::scalar(self.eps))?.sqrt())?;
+        // The eps scalar must live on x's device for device-resident inputs.
+        let eps = Tensor::full_on(&[], self.eps, x.device())?;
+        let norm = centered.div(&var.add(&eps)?.sqrt())?;
         norm.mul(&self.gamma.tensor())?.add(&self.beta.tensor())
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {
-        vec![("weight".into(), self.gamma.clone()), ("bias".into(), self.beta.clone())]
+        vec![
+            ("weight".into(), self.gamma.clone()),
+            ("bias".into(), self.beta.clone()),
+        ]
     }
 }
 
@@ -174,7 +251,10 @@ pub struct RmsNorm {
 
 impl RmsNorm {
     pub fn new(dim: usize) -> RmsNorm {
-        RmsNorm { gamma: Param::new(Tensor::ones(&[dim])), eps: 1e-5 }
+        RmsNorm {
+            gamma: Param::new(Tensor::ones(&[dim])),
+            eps: 1e-5,
+        }
     }
 }
 
@@ -182,7 +262,9 @@ impl Module for RmsNorm {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let last = x.ndim() - 1;
         let ms = x.mul(x)?.mean_dim(last, true)?;
-        x.div(&ms.add(&Tensor::scalar(self.eps))?.sqrt())?.mul(&self.gamma.tensor())
+        // The eps scalar must live on x's device for device-resident inputs.
+        let eps = Tensor::full_on(&[], self.eps, x.device())?;
+        x.div(&ms.add(&eps)?.sqrt())?.mul(&self.gamma.tensor())
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {
@@ -202,13 +284,20 @@ pub struct Embedding {
 impl Embedding {
     pub fn new(num_embeddings: usize, dim: usize, rng: &Rng) -> Embedding {
         let w: Vec<f32> = (0..num_embeddings * dim).map(|_| rng.normal()).collect();
-        Embedding { weight: Param::new(Tensor::from_vec(w, &[num_embeddings, dim]).unwrap()), dim }
+        Embedding {
+            weight: Param::new(Tensor::from_vec(w, &[num_embeddings, dim]).unwrap()),
+            dim,
+        }
     }
 }
 
 impl Module for Embedding {
     fn forward(&self, ids: &Tensor) -> Result<Tensor> {
-        let flat = if ids.ndim() == 1 { ids.clone() } else { ids.reshape(&[ids.numel()])? };
+        let flat = if ids.ndim() == 1 {
+            ids.clone()
+        } else {
+            ids.reshape(&[ids.numel()])?
+        };
         let out = crate::ops_ext::embedding(&self.weight.tensor(), &flat)?;
         let mut shape = ids.shape().to_vec();
         shape.push(self.dim);
@@ -244,8 +333,18 @@ impl Module for Sequential {
         self.layers
             .iter()
             .enumerate()
-            .flat_map(|(i, l)| l.named_parameters().into_iter().map(move |(n, p)| (format!("{i}.{n}"), p)))
+            .flat_map(|(i, l)| {
+                l.named_parameters()
+                    .into_iter()
+                    .map(move |(n, p)| (format!("{i}.{n}"), p))
+            })
             .collect()
+    }
+
+    fn set_training(&self, training: bool) {
+        for l in &self.layers {
+            l.set_training(training);
+        }
     }
 }
 
@@ -277,7 +376,11 @@ pub fn cross_entropy(logits: &Tensor, targets_one_hot: &Tensor) -> Result<Tensor
 /// One-hot encode 1-D I64 class ids `[n]` into an f32 `[n, classes]` tensor.
 pub fn one_hot(ids: &Tensor, classes: usize) -> Result<Tensor> {
     if ids.dtype() != DType::I64 {
-        return Err(Error::DtypeMismatch { op: "one_hot", expected: DType::I64, got: ids.dtype() });
+        return Err(Error::DtypeMismatch {
+            op: "one_hot",
+            expected: DType::I64,
+            got: ids.dtype(),
+        });
     }
     if ids.ndim() != 1 {
         return Err(Error::InvalidShape {
@@ -296,7 +399,10 @@ pub fn one_hot(ids: &Tensor, classes: usize) -> Result<Tensor> {
         }
         data[row * classes + id as usize] = 1.0;
     }
-    Tensor::from_vec(data, &[idx.len(), classes])
+    // Land on the ids' device so cross_entropy_indices works with device-
+    // resident targets; the one-hot build itself is host-side (ids were
+    // downloaded once above), then transferred like any other leaf.
+    Tensor::from_vec(data, &[idx.len(), classes])?.to_device(ids.device())
 }
 
 /// Scaled dot-product attention over `[batch, seq, head_dim]` inputs (fold
@@ -304,12 +410,20 @@ pub fn one_hot(ids: &Tensor, classes: usize) -> Result<Tensor> {
 /// an optional causal mask (position i attends to j <= i; masked scores get
 /// -1e9 rather than -inf so softmax stays NaN-free). Composed from autograd
 /// ops, so gradients flow to q, k, and v without a custom backward.
-pub fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: bool) -> Result<Tensor> {
+pub fn scaled_dot_product_attention(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    causal: bool,
+) -> Result<Tensor> {
     for (name, t) in [("q", q), ("k", k), ("v", v)] {
         if t.ndim() != 3 {
             return Err(Error::InvalidShape {
                 op: "scaled_dot_product_attention",
-                msg: format!("{name} must be 3-D [batch, seq, head_dim], got {:?}", t.shape()),
+                msg: format!(
+                    "{name} must be 3-D [batch, seq, head_dim], got {:?}",
+                    t.shape()
+                ),
             });
         }
     }
@@ -318,10 +432,16 @@ pub fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: 
     if k.shape() != [b, sk, d] || v.shape()[0] != b || v.shape()[1] != sk {
         return Err(Error::InvalidShape {
             op: "scaled_dot_product_attention",
-            msg: format!("incompatible shapes q {:?}, k {:?}, v {:?}", q.shape(), k.shape(), v.shape()),
+            msg: format!(
+                "incompatible shapes q {:?}, k {:?}, v {:?}",
+                q.shape(),
+                k.shape(),
+                v.shape()
+            ),
         });
     }
-    let scale = Tensor::scalar(1.0 / (d as f32).sqrt());
+    // The scale scalar must live on q's device for device-resident attention.
+    let scale = Tensor::full_on(&[], 1.0 / (d as f32).sqrt(), q.device())?;
     let mut scores = q.bmm(&k.transpose(1, 2)?)?.mul(&scale)?;
     if causal {
         let mut m = vec![0.0f32; sq * sk];
@@ -332,7 +452,9 @@ pub fn scaled_dot_product_attention(q: &Tensor, k: &Tensor, v: &Tensor, causal: 
                 }
             }
         }
-        scores = scores.add(&Tensor::from_vec(m, &[sq, sk])?)?;
+        // The mask must live on the scores' device for device-resident q/k.
+        let mask = Tensor::from_vec(m, &[sq, sk])?.to_device(scores.device())?;
+        scores = scores.add(&mask)?;
     }
     scores.softmax(2)?.bmm(v)
 }
@@ -385,7 +507,9 @@ impl MultiHeadAttention {
     fn heads_in(&self, x: &Tensor, w: &Param, b: usize, s: usize, d: usize) -> Result<Tensor> {
         let hd = d / self.heads;
         let p = x.reshape(&[b * s, d])?.matmul(&w.tensor())?;
-        p.reshape(&[b, s, self.heads, hd])?.transpose(1, 2)?.reshape(&[b * self.heads, s, hd])
+        p.reshape(&[b, s, self.heads, hd])?
+            .transpose(1, 2)?
+            .reshape(&[b * self.heads, s, hd])
     }
 }
 
@@ -401,7 +525,10 @@ impl Module for MultiHeadAttention {
         if d != self.q_proj.tensor().shape()[0] {
             return Err(Error::InvalidShape {
                 op: "multi_head_attention",
-                msg: format!("input dim {d} does not match projection dim {}", self.q_proj.tensor().shape()[0]),
+                msg: format!(
+                    "input dim {d} does not match projection dim {}",
+                    self.q_proj.tensor().shape()[0]
+                ),
             });
         }
         let mut q = self.heads_in(x, &self.q_proj, b, s, d)?;
@@ -413,7 +540,10 @@ impl Module for MultiHeadAttention {
             k = k.rope(&pos, base)?;
         }
         let attn = scaled_dot_product_attention(&q, &k, &v, self.causal)?;
-        let merged = attn.reshape(&[b, self.heads, s, d / self.heads])?.transpose(1, 2)?.reshape(&[b * s, d])?;
+        let merged = attn
+            .reshape(&[b, self.heads, s, d / self.heads])?
+            .transpose(1, 2)?
+            .reshape(&[b * s, d])?;
         merged.matmul(&self.o_proj.tensor())?.reshape(&[b, s, d])
     }
 
@@ -480,7 +610,11 @@ impl Module for TransformerBlock {
             ("mlp.up", &self.up),
             ("mlp.down", &self.down),
         ] {
-            out.extend(m.named_parameters().into_iter().map(|(n, p)| (format!("{prefix}.{n}"), p)));
+            out.extend(
+                m.named_parameters()
+                    .into_iter()
+                    .map(|(n, p)| (format!("{prefix}.{n}"), p)),
+            );
         }
         out
     }
@@ -493,13 +627,20 @@ pub fn cross_entropy_indices(logits: &Tensor, target_ids: &Tensor) -> Result<Ten
     if logits.ndim() != 2 {
         return Err(Error::InvalidShape {
             op: "cross_entropy_indices",
-            msg: format!("logits must be 2-D [batch, classes], got {:?}", logits.shape()),
+            msg: format!(
+                "logits must be 2-D [batch, classes], got {:?}",
+                logits.shape()
+            ),
         });
     }
     if target_ids.numel() != logits.shape()[0] {
         return Err(Error::InvalidShape {
             op: "cross_entropy_indices",
-            msg: format!("{} target ids for batch of {}", target_ids.numel(), logits.shape()[0]),
+            msg: format!(
+                "{} target ids for batch of {}",
+                target_ids.numel(),
+                logits.shape()[0]
+            ),
         });
     }
     cross_entropy(logits, &one_hot(target_ids, logits.shape()[1])?)
