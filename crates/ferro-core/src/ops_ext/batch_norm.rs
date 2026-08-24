@@ -35,7 +35,7 @@ impl Tensor {
     ) -> Result<BatchNormOut> {
         let op = "batch_norm";
         let ndim = self.ndim();
-        if !(2..=4).contains(&ndim) {
+        if ndim != 2 && ndim != 4 {
             return Err(Error::Unsupported {
                 op,
                 msg: format!("expected rank 2 or 4 input, got rank {ndim}"),
@@ -150,51 +150,94 @@ impl Tensor {
         }
 
         let mf = m as f32;
-        Ok(BatchNormOut {
-            output: out.record_fn(vec![self.clone(), weight.clone(), bias.clone()], move |g| {
-                let gd = g.to_vec();
-                let mut dx = vec![0.0f32; gd.len()];
-                let mut dw = vec![0.0f32; c];
-                let mut db = vec![0.0f32; c];
-                for chn in 0..c {
-                    let std = save_std[chn];
-                    for n in 0..outer {
-                        let base = (n * c + chn) * spatial;
-                        for i in 0..spatial {
-                            db[chn] += gd[base + i];
-                            dw[chn] += gd[base + i] * (x[base + i] - norm_mean[chn]) / std;
+        if train {
+            Ok(BatchNormOut {
+                output: out.record_fn(vec![self.clone(), weight.clone(), bias.clone()], move |g| {
+                    let gd = g.to_vec();
+                    let mut dx = vec![0.0f32; gd.len()];
+                    let mut dw = vec![0.0f32; c];
+                    let mut db = vec![0.0f32; c];
+                    for chn in 0..c {
+                        let std = save_std[chn];
+                        for n in 0..outer {
+                            let base = (n * c + chn) * spatial;
+                            for i in 0..spatial {
+                                db[chn] += gd[base + i];
+                                dw[chn] += gd[base + i] * (x[base + i] - norm_mean[chn]) / std;
+                            }
+                        }
+                        let mut sum_dxh = 0.0f32;
+                        let mut sum_dxh_xd = 0.0f32;
+                        for (i, &gi) in gd.iter().enumerate() {
+                            if chan_of(i) != chn {
+                                continue;
+                            }
+                            let dxh = gi * w[chn];
+                            sum_dxh += dxh;
+                            sum_dxh_xd += dxh * (x[i] - mean[chn]);
+                        }
+                        let dvar = -0.5 * sum_dxh_xd / (std * std * std);
+                        // sum(xd) is zero by construction of the mean, so
+                        // the dvar correction to dmean vanishes.
+                        let dmean = -sum_dxh / std;
+                        for i in 0..gd.len() {
+                            if chan_of(i) != chn {
+                                continue;
+                            }
+                            let xd = x[i] - mean[chn];
+                            dx[i] = gd[i] * w[chn] / std + dvar * 2.0 * xd / mf + dmean / mf;
                         }
                     }
-                    let mut sum_dxh = 0.0f32;
-                    let mut sum_dxh_xd = 0.0f32;
-                    for i in 0..gd.len() {
-                        if chan_of(i) != chn {
-                            continue;
+                    vec![
+                        Tensor::from_vec(dx, &shape).unwrap(),
+                        Tensor::from_vec(dw, &[c]).unwrap(),
+                        Tensor::from_vec(db, &[c]).unwrap(),
+                    ]
+                }),
+                running_mean: rm_t,
+                running_var: rv_t,
+            })
+        } else {
+            // Eval mode normalizes with frozen running stats: the input
+            // gradient is the plain inference derivative
+            // g * weight / running_std, with no cross-example coupling and no
+            // dependence on batch mean/var.
+            let wv = w.clone();
+            Ok(BatchNormOut {
+                output: out.record_fn(vec![self.clone(), weight.clone(), bias.clone()], move |g| {
+                    let gd = g.to_vec();
+                    let mut dx = vec![0.0f32; gd.len()];
+                    let mut db = vec![0.0f32; c];
+                    for chn in 0..c {
+                        let inv = wv[chn] / save_std[chn];
+                        for n in 0..outer {
+                            let base = (n * c + chn) * spatial;
+                            for i in 0..spatial {
+                                dx[base + i] = gd[base + i] * inv;
+                                db[chn] += gd[base + i];
+                            }
                         }
-                        let dxh = gd[i] * w[chn];
-                        sum_dxh += dxh;
-                        sum_dxh_xd += dxh * (x[i] - mean[chn]);
                     }
-                    let dvar = -0.5 * sum_dxh_xd / (std * std * std);
-                    // sum(xd) is zero by construction of the mean, so the
-                    // dvar correction to dmean vanishes.
-                    let dmean = -sum_dxh / std;
-                    for i in 0..gd.len() {
-                        if chan_of(i) != chn {
-                            continue;
+                    let mut dw = vec![0.0f32; c];
+                    for chn in 0..c {
+                        let mu = norm_mean[chn];
+                        let std = save_std[chn];
+                        for n in 0..outer {
+                            let base = (n * c + chn) * spatial;
+                            for i in 0..spatial {
+                                dw[chn] += gd[base + i] * (x[base + i] - mu) / std;
+                            }
                         }
-                        let xd = x[i] - mean[chn];
-                        dx[i] = gd[i] * w[chn] / std + dvar * 2.0 * xd / mf + dmean / mf;
                     }
-                }
-                vec![
-                    Tensor::from_vec(dx, &shape).unwrap(),
-                    Tensor::from_vec(dw, &[c]).unwrap(),
-                    Tensor::from_vec(db, &[c]).unwrap(),
-                ]
-            }),
-            running_mean: rm_t,
-            running_var: rv_t,
-        })
+                    vec![
+                        Tensor::from_vec(dx, &shape).unwrap(),
+                        Tensor::from_vec(dw, &[c]).unwrap(),
+                        Tensor::from_vec(db, &[c]).unwrap(),
+                    ]
+                }),
+                running_mean: rm_t,
+                running_var: rv_t,
+            })
+        }
     }
 }

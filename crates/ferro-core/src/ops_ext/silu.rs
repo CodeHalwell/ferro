@@ -9,7 +9,8 @@ use crate::tensor::{raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn silu(&self) -> Tensor {
-        let out = raw_unary_k(self, UnaryKind::Silu).expect("tensor's device backend is always registered");
+        let out = raw_unary_k(self, UnaryKind::Silu)
+            .expect("tensor's device backend is always registered");
         if !self.requires_grad() {
             return out;
         }

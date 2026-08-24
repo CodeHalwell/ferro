@@ -17,6 +17,28 @@ impl Tensor {
                 msg: format!("dim {dim} out of range for rank {ndim}"),
             });
         }
+        if self.dtype() != DType::F32 || src.dtype() != DType::F32 {
+            return Err(Error::DtypeMismatch {
+                op,
+                expected: DType::F32,
+                got: if self.dtype() != DType::F32 {
+                    self.dtype()
+                } else {
+                    src.dtype()
+                },
+            });
+        }
+        if self.device() != index.device() || self.device() != src.device() {
+            return Err(Error::DeviceMismatch {
+                op,
+                lhs: self.device(),
+                rhs: if self.device() != index.device() {
+                    index.device()
+                } else {
+                    src.device()
+                },
+            });
+        }
         if index.dtype() != DType::I64 {
             return Err(Error::DtypeMismatch {
                 op,

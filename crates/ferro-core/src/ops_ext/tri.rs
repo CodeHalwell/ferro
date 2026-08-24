@@ -33,7 +33,6 @@ fn masked_tri(t: &Tensor, diagonal: i64, upper: bool) -> Result<Tensor> {
             j as i64 - i as i64 <= diagonal
         }
     };
-    let r = shape[0];
     let y: Vec<f32> = x
         .iter()
         .enumerate()

@@ -128,7 +128,7 @@ impl Tensor {
         let rows = self.numel() / d;
         let w = weight.map(|t| t.to_vec());
         let b = bias.map(|t| t.to_vec());
-        for (name, v) in [("weight", &w), ("bias", &b)] {
+        for (_, v) in [("weight", &w), ("bias", &b)] {
             if let Some(v) = v {
                 if v.len() != d {
                     return Err(Error::ShapeMismatch {

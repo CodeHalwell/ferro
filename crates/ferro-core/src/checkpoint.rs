@@ -236,8 +236,13 @@ impl Checkpoint {
                 msg: format!("{} -> {}: {e}", from.display(), dest.display()),
             })
         };
-        rename(&meta_tmp, META_FILE)?;
+        // Publish order matters: tensors first, metadata rename LAST. The
+        // sidecar is what a resume reads for step/RNG state, so making it
+        // visible only after the model/optimizer files are in place keeps the
+        // pair atomic from a loader's point of view - a crash between renames
+        // leaves the PREVIOUS generation fully intact.
         rename(&model_tmp, MODEL_FILE)?;
+        rename(&meta_tmp, META_FILE)?;
         Ok(())
     }
 

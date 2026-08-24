@@ -23,21 +23,32 @@ use crate::error::{Error, Result};
 use crate::tensor::{raw_matmul, raw_matmul_t, Tensor};
 
 /// Round x to bf16 precision, returning the nearest representable f32.
+/// Round-to-nearest-even on ties, like torch's f32->bf16 conversion.
 pub fn bf16_round(x: f32) -> f32 {
     if !x.is_finite() {
         return x;
     }
     let bits = x.to_bits();
     let lsb = 1u32 << 16;
-    let rounded = bits.wrapping_add(lsb >> 1) & 0xFFFF_0000;
-    // Crossing into the sign bit means |x| exceeded bf16 max (~3.39e38);
-    // saturate to infinity like a real bf16 conversion.
-    let out =
-        if rounded & 0x7FFF_FFFF == 0 && (bits & 0x7FFF_FFFF) != 0 && rounded & 0x8000_0000 != 0 {
-            f32::INFINITY.to_bits()
-        } else {
-            rounded
-        };
+    let half = lsb >> 1;
+    // RNE: add 0x7FFF plus the kept mantissa LSB so exact ties round to even;
+    // everything else rounds to nearest. Sign is handled by the magnitude
+    // path: work on |x| and restore the sign bit afterwards, so tiny negative
+    // magnitudes become -0.0 instead of tripping the overflow heuristic.
+    let sign = bits & 0x8000_0000;
+    let mag = bits & 0x7FFF_FFFF;
+    // Branchless RNE: add 0x7FFF (+1 when the kept LSB is odd). A dropped
+    // part above half always carries (round up); below half never does
+    // (round down); an exact tie carries only into an odd kept LSB, making
+    // it even - true round-to-nearest-even.
+    let rounded = (mag + half - 1 + ((mag >> 16) & 1)) & 0xFFFF_0000;
+    // Magnitude overflowed past bf16 max (~3.39e38): saturate to infinity
+    // with the original sign, like a real bf16 conversion.
+    let out = if rounded > 0x7F80_0000 {
+        sign | 0x7F80_0000
+    } else {
+        sign | rounded
+    };
     f32::from_bits(out)
 }
 
@@ -121,8 +132,7 @@ pub fn quantized_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
             msg: "only 2-D supported".into(),
         });
     }
-    let (m, k) = (a.shape()[0], a.shape()[1]);
-    let n = b.shape()[1];
+    let k = a.shape()[1];
     if b.shape()[0] != k {
         return Err(Error::ShapeMismatch {
             op: "quantized_matmul",

@@ -106,8 +106,11 @@ impl Module for Conv2D {
             });
         }
         let y = x.conv2d(&self.weight.tensor(), self.stride, self.padding)?;
-        // Bias [c_out] broadcasts against the trailing channel dim.
-        y.add(&self.bias.tensor())
+        // Reshape [c_out] to [1, c_out, 1, 1] so it broadcasts along the
+        // channel axis; a bare [c_out] would align with W instead.
+        let c_out = self.bias.tensor().shape()[0];
+        let b = self.bias.tensor().reshape(&[1, c_out, 1, 1])?;
+        y.add(&b)
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {
@@ -201,12 +204,14 @@ impl Module for BatchNorm {
 
 /// Inverted dropout backed by the counter-based Philox op: in training mode
 /// each activation is zeroed with probability p and survivors scaled by
-/// 1/(1-p); evaluation is the identity. The mask is deterministic given
-/// (seed, shape), so repeated forwards agree bitwise.
+/// 1/(1-p); evaluation is the identity. Each training forward advances an
+/// internal stream offset so every step samples a fresh mask, while the
+/// sequence stays deterministic given (seed, forward count).
 pub struct Dropout {
     p: f32,
     seed: u64,
     training: Cell<bool>,
+    offset: Cell<u64>,
 }
 
 impl Dropout {
@@ -215,6 +220,7 @@ impl Dropout {
             p,
             seed: 0,
             training: Cell::new(true),
+            offset: Cell::new(0),
         }
     }
 
@@ -222,11 +228,24 @@ impl Dropout {
         self.seed = seed;
         self
     }
+
+    /// Stream position of the next training mask; save it in checkpoints to
+    /// resume sampling exactly where training stopped.
+    pub fn rng_offset(&self) -> u64 {
+        self.offset.get()
+    }
 }
 
 impl Module for Dropout {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        x.dropout(self.p, self.training.get(), self.seed, 0)
+        if !self.training.get() {
+            return x.dropout(self.p, false, self.seed, 0);
+        }
+        let y = x.dropout(self.p, true, self.seed, self.offset.get());
+        // Advance by the element count so the next forward draws a fresh,
+        // non-overlapping slice of the Philox stream.
+        self.offset.set(self.offset.get() + x.numel() as u64);
+        y
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {

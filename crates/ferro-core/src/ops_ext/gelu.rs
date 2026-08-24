@@ -16,7 +16,8 @@ const A: f32 = 0.044715;
 
 impl Tensor {
     pub fn gelu(&self) -> Tensor {
-        let out = raw_unary_k(self, UnaryKind::Gelu).expect("tensor's device backend is always registered");
+        let out = raw_unary_k(self, UnaryKind::Gelu)
+            .expect("tensor's device backend is always registered");
         if !self.requires_grad() {
             return out;
         }
@@ -31,8 +32,20 @@ impl Tensor {
             // p1 = 0.5*(1 + t); p2 = 0.5*x*(1 - t^2)*c*(1 + 3a*x^2)
             let p1 = t.add(&one).unwrap().mul(&c(0.5)).unwrap();
             let dt = one.sub(&t.mul(&t).unwrap()).unwrap();
-            let p2 = x.mul(&x).unwrap().mul(&c(3.0 * A)).unwrap().add(&one).unwrap();
-            let p2 = x.mul(&dt).unwrap().mul(&p2).unwrap().mul(&c(0.5 * C)).unwrap();
+            let p2 = x
+                .mul(&x)
+                .unwrap()
+                .mul(&c(3.0 * A))
+                .unwrap()
+                .add(&one)
+                .unwrap();
+            let p2 = x
+                .mul(&dt)
+                .unwrap()
+                .mul(&p2)
+                .unwrap()
+                .mul(&c(0.5 * C))
+                .unwrap();
             vec![g.mul(&p1.add(&p2).unwrap()).unwrap()]
         })
     }

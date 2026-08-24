@@ -175,8 +175,10 @@ fn slice_indices(
     let l = len as isize;
     let mut out = Vec::new();
     if step > 0 {
-        let s = start.unwrap_or(0).clamp(0, l);
-        let e = stop.unwrap_or(l).clamp(0, l);
+        // Python semantics: negative bounds count from the end before clamping.
+        let norm = |v: isize| if v < 0 { v + l } else { v };
+        let s = norm(start.unwrap_or(0)).clamp(0, l);
+        let e = norm(stop.unwrap_or(l)).clamp(0, l);
         let mut i = s;
         while i < e {
             out.push(i as usize);

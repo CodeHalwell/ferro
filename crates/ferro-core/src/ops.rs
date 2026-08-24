@@ -112,12 +112,14 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Sum)
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec())));
         let in_shape = self.shape().to_vec();
-        let device = self.device();
-        out.record_fn(vec![self.clone()], move |_g| {
-            // d(sum)/dx = 1 everywhere: seed a constant fill instead of reading
-            // g.item(), which forced a device-to-host sync per backward. The
-            // gradient stays on the input's device end to end.
-            vec![Tensor::full_on(&in_shape, 1.0, device).unwrap()]
+        out.record_fn(vec![self.clone()], move |g| {
+            // d(sum)/dx = g: build a whole device buffer (fill+mul) rather
+            // than broadcasting a stride-0 view - downstream backwards only
+            // take the device fastpath on whole contiguous buffers, and a
+            // view would push them onto the host path (per-step uploads).
+            vec![g
+                .mul(&Tensor::full_on(&in_shape, 1.0, g.device()).unwrap())
+                .unwrap()]
         })
     }
 
@@ -127,11 +129,12 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Mean)
             .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec()) / n));
         let in_shape = self.shape().to_vec();
-        let device = self.device();
-        out.record_fn(vec![self.clone()], move |_g| {
-            // d(mean)/dx = 1/n: same device-resident fill as sum's backward;
-            // no g.item() host sync.
-            vec![Tensor::full_on(&in_shape, 1.0 / n, device).unwrap()]
+        out.record_fn(vec![self.clone()], move |g| {
+            // d(mean)/dx = g/n: same whole-buffer construction as sum's
+            // backward; no g.item() host sync, no broadcast views.
+            vec![g
+                .mul(&Tensor::full_on(&in_shape, 1.0 / n, g.device()).unwrap())
+                .unwrap()]
         })
     }
 }
