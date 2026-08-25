@@ -483,7 +483,10 @@ impl Tensor {
     }
 
     // --- views (share storage) -------------------------------------------
-
+    // Future work: narrow/as_strided (docs/CAPABILITY.md 2.2) must carry
+    // gradient through record_fn like the indexing ops do - its VJP
+    // scatter-adds the incoming gradient through the view's strided odometer
+    // into a zeros base, so slicing reduces rather than reshapes.
     /// Broadcast to `shape` without copying (inserts zero strides). Detached:
     /// broadcasting's gradient is handled by reducing in backward.
     pub(crate) fn broadcast_to(&self, shape: &[usize]) -> Result<Tensor> {

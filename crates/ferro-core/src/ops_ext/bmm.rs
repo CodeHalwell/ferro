@@ -11,7 +11,30 @@
 use crate::device::Device;
 use crate::dispatch;
 use crate::error::{Error, Result};
-use crate::tensor::Tensor;
+use crate::tensor::{device_leaf, Storage, Tensor};
+
+/// Batched GEMM with logical transpose flags over device-resident whole
+/// operands: (batch, m, k) @ (batch, k, n) -> (batch, m, n).
+fn raw_bmm_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Tensor {
+    let batch = a.shape()[0];
+    let (m, k) = if ta {
+        (a.shape()[2], a.shape()[1])
+    } else {
+        (a.shape()[1], a.shape()[2])
+    };
+    let n = if tb { b.shape()[1] } else { b.shape()[2] };
+    let backend = dispatch::backend_for(a.device()).expect("device tensor implies registered backend");
+    let Storage::Device(ba) = &a.0.storage.data else {
+        unreachable!()
+    };
+    let Storage::Device(bb) = &b.0.storage.data else {
+        unreachable!()
+    };
+    let out = backend
+        .bmm_dev(ba.as_ref(), bb.as_ref(), batch, m, k, n, ta, tb)
+        .expect("bmm_dev on a resident backend");
+    device_leaf(out, &[batch, m, n], a.device())
+}
 
 impl Tensor {
     pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
@@ -37,6 +60,32 @@ impl Tensor {
                 lhs: a_shape.to_vec(),
                 rhs: b_shape.to_vec(),
             });
+        }
+
+        // Whole contiguous device operands: one strided-batched cuBLAS call,
+        // no host materialization of inputs or transposes. A backend that
+        // accepts resident buffers but has no batched GEMM (not_resident
+        // default) falls back to the host path below.
+        if self.device_resident_whole() && other.device_resident_whole() {
+            let backend = dispatch::backend_for(self.device())?;
+            let Storage::Device(sa) = &self.0.storage.data else {
+                unreachable!()
+            };
+            let Storage::Device(sb) = &other.0.storage.data else {
+                unreachable!()
+            };
+            if let Ok(out) = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false) {
+                let out = crate::tensor::device_leaf(out, &[batch, m, n], self.device());
+                let a = self.clone();
+                let b = other.clone();
+                return Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+                    // dA[b] = dC[b] @ B[b]^T, dB[b] = A[b]^T @ dC[b]: the ta/tb
+                    // flags let cuBLAS read the transposes without materializing.
+                    let da = raw_bmm_t(&g, &b, false, true);
+                    let db = raw_bmm_t(&a, &g, true, false);
+                    vec![da, db]
+                }));
+            }
         }
 
         let cpu = dispatch::backend_for(Device::Cpu)?;

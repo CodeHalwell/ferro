@@ -158,6 +158,23 @@ pub trait Backend: Send + Sync {
         not_resident("matmul_dev")
     }
 
+    /// Batched (batch,m,k) @ (batch,k,n) -> (batch,m,n) over whole contiguous
+    /// device buffers, one launch (strided-batched GEMM). `ta`/`tb` mark an
+    /// operand as stored transposed within each batch slab.
+    fn bmm_dev(
+        &self,
+        _a: &dyn DeviceBuffer,
+        _b: &dyn DeviceBuffer,
+        _batch: usize,
+        _m: usize,
+        _k: usize,
+        _n: usize,
+        _ta: bool,
+        _tb: bool,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("bmm_dev")
+    }
+
     /// Broadcasting binary: `sa`/`sb` broadcast (numpy rules) to `out_shape`;
     /// both inputs are whole contiguous buffers of their shapes.
     fn binary_bc_dev(

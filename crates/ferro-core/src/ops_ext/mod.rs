@@ -27,6 +27,7 @@ pub mod mean_dim;
 pub mod pad;
 pub mod powf;
 pub mod rope;
+pub mod scatter;
 pub mod scatter_add;
 pub mod silu;
 pub mod softmax;

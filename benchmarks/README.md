@@ -66,6 +66,29 @@ the CUDA step time (~2,440-2,630 tok/s before, at ~0% GPU utilisation).
 Remaining overhead is still op-graph dispatch rather than kernels; the
 remaining host-composed ops in the attention path are the next lever.
 
+### Wave 2: batched attention GEMMs on device (bmm via cuBLAS)
+
+Profiling (`bench_transformer --profile`, plus a per-primitive op_profile
+harness) showed backward at 80.8% of the step and attention forward at 30.3%,
+while individual primitives ran in well under 0.1 ms - i.e. launch count and
+host round-trips, not kernel speed, dominated. The largest offender was `bmm`
+(4 calls per transformer forward: QK^T and attn@V in forward, two transposed
+products in backward), which materialized every input and transpose through
+the host. `bmm` now runs as one strided-batched cuBLAS call on device for
+both forward and backward (transposes handled by cuBLAS flags), with
+gradients staying device-resident.
+
+warmup=10 timed=30:
+
+| Harness | Device | tok/s | step mean ms | p50 | p90 | p99 |
+|---|---|---|---|---|---|---|
+| ferro | cuda:0 | **6,755** | 151.59 | 151.36 | 155.82 | 157.98 |
+
+That is a 1.90x step-time improvement over the wave-1 CUDA number and ~7.6x
+over the pre-kernel baseline. Remaining step time is dominated by still-host
+composed backward glue (rope, reshape-through-host for head splits) and the
+optimizer; fusing those is the next lever.
+
 ### Earlier baseline (pre-kernel wave)
 
 warmup=100 timed=500, CPU backend only:
