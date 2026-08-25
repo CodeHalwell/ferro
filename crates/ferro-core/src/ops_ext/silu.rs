@@ -15,7 +15,10 @@ impl Tensor {
             return out;
         }
         let x = self.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(
+            vec![self.clone()],
+            crate::OpTag::Unary(UnaryKind::Silu),
+            move |g| {
             let dev = g.device();
             let c = |v: f32| Tensor::scalar(v).to_device(dev).unwrap();
             let one = c(1.0);

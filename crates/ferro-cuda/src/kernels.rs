@@ -124,6 +124,115 @@ pub fn binary_bc_source(kind: BinaryKind, rank: usize) -> String {
     )
 }
 
+/// One step of a fused pointwise chain (see [`chain_source`]). `other` indexes
+/// the kernel's trailing input pointers (x0 is always the chain's seed
+/// element). The broadcast variant carries the output decomposition dims and
+/// the operand's padded strides host-side; they become runtime kernel args so
+/// one compiled function serves every shape of that rank.
+#[derive(Debug, Clone)]
+pub enum ChainStep {
+    Unary(UnaryKind),
+    Binary {
+        kind: BinaryKind,
+        other: usize,
+    },
+    BinaryBc {
+        kind: BinaryKind,
+        other: usize,
+        dims: Vec<u32>,
+        strides: Vec<u32>,
+    },
+}
+
+pub fn chain_input_count(steps: &[ChainStep]) -> usize {
+    steps.iter().fold(1usize, |m, s| match s {
+        ChainStep::Unary(_) => m,
+        ChainStep::Binary { other, .. } | ChainStep::BinaryBc { other, .. } => m.max(other + 1),
+    })
+}
+
+/// One nvrtc kernel evaluating a whole pointwise chain: intermediates live in
+/// local floats (registers), never in global memory. Source text is derived
+/// deterministically from the steps (including each broadcast rank), matching
+/// the get_kernel cache-key convention; dims/strides stay runtime args. Step k
+/// reads step k-1's value; every expression builder is reused verbatim by
+/// binding its expected variable name (`v`, `x`, `y`) to a fresh local.
+pub fn chain_source(steps: &[ChainStep]) -> String {
+    assert!(!steps.is_empty(), "an empty chain is a plain unary/binary");
+    let inputs = chain_input_count(steps);
+    let sig_inputs: String = (1..inputs).map(|j| format!(", const float* x{j}")).collect();
+    let mut body = String::new();
+    for (k, step) in steps.iter().enumerate() {
+        let prev = format!("v{k}");
+        let out = format!("v{}", k + 1);
+        match step {
+            ChainStep::Unary(kind) => body.push_str(&format!(
+                "    float {out}; {{ float v = {prev}; {out} = {}; }}\n",
+                unary_expr(*kind)
+            )),
+            ChainStep::Binary { kind, other } => body.push_str(&format!(
+                "    float {out}; {{ float x = {prev}; float y = x{other}[i]; {out} = {}; }}\n",
+                binary_expr(*kind)
+            )),
+            ChainStep::BinaryBc { kind, other, dims, strides } => {
+                assert_eq!(dims.len(), strides.len(), "bc step dims/strides mismatch");
+                let divmod: String = (0..dims.len())
+                    .rev()
+                    .map(|d| {
+                        format!(
+                            "    c{i} = rem{i} % d{k}_{d}; rem{i} /= d{k}_{d}; off{i} += c{i} * s{k}_{d};\n",
+                            i = k
+                        )
+                    })
+                    .collect();
+                body.push_str(&format!(
+                    "    unsigned int rem{0} = i; unsigned int off{0} = 0; unsigned int c{0};\n{divmod}    float {out}; {{ float x = {prev}; float y = x{other}[off{0}]; {out} = {expr}; }}\n",
+                    k,
+                    divmod = divmod,
+                    out = out,
+                    prev = prev,
+                    other = other,
+                    expr = binary_expr(*kind)
+                ));
+            }
+        }
+    }
+    let mut sig_extra = String::new();
+    for (k, step) in steps.iter().enumerate() {
+        if let ChainStep::BinaryBc { dims, .. } = step {
+            for d in 0..dims.len() {
+                sig_extra.push_str(&format!(", unsigned int d{k}_{d}, unsigned int s{k}_{d}"));
+            }
+        }
+    }
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(const float* x0{sig_inputs}{sig_extra}, float* out, unsigned int n) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float v0 = x0[i];
+{body}    out[i] = v{};
+}}
+"#,
+        steps.len()
+    )
+}
+
+/// Host-side companion of [`chain_source`]: the flattened per-step broadcast
+/// kernel arguments (interleaved dim,stride per rank of each BinaryBc step),
+/// in signature order.
+pub fn chain_bc_args(steps: &[ChainStep]) -> Vec<u32> {
+    let mut args = Vec::new();
+    for s in steps {
+        if let ChainStep::BinaryBc { dims, strides, .. } = s {
+            for d in 0..dims.len() {
+                args.push(dims[d]);
+                args.push(strides[d]);
+            }
+        }
+    }
+    args
+}
+
 /// Threads per block for the two-pass full reduction (and its finalize pass).
 pub const REDUCE_BLOCK: u32 = 256;
 
@@ -508,5 +617,89 @@ mod tests {
         let a = UnaryKind::Clamp { min: 0.0, max: 1.0 };
         let b = UnaryKind::Clamp { min: 0.0, max: 2.0 };
         assert_ne!(unary_source(a), unary_source(b));
+    }
+
+    fn gelu_bias_chain() -> Vec<ChainStep> {
+        vec![
+            ChainStep::Unary(UnaryKind::Gelu),
+            ChainStep::BinaryBc {
+                kind: BinaryKind::Add,
+                other: 1,
+                dims: vec![4, 8],
+                strides: vec![0, 1],
+            },
+        ]
+    }
+
+    #[test]
+    fn chain_source_threads_expressions_into_one_kernel() {
+        let src = chain_source(&gelu_bias_chain());
+        assert!(src.contains(r#"extern "C" __global__ void ferro_kernel(const float* x0, const float* x1, unsigned int d1_0, unsigned int s1_0, unsigned int d1_1, unsigned int s1_1, float* out, unsigned int n)"#));
+        assert!(src.contains("float v0 = x0[i];"));
+        assert!(src.contains("float v1; { float v = v0; v1 = 0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v))); }"));
+        assert!(src.contains("c1 = rem1 % d1_1; rem1 /= d1_1; off1 += c1 * s1_1;"));
+        assert!(src.contains("c1 = rem1 % d1_0; rem1 /= d1_0; off1 += c1 * s1_0;"));
+        assert!(src.contains("float y = x1[off1];"));
+        assert!(src.contains("v2 = x + y;"));
+        assert!(src.ends_with("out[i] = v2;\n}\n"));
+    }
+
+    #[test]
+    fn chain_source_keys_on_steps_and_bc_rank() {
+        let base = chain_source(&gelu_bias_chain());
+        assert_eq!(base, chain_source(&gelu_bias_chain()));
+        let elementwise = ChainStep::Binary {
+            kind: BinaryKind::Add,
+            other: 1,
+        };
+        assert_ne!(base, chain_source(&[elementwise.clone()]));
+        assert_ne!(
+            chain_source(&[
+                ChainStep::Unary(UnaryKind::Relu),
+                ChainStep::Binary {
+                    kind: BinaryKind::Mul,
+                    other: 1
+                },
+                ChainStep::Binary {
+                    kind: BinaryKind::Add,
+                    other: 2
+                },
+            ]),
+            chain_source(&[elementwise])
+        );
+    }
+
+    #[test]
+    fn chain_bc_args_flatten_in_signature_order() {
+        assert_eq!(chain_bc_args(&gelu_bias_chain()), vec![4, 0, 8, 1]);
+        assert!(chain_bc_args(&[ChainStep::Unary(UnaryKind::Relu)]).is_empty());
+    }
+
+    // Host simulation of the generated kernel's full dataflow (locals carry
+    // values between steps; bc offsets decompose i over dims with padded
+    // strides): must equal the unfused per-op reference exactly.
+    #[test]
+    fn chain_dataflow_simulates_the_unfused_reference() {
+        let x: Vec<f32> = (-32..32).map(|i| i as f32 * 0.125).collect();
+        let bias: Vec<f32> = [0.5, -0.25, 1.0, 0.0, 2.0, -1.5, 0.75, 3.0].to_vec();
+        let (rows, cols) = (8usize, 8usize);
+        let mut got = Vec::with_capacity(rows * cols);
+        for i in 0..rows * cols {
+            let v0 = x[i];
+            let v1 = 0.5f32 * v0 * (1.0 + (0.7978846f32 * (v0 + 0.044715 * v0 * v0 * v0)).tanh());
+            let mut rem = i;
+            let mut off = 0usize;
+            // Innermost dim peeled first, matching chain_source's divmod.
+            for (d, s) in [(cols, 1usize), (rows, 0usize)] {
+                let c = rem % d;
+                rem /= d;
+                off += c * s;
+            }
+            got.push(v1 + bias[off]);
+        }
+        for (i, g) in got.iter().enumerate() {
+            let gelu = 0.5f32 * x[i] * (1.0 + (0.7978846f32 * (x[i] + 0.044715 * x[i] * x[i] * x[i])).tanh());
+            assert_eq!(*g, gelu + bias[i % cols]);
+        }
     }
 }

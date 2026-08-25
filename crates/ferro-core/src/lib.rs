@@ -21,6 +21,7 @@ pub mod ops_ext;
 pub mod optim;
 pub mod params;
 pub mod philox;
+pub mod replay;
 mod reduce;
 pub mod rng;
 pub mod safetensors;
@@ -29,7 +30,9 @@ pub mod tensor;
 pub mod testkit;
 
 pub use device::Device;
-pub use dispatch::{register_backend, Backend, BinaryKind, CpuBackend, UnaryKind};
+pub use dispatch::{
+    register_backend, Backend, BinaryKind, ChainStepRef, CpuBackend, OpTag, UnaryKind,
+};
 pub use dtype::DType;
 pub use error::{Error, Result};
 pub use params::Param;

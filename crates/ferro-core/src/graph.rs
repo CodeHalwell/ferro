@@ -43,8 +43,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::dispatch::{backend_for, ChainStepRef, OpTag};
+use crate::error::{Error, Result};
 use crate::shape::numel;
-use crate::tensor::Tensor;
+use crate::tensor::{device_leaf, raw_binary_k, raw_unary_k, Tensor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
@@ -60,6 +62,8 @@ pub struct GraphNode {
     pub id: usize,
     pub shape: Vec<usize>,
     pub kind: NodeKind,
+    /// Kernel tag recorded on this node's op (kind-routed ops only).
+    pub tag: Option<OpTag>,
     /// Tensor ids of this node's recorded op inputs, in op order.
     pub inputs: Vec<usize>,
 }
@@ -69,6 +73,10 @@ pub struct Graph {
     /// All reachable node ids, roots first (reverse topological order, the
     /// same direction `backward_with` walks).
     pub order: Vec<usize>,
+    /// The captured tensors keyed by node id, so chain resolution can hand
+    /// real operands to an executor without re-running anything. Holds one
+    /// Arc clone per recorded node for as long as the Graph lives.
+    pub tensors: HashMap<usize, Tensor>,
 }
 
 /// One fusible pointwise run: node ids in execution order, every interior
@@ -142,6 +150,7 @@ impl Graph {
         stack_walk(root, &mut seen, &mut postorder);
 
         let mut nodes = HashMap::new();
+        let mut tensors: HashMap<usize, Tensor> = HashMap::new();
         let mut order = Vec::with_capacity(postorder.len());
         for t in postorder.into_iter().rev() {
             let owned: Vec<Tensor> =
@@ -151,16 +160,23 @@ impl Graph {
                     .unwrap_or_default();
             let refs: Vec<&Tensor> = owned.iter().collect();
             let kind = classify(&t, &refs);
+            let tag = t.0.op.as_ref().and_then(|op| op.tag);
+            tensors.insert(t.id(), t.clone());
             let node = GraphNode {
                 id: t.id(),
                 shape: t.shape().to_vec(),
                 kind,
+                tag,
                 inputs: owned.iter().map(|i| i.id()).collect(),
             };
             order.push(node.id);
             nodes.insert(node.id, node);
         }
-        Graph { nodes, order }
+        Graph {
+            nodes,
+            order,
+            tensors,
+        }
     }
 
     fn consumer_counts(&self) -> HashMap<usize, usize> {
@@ -260,4 +276,179 @@ fn stack_walk(root: &Tensor, seen: &mut HashSet<usize>, postorder: &mut Vec<Tens
         }
         postorder.push(t);
     }
+}
+
+/// A resolved chain ready to execute in one backend call.
+pub struct ExecutableChain {
+    pub steps: Vec<ChainStepRef>,
+    /// Operand tensors: index 0 is the seed; later entries are the buffers
+    /// referenced by Binary/BinaryBc `other` indices.
+    pub operands: Vec<Tensor>,
+    pub out_shape: Vec<usize>,
+}
+
+fn padded_strides(shape: &[usize], out_shape: &[usize]) -> Vec<usize> {
+    let pad = out_shape.len() - shape.len();
+    let mut strides = vec![0usize; out_shape.len()];
+    let mut acc = 1usize;
+    for d in (0..shape.len()).rev() {
+        strides[d + pad] = if shape[d] == 1 { 0 } else { acc };
+        if shape[d] != 1 {
+            acc *= shape[d];
+        }
+    }
+    strides
+}
+
+impl FusedChain {
+    /// Resolve this chain's node ids into executable steps over the graph's
+    /// captured tensors. Every node must carry an op tag (the planner only
+    /// admits tagged Unary/Binary nodes, but the Graph can be built from any
+    /// tape, so this stays fallible). The seed is the chain's first node;
+    /// each subsequent step reads its predecessor plus any second operand
+    /// captured here by index. Broadcast shapes are decomposed against the
+    /// SEED's shape (all chain intermediates share it pointwise).
+    pub fn resolve(&self, g: &Graph) -> Result<ExecutableChain> {
+        let mut steps: Vec<ChainStepRef> = Vec::with_capacity(self.nodes.len());
+        // operand index -> tensor id; slot 0 is filled with the seed below.
+        let mut slots: Vec<usize> = Vec::new();
+        for (k, &id) in self.nodes.iter().enumerate() {
+            let node = &g.nodes[&id];
+            let tag = node.tag.ok_or_else(|| Error::Unsupported {
+                op: "chain_resolve",
+                msg: format!("node {id} has no kernel tag and cannot be fused"),
+            })?;
+            match (tag, k == 0) {
+                (OpTag::Unary(kind), true) => {}
+                (OpTag::Unary(kind), false) => {
+                    steps.push(ChainStepRef::Unary(kind));
+                }
+                (OpTag::Binary(kind), _) => {
+                    let pred = self.nodes[k - 1];
+                    let other_id = *node.inputs.iter().find(|&&i| i != pred).ok_or_else(|| {
+                        Error::Unsupported {
+                            op: "chain_resolve",
+                            msg: format!("binary node {id} has no second input"),
+                        }
+                    })?;
+                    let slot = match slots.iter().position(|&s| s == other_id) {
+                        Some(s) => s,
+                        None => {
+                            slots.push(other_id);
+                            slots.len() - 1
+                        }
+                    };
+                    // +1: slot 0 of the kernel signature is the seed itself.
+                    let other = slot + 1;
+                    let same = g.tensors[&other_id].shape() == g.tensors[&self.nodes[0]].shape();
+                    if same {
+                        steps.push(ChainStepRef::Binary { kind, other });
+                    } else {
+                        let out_shape = g.tensors[&id].shape().to_vec();
+                        let in_shape = g.tensors[&other_id].shape().to_vec();
+                        steps.push(ChainStepRef::BinaryBc {
+                            kind,
+                            dims: out_shape.iter().map(|&d| d as u32).collect(),
+                            strides: padded_strides(&in_shape, &out_shape)
+                                .iter()
+                                .map(|&d| d as u32)
+                                .collect(),
+                            other,
+                        });
+                    }
+                }
+                _ => {
+                    return Err(Error::Unsupported {
+                        op: "chain_resolve",
+                        msg: "a chain cannot start with a binary step".into(),
+                    })
+                }
+            }
+        }
+        let mut operands = vec![g.tensors[&self.nodes[0]].clone()];
+        for id in &slots {
+            operands.push(g.tensors[id].clone());
+        }
+        Ok(ExecutableChain {
+            steps,
+            operands,
+            out_shape: g.nodes[&self.nodes[0]].shape.clone(),
+        })
+    }
+
+    /// Evaluate the chain on its seed's device: one fused backend launch when
+    /// the device is resident and the backend implements `chain_dev`, else a
+    /// sequential per-op fallback that computes exactly the same math through
+    /// the ordinary raw kernels. Returns a detached tensor.
+    pub fn run(&self, chain: &ExecutableChain) -> Result<Tensor> {
+        let seed = &chain.operands[0];
+        let all_resident = chain.operands.iter().all(|t| t.device_resident_whole());
+        if all_resident {
+            if let Ok(out) = (|| {
+                let backend = backend_for(seed.device())?;
+                let bufs: Vec<&dyn crate::dispatch::DeviceBuffer> = chain
+                    .operands
+                    .iter()
+                    .map(|t| -> &dyn crate::dispatch::DeviceBuffer {
+                        match &t.0.storage.data {
+                            crate::tensor::Storage::Device(b) => b.as_ref(),
+                            _ => unreachable!(),
+                        }
+                    })
+                    .collect();
+                backend.chain_dev(&chain.steps, &bufs)
+            })() {
+                return Ok(device_leaf(out, &chain.out_shape, seed.device()));
+            }
+        }
+        self.run_host(chain)
+    }
+
+    fn run_host(&self, chain: &ExecutableChain) -> Result<Tensor> {
+        let mut cur = chain.operands[0].clone();
+        let mut slot_values: HashMap<usize, Tensor> = HashMap::new();
+        for (slot, t) in chain.operands.iter().enumerate().skip(1) {
+            slot_values.insert(slot + 1, t.clone());
+        }
+        for step in &chain.steps {
+            cur = match step {
+                ChainStepRef::Unary(kind) => raw_unary_k(&cur, *kind)?,
+                ChainStepRef::Binary { kind, other } => {
+                    raw_binary_k("chain", &cur, &slot_values[other], *kind)?
+                }
+                ChainStepRef::BinaryBc { kind, other, .. } => {
+                    raw_binary_k("chain_bc", &cur, &slot_values[other], *kind)?
+                }
+            };
+        }
+        Ok(cur)
+    }
+}
+
+#[doc(hidden)]
+pub fn _dbg_op_present(t: &Tensor) -> bool {
+    t.0.op.is_some()
+}
+
+#[doc(hidden)]
+pub fn _dbg_requires_grad(t: &Tensor) -> bool {
+    t.0.requires_grad
+}
+
+#[doc(hidden)]
+pub fn _dbg_graph_shape(t: &Tensor) -> (bool, bool, usize) {
+    // (root has op, root requires_grad, inputs of root's op)
+    (
+        t.0.op.is_some(),
+        t.0.requires_grad,
+        t.0.op.as_ref().map(|o| o.inputs().len()).unwrap_or(0),
+    )
+}
+
+#[doc(hidden)]
+pub fn _dbg_uses_grad(t: &Tensor) -> usize {
+    // count how many tensors in the local chain have requires_grad
+    if let Some(op) = &t.0.op {
+        op.inputs().iter().filter(|i| i.0.requires_grad).count() * 100 + op.inputs().len()
+    } else { 0 }
 }

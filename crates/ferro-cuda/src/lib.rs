@@ -16,6 +16,8 @@
 
 mod kernels;
 
+pub use kernels::{chain_bc_args, chain_source, broadcast_strides, ChainStep};
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -26,7 +28,9 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::compile_ptx;
 use ferro_core::dispatch::{DeviceBuffer, ReduceKind};
-use ferro_core::{register_backend, Backend, BinaryKind, Device, Error, Result, UnaryKind};
+use ferro_core::{
+    register_backend, Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
+};
 
 /// Cheap detection: is the CUDA driver library (libcuda) loadable? True does
 /// not guarantee a usable device (the driver can be present with zero GPUs);
@@ -70,6 +74,61 @@ fn as_i32(op: &'static str, n: usize) -> Result<i32> {
 pub struct CudaBuf {
     data: CudaSlice<f32>,
     device: Device,
+}
+
+/// A CUDA-graph-captured chain launch. `replay()` re-runs the recorded
+/// launch with one host call, writing into the SAME output buffer every time
+/// (stable-address contract). The graph and the output slice share this
+/// struct's lifetime; dropping it destroys both.
+pub struct CapturedChain {
+    _graph: cudarc::driver::safe::CudaGraph,
+    out: CudaSlice<f32>,
+    buf: CudaBuf,
+    n: usize,
+}
+
+impl CapturedChain {
+    /// Replay the captured launch. Results appear in `output()` afterwards.
+    pub fn replay(&self) -> Result<()> {
+        self._graph.launch().map_err(|e| cuda_err("graph_replay", e))
+    }
+    /// The pre-allocated output buffer (last replay's results).
+    pub fn output(&self) -> &CudaSlice<f32> {
+        &self.out
+    }
+    /// Download the last replay's results to the host. Reads `self.out`
+    /// directly - NOT the `buf` wrapper, whose data is a detached copy.
+    pub fn copy_output_to_host(&self, backend: &CudaBackend) -> Result<Vec<f32>> {
+        backend.dtoh("captured_output", &self.out)
+    }
+    pub fn len(&self) -> usize {
+        self.n
+    }
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+}
+
+impl CudaBackend {
+    /// Overwrite a device buffer's contents in place, preserving its address
+    /// (the stable-address contract captured graphs rely on).
+    pub fn copy_into(&self, buf: &dyn DeviceBuffer, data: &[f32]) -> Result<()> {
+        const OP: &str = "copy_into";
+        let b = self.resident(OP, buf)?;
+        if b.data.len() != data.len() {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("length mismatch: {} vs {}", b.data.len(), data.len()),
+            });
+        }
+        let mut b = self
+            .resident(OP, buf)?
+            .data
+            .clone();
+        self.stream
+            .memcpy_htod(data, &mut b)
+            .map_err(|e| cuda_err(OP, e))
+    }
 }
 
 impl DeviceBuffer for CudaBuf {
@@ -142,7 +201,11 @@ impl CudaBackend {
         }
         let ctx = CudaContext::new(ordinal as usize)
             .map_err(|e| format!("failed to initialize CUDA device {ordinal}: {e}"))?;
-        let stream = ctx.default_stream();
+        // A non-default stream: the legacy default stream is not capturable,
+        // and graphs (wave 5) need a real stream anyway.
+        let stream = ctx
+            .new_stream()
+            .map_err(|e| format!("failed to create stream: {e}"))?;
         let blas = CudaBlas::new(stream.clone())
             .map_err(|e| format!("failed to create cuBLAS handle: {e}"))?;
         let device = Device::Cuda(ordinal);
@@ -509,6 +572,243 @@ impl CudaBackend {
     pub fn seed_grad_dev(&self, len: usize, value: f32) -> Result<Box<dyn DeviceBuffer>> {
         self.fill_dev(value, len)
     }
+
+    /// Launch the fused pointwise chain `steps` over device-resident inputs.
+    /// Input 0 seeds the chain; its length is n. Inputs referenced by
+    /// `ChainStep::Binary` must have length n; `BinaryBc` operands are read
+    /// through their broadcast offsets and may be shorter. One launch, one
+    /// output allocation -- no intermediate global-memory round trips.
+    fn launch_chain(
+        &self,
+        op: &'static str,
+        steps: &[kernels::ChainStep],
+        inputs: &[&CudaBuf],
+    ) -> Result<CudaSlice<f32>> {
+        for buf in inputs {
+            if buf.device != self.device {
+                return Err(Error::Unsupported {
+                    op,
+                    msg: format!(
+                        "buffer lives on {} but this backend serves {}",
+                        buf.device, self.device
+                    ),
+                });
+            }
+        }
+        let n = inputs[0].data.len();
+        for step in steps {
+            if let kernels::ChainStep::Binary { other, .. } = step {
+                let got = inputs[*other].data.len();
+                if got != n {
+                    return Err(Error::Unsupported {
+                        op,
+                        msg: format!("elementwise chain input {other} has length {got} but expected {n}"),
+                    });
+                }
+            }
+        }
+        // The kernel signature declares x0..x{m-1} for every referenced slot;
+        // pass those pointers positionally.
+        let n_inputs = kernels::chain_input_count(steps);
+        assert!(inputs.len() >= n_inputs, "chain references a missing input");
+        let func = self.get_kernel(op, &kernels::chain_source(steps))?;
+        let mut out = self
+            .stream
+            .alloc_zeros::<f32>(n)
+            .map_err(|e| cuda_err(op, e))?;
+        if n > 0 {
+            let n_arg = as_u32(op, n)?;
+            let mut launch = self.stream.launch_builder(&func);
+            for buf in &inputs[..n_inputs] {
+                launch.arg(&buf.data);
+            }
+            // Signature order: input pointers, per-bc dims/strides, out, n.
+            let extra = kernels::chain_bc_args(steps);
+            for v in &extra {
+                launch.arg(v);
+            }
+            launch.arg(&mut out);
+            launch.arg(&n_arg);
+            unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                .map_err(|e| cuda_err(op, e))?;
+        }
+        Ok(out)
+    }
+
+    /// Apply a pointwise-chain fusion plan to device-resident tensors.
+    /// Opt-in until core's `dispatch::Backend` gains a chain seam (see
+    /// docs/FUSION_SEAM.md); reachable only through this backend directly.
+    pub fn chain_dev(
+        &self,
+        steps: &[kernels::ChainStep],
+        inputs: &[&dyn DeviceBuffer],
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "chain_dev";
+        assert!(!inputs.is_empty(), "a chain needs at least the seed input");
+        let bufs: Vec<&CudaBuf> = inputs
+            .iter()
+            .map(|b| self.resident(OP, *b))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self.wrap(self.launch_chain(OP, steps, &bufs)?))
+    }
+
+    /// CUDA-graph capture of a fused chain launch, plus a replay method.
+    ///
+    /// `capture_chain` allocates the output buffer FIRST (outside capture),
+    /// then records one chain-kernel launch into a `CudaGraph` on this
+    /// backend's stream and instantiates it. Because the output buffer is
+    /// pre-allocated, every replay writes to the SAME memory - so replay is
+    /// only valid until the returned `CudaSlice` is dropped. This is the
+    /// static-shape, stable-address contract wave 5's step-level graphs
+    /// build on.
+    pub fn capture_chain(
+        self: &Arc<Self>,
+        steps: &[kernels::ChainStep],
+        inputs: &[&dyn DeviceBuffer],
+    ) -> Result<CapturedChain> {
+        const OP: &str = "capture_chain";
+        assert!(!inputs.is_empty(), "a chain needs at least the seed input");
+        let bufs: Vec<&CudaBuf> = inputs
+            .iter()
+            .map(|b| self.resident(OP, *b))
+            .collect::<Result<Vec<_>>>()?;
+        let n = bufs[0].data.len();
+        // SAFETY: no other stream work is in flight (single-stream backend);
+        // cudarc requires disabling its event tracking for slices created
+        // during capture, so do that around the whole capture scope. The
+        // output buffer is allocated with ASYNC malloc from the stream's
+        // memory pool BEFORE begin_capture, which is legal and keeps the
+        // address stable for replays.
+        // Warm the kernel cache and synchronize BEFORE capture: nvrtc
+        // compile, module load, event creation, and stream syncs are not
+        // capturable operations.
+        let func = self.get_kernel(OP, &kernels::chain_source(steps))?;
+        self.stream.synchronize().map_err(|e| cuda_err(OP, e))?;
+        // Event tracking must be OFF for the whole capture scope: cudarc's
+        // arg()/launch() record events on slices when it is on, and event
+        // records inside a captured region are illegal (capture isolation).
+        unsafe { self.ctx.disable_event_tracking() };
+        let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| {
+            unsafe { self.ctx.enable_event_tracking() };
+            cuda_err(OP, e)
+        })?;
+        let captured = (|| -> Result<_> {
+            self.stream
+                .begin_capture(cudarc::driver::sys::CUstreamCaptureMode_enum::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+                .map_err(|e| {
+                    cuda_err(OP, e)
+                })?;
+            let launched = (|| -> Result<()> {
+                if n == 0 {
+                    return Ok(());
+                }
+                let n_arg = as_u32(OP, n)?;
+                // Raw launch: the safe builder's arg()/launch() do event
+                // bookkeeping and context syncs that are not capturable. The
+                // CudaFunction/CudaSlice internals are inaccessible, so use
+                // the safe builder but with event tracking disabled - which
+                // makes is_managing_stream_synchronization() false and strips
+                // all event work from arg()/launch().
+                let mut launch = self.stream.launch_builder(&func);
+                for buf in &bufs[..kernels::chain_input_count(steps)] {
+                    launch.arg(&buf.data);
+                }
+                let extra = kernels::chain_bc_args(steps);
+                for v in &extra {
+                    launch.arg(v);
+                }
+                let mut out_view = out.as_view_mut();
+                launch.arg(&mut out_view);
+                launch.arg(&n_arg);
+                unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                    .map_err(|e| {
+                        cuda_err(OP, e)
+                    })?;
+                Ok(())
+            })();
+            match launched {
+                Ok(()) => match self
+                    .stream
+                    .end_capture(cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH)
+                {
+                    Ok(Some(graph)) => Ok(graph),
+                    Ok(None) => {
+                        Err(Error::Unsupported {
+                            op: OP,
+                            msg: "stream capture produced an empty graph".into(),
+                        })
+                    }
+                    Err(e) => {
+                        Err(cuda_err(OP, e))
+                    }
+                },
+                Err(e) => {
+                    // Abort the poisoned capture so the stream stays usable.
+                    let _ = self.stream.capture_status();
+                    Err(e)
+                }
+            }
+        })();
+        unsafe { self.ctx.enable_event_tracking() };
+        let graph = captured?;
+        graph.upload().map_err(|e| cuda_err(OP, e))?;
+
+        Ok(CapturedChain {
+            _graph: graph,
+            buf: CudaBuf {
+                data: out.clone(),
+                device: self.device,
+            },
+            out,
+            n,
+        })
+    }
+
+    /// Host-slice convenience wrapper: htod every input, run [`chain_dev`]
+    /// logic, dtoh the result. Used by tests and callers without resident
+    /// buffers.
+    pub fn chain_res(&self, steps: &[kernels::ChainStep], inputs: &[&[f32]]) -> Result<Vec<f32>> {
+        const OP: &str = "chain";
+        assert!(!inputs.is_empty(), "a chain needs at least the seed input");
+        let dev: Vec<CudaSlice<f32>> = inputs
+            .iter()
+            .map(|d| self.htod(OP, d))
+            .collect::<Result<Vec<_>>>()?;
+        let refs: Vec<CudaBuf> = dev
+            .iter()
+            .map(|d| CudaBuf {
+                data: d.clone(),
+                device: self.device,
+            })
+            .collect();
+        let ptrs: Vec<&CudaBuf> = refs.iter().collect();
+        let out = self.launch_chain(OP, steps, &ptrs)?;
+        self.dtoh(OP, &out)
+    }
+    /// Core-owned chain steps -> this backend's kernel step description.
+    fn convert_steps(steps: &[ChainStepRef]) -> Vec<kernels::ChainStep> {
+        steps
+            .iter()
+            .map(|s| match s {
+                ChainStepRef::Unary(kind) => kernels::ChainStep::Unary(*kind),
+                ChainStepRef::Binary { kind, other } => kernels::ChainStep::Binary {
+                    kind: *kind,
+                    other: *other,
+                },
+                ChainStepRef::BinaryBc {
+                    kind,
+                    other,
+                    dims,
+                    strides,
+                } => kernels::ChainStep::BinaryBc {
+                    kind: *kind,
+                    other: *other,
+                    dims: dims.clone(),
+                    strides: strides.clone(),
+                },
+            })
+            .collect()
+    }
 }
 
 impl Backend for CudaBackend {
@@ -646,6 +946,20 @@ impl Backend for CudaBackend {
                 .map_err(|e| cuda_err(OP, e))?;
         }
         Ok(self.wrap(out))
+    }
+
+    fn chain_dev(
+        &self,
+        steps: &[ChainStepRef],
+        inputs: &[&dyn DeviceBuffer],
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "chain_dev";
+        let bufs: Vec<&CudaBuf> = inputs
+            .iter()
+            .map(|b| self.resident(OP, *b))
+            .collect::<Result<Vec<_>>>()?;
+        let ksteps = Self::convert_steps(steps);
+        Ok(self.wrap(self.launch_chain(OP, &ksteps, &bufs)?))
     }
 
     fn reduce_dev(&self, kind: ReduceKind, x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {

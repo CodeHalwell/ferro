@@ -2,14 +2,22 @@
 //! operating on parameter tensors and their `.grad()`.
 //!
 //! Tensors are immutable and `Arc`-shared, so a step never mutates in place:
-//! it reads `param.tensor()` and `param.grad()` as `Vec<f32>`, computes the new
-//! leaf values, and re-installs them via `Param::set`. Optimizer state (momentum
-//! buffers, Adam moments, timestep) lives here as plain `Vec<f32>`, one entry
-//! per parameter element.
+//! it reads `param.tensor()` and `param.grad()` and rebuilds the leaf through
+//! the raw dispatch kernels (`raw_binary_k`/`raw_unary_k`), bypassing autograd
+//! recording. All step math runs as whole-buffer kernels on whatever device
+//! the parameter lives on - after warmup a CUDA step performs no host
+//! round-trips (the only uploads are the few per-step bias-correction
+//! scalars, 4 bytes each). Optimizer state (momentum buffers, Adam moments)
+//! lives on the parameter's device as tensors; timestep counters stay host-
+//! side since they feed powi, not elementwise math.
 
+use std::collections::HashMap;
+
+use crate::device::Device;
+use crate::dispatch::BinaryKind;
 use crate::error::Error;
 use crate::params::Param;
-use crate::tensor::Tensor;
+use crate::tensor::{raw_binary_k, raw_unary_k, Tensor};
 use crate::Result;
 
 /// Capture and reinstate everything an optimizer's update rule reads, so a
@@ -24,12 +32,63 @@ pub trait OptimizerState {
     fn restore(&mut self, tensors: &[(String, Tensor)]) -> Result<()>;
 }
 
-fn state_tensor(vals: Vec<f32>) -> Tensor {
-    let len = vals.len();
-    Tensor::from_vec(vals, &[len]).expect("flat f32 buffer")
+// Raw kernels, not the ops.rs methods: optimizer math must never record an
+// autograd node (params are grad-requiring leaves) and must dispatch straight
+// to the device backend.
+fn bmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    raw_binary_k("optim_mul", a, b, BinaryKind::Mul)
+}
+fn badd(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    raw_binary_k("optim_add", a, b, BinaryKind::Add)
+}
+fn bsub(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    raw_binary_k("optim_sub", a, b, BinaryKind::Sub)
+}
+fn bdiv(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    raw_binary_k("optim_div", a, b, BinaryKind::Div)
 }
 
-fn check_buf(buf: &mut Vec<f32>, key: &str, tensors: &[(String, Tensor)]) -> Result<()> {
+/// A constant scalar as a tensor already resident on `dev` (a device-side
+/// fill for non-cpu devices: no host upload). Cached per device by the
+/// optimizers so steady-state steps upload nothing for fixed hyperparameters.
+#[derive(Default)]
+struct Scalars(HashMap<Device, HashMap<&'static str, Tensor>>);
+
+impl Scalars {
+    fn get(&mut self, dev: Device, key: &'static str, val: f32) -> Tensor {
+        self.0
+            .entry(dev)
+            .or_default()
+            .entry(key)
+            .or_insert_with(|| {
+                Tensor::full_on(&[1], val, dev).expect("param's device backend is registered")
+            })
+            .clone()
+    }
+}
+
+/// Per-step (non-cacheable) scalar - Adam's bias corrections - uploaded to
+/// `dev`. 4 bytes; the only warmup-path traffic an Adam step has.
+fn step_scalar(val: f32, dev: Device) -> Tensor {
+    if dev == Device::Cpu {
+        return Tensor::scalar(val);
+    }
+    Tensor::scalar(val)
+        .to_device(dev)
+        .expect("param's device backend is registered")
+}
+
+/// Lazily-initialized zero state buffer matching `t`'s shape and device.
+fn zero_like(t: &Tensor) -> Tensor {
+    Tensor::full_on(t.shape(), 0.0, t.device()).expect("param's device backend is registered")
+}
+
+fn check_buf(
+    slot: &mut Option<Tensor>,
+    expected_shape: &[usize],
+    key: &str,
+    tensors: &[(String, Tensor)],
+) -> Result<()> {
     let t = tensors
         .iter()
         .find(|(n, _)| n == key)
@@ -37,18 +96,23 @@ fn check_buf(buf: &mut Vec<f32>, key: &str, tensors: &[(String, Tensor)]) -> Res
             op: "optim_restore",
             msg: format!("optimizer state is missing {key:?}"),
         })?;
-    if t.1.shape() != [buf.len()] || t.1.dtype() != crate::dtype::DType::F32 {
+    // Snapshot arrays are stored flat (one element per parameter); validate
+    // against the element count, then bring back to the parameter's layout.
+    let n: usize = expected_shape.iter().product();
+    if t.1.shape() != [n] || t.1.dtype() != crate::dtype::DType::F32 {
         return Err(Error::Format {
             op: "optim_restore",
             msg: format!(
-                "{key:?}: expected f32 [{}], got {:?} {:?}",
-                buf.len(),
+                "{key:?}: expected flat f32 [{n}] (for {expected_shape:?}), got {:?} {:?}",
                 t.1.dtype(),
                 t.1.shape()
             ),
         });
     }
-    *buf = t.1.to_vec();
+    // State goes back to wherever the parameters live; restore is a cold path.
+    let dev = slot.as_ref().map(|s| s.device()).unwrap_or(Device::Cpu);
+    let up = t.1.to_device(dev)?;
+    *slot = Some(up.reshape(expected_shape)?);
     Ok(())
 }
 
@@ -60,15 +124,13 @@ pub struct Sgd {
     momentum: f32,
     nesterov: bool,
     max_grad_norm: Option<f32>,
-    velocity: Vec<Vec<f32>>,
+    velocity: Vec<Option<Tensor>>,
+    scalars: Scalars,
 }
 
 impl Sgd {
     pub fn new(params: Vec<Param>, lr: f32) -> Sgd {
-        let velocity = params
-            .iter()
-            .map(|p| vec![0.0; p.tensor().numel()])
-            .collect();
+        let velocity = params.iter().map(|_| None).collect();
         Sgd {
             params,
             lr,
@@ -76,6 +138,7 @@ impl Sgd {
             nesterov: false,
             max_grad_norm: None,
             velocity,
+            scalars: Scalars::default(),
         }
     }
 
@@ -101,35 +164,63 @@ impl Sgd {
     }
 
     pub fn step(&mut self) {
+        // Kernel dispatch on same-shape f32 buffers cannot fail; the Result
+        // exists for the fallible broadcast path optimizers never take.
+        self.update().expect("sgd step");
+    }
+
+    fn update(&mut self) -> Result<()> {
         let scale = clip_scale(&self.params, self.max_grad_norm);
         for (i, p) in self.params.iter().enumerate() {
-            let grad = match grads(&self.params[i], scale) {
-                Some(g) => g,
-                None => continue,
-            };
+            let Some(g) = p.grad() else { continue };
             let cur = p.tensor();
-            let mut vals = cur.to_vec();
-            let v = &mut self.velocity[i];
-            for j in 0..vals.len() {
-                v[j] = self.momentum * v[j] + grad[j];
+            let dev = cur.device();
+            let g = if scale != 1.0 {
+                bmul(&g, &step_scalar(scale, dev))?
+            } else {
+                g
+            };
+            let d = if self.momentum == 0.0 {
+                g
+            } else {
+                let mom = self.scalars.get(dev, "momentum", self.momentum);
+                let v = self.velocity[i].get_or_insert_with(|| zero_like(&cur));
+                let nv = badd(&bmul(v, &mom)?, &g)?;
+                // Tensor clones are Arc-share cheap; the buffer is immutable.
                 let d = if self.nesterov {
-                    self.momentum * v[j] + grad[j]
+                    badd(&bmul(&nv, &mom)?, &g)?
                 } else {
-                    v[j]
+                    nv.clone()
                 };
-                vals[j] -= self.lr * d;
-            }
-            set_leaf(p, vals, cur.shape());
+                *v = nv;
+                d
+            };
+            let lr_s = self.scalars.get(dev, "lr", self.lr);
+            p.set(bsub(&cur, &bmul(&d, &lr_s)?)?);
         }
+        Ok(())
     }
 }
 
 impl OptimizerState for Sgd {
     fn snapshot(&self) -> Vec<(String, Tensor)> {
+        // Cold path: state comes back to the host for serialization.
         self.velocity
             .iter()
             .enumerate()
-            .map(|(i, v)| (format!("velocity.{i}"), state_tensor(v.clone())))
+            .map(|(i, v)| {
+                let host = v
+                    .as_ref()
+                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
+                    .unwrap_or_else(|| zero_like_cpu(self.params[i].tensor().numel()));
+                // State is stored flat (one element per parameter), matching
+                // the pre-device file format.
+                let n = host.numel();
+                (
+                    format!("velocity.{i}"),
+                    host.reshape(&[n]).expect("flat reshape"),
+                )
+            })
             .collect()
     }
 
@@ -145,10 +236,19 @@ impl OptimizerState for Sgd {
             });
         }
         for i in 0..self.velocity.len() {
-            check_buf(&mut self.velocity[i], &format!("velocity.{i}"), tensors)?;
+            check_buf(
+                &mut self.velocity[i],
+                self.params[i].tensor().shape(),
+                &format!("velocity.{i}"),
+                tensors,
+            )?;
         }
         Ok(())
     }
+}
+
+fn zero_like_cpu(len: usize) -> Tensor {
+    Tensor::from_vec(vec![0.0; len], &[len]).expect("flat f32 buffer")
 }
 
 /// Adam with bias correction. Defaults: beta1=0.9, beta2=0.999, eps=1e-8.
@@ -162,20 +262,15 @@ pub struct Adam {
     /// Per-parameter step counts: a param that skips a step (no grad) must not
     /// advance its bias correction, or its next update is scaled wrongly.
     t: Vec<u32>,
-    m: Vec<Vec<f32>>,
-    v: Vec<Vec<f32>>,
+    m: Vec<Option<Tensor>>,
+    v: Vec<Option<Tensor>>,
+    scalars: Scalars,
 }
 
 impl Adam {
     pub fn new(params: Vec<Param>, lr: f32) -> Adam {
-        let m = params
-            .iter()
-            .map(|p| vec![0.0; p.tensor().numel()])
-            .collect();
-        let v = params
-            .iter()
-            .map(|p| vec![0.0; p.tensor().numel()])
-            .collect();
+        let m = params.iter().map(|_| None).collect();
+        let v = params.iter().map(|_| None).collect();
         let t = vec![0u32; params.len()];
         Adam {
             params,
@@ -187,6 +282,7 @@ impl Adam {
             t,
             m,
             v,
+            scalars: Scalars::default(),
         }
     }
 
@@ -213,38 +309,65 @@ impl Adam {
     }
 
     pub fn step(&mut self) {
+        self.update().expect("adam step");
+    }
+
+    fn update(&mut self) -> Result<()> {
         let scale = clip_scale(&self.params, self.max_grad_norm);
         for i in 0..self.params.len() {
-            let grad = match grads(&self.params[i], scale) {
-                Some(g) => g,
-                None => continue,
+            let Some(g) = self.params[i].grad() else {
+                continue;
             };
             let p = &self.params[i];
-            self.t[i] += 1;
-            let bc1 = 1.0 - self.beta1.powi(self.t[i] as i32);
-            let bc2 = 1.0 - self.beta2.powi(self.t[i] as i32);
             let cur = p.tensor();
-            let mut vals = cur.to_vec();
-            let m = &mut self.m[i];
-            let v = &mut self.v[i];
-            for j in 0..vals.len() {
-                m[j] = self.beta1 * m[j] + (1.0 - self.beta1) * grad[j];
-                v[j] = self.beta2 * v[j] + (1.0 - self.beta2) * grad[j] * grad[j];
-                let m_hat = m[j] / bc1;
-                let v_hat = v[j] / bc2;
-                vals[j] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
-            }
-            set_leaf(p, vals, cur.shape());
+            let dev = cur.device();
+            self.t[i] += 1;
+            // Bias corrections change every step: two 4-byte uploads, the only
+            // per-step host traffic an Adam step has.
+            let bc1 = step_scalar(1.0 - self.beta1.powi(self.t[i] as i32), dev);
+            let bc2 = step_scalar(1.0 - self.beta2.powi(self.t[i] as i32), dev);
+            let g = if scale != 1.0 {
+                bmul(&g, &step_scalar(scale, dev))?
+            } else {
+                g
+            };
+            let b1 = self.scalars.get(dev, "beta1", self.beta1);
+            let nb1 = self.scalars.get(dev, "one_minus_beta1", 1.0 - self.beta1);
+            let b2 = self.scalars.get(dev, "beta2", self.beta2);
+            let nb2 = self.scalars.get(dev, "one_minus_beta2", 1.0 - self.beta2);
+            let eps = self.scalars.get(dev, "eps", self.eps);
+            let lr = self.scalars.get(dev, "lr", self.lr);
+            let m = self.m[i].get_or_insert_with(|| zero_like(&cur));
+            let v = self.v[i].get_or_insert_with(|| zero_like(&cur));
+            let nm = badd(&bmul(m, &b1)?, &bmul(&g, &nb1)?)?;
+            let nv = badd(&bmul(v, &b2)?, &bmul(&bmul(&g, &g)?, &nb2)?)?;
+            *m = nm;
+            *v = nv;
+            let m_hat = bdiv(m, &bc1)?;
+            let denom = raw_unary_k(&bdiv(v, &bc2)?, crate::dispatch::UnaryKind::Sqrt)?;
+            let upd = bdiv(&m_hat, &badd(&denom, &eps)?)?;
+            p.set(bsub(&cur, &bmul(&upd, &lr)?)?);
         }
+        Ok(())
     }
 }
 
 impl OptimizerState for Adam {
     fn snapshot(&self) -> Vec<(String, Tensor)> {
+        // Cold path: state comes back to the host for serialization.
         let mut out = Vec::new();
         for i in 0..self.params.len() {
-            out.push((format!("m.{i}"), state_tensor(self.m[i].clone())));
-            out.push((format!("v.{i}"), state_tensor(self.v[i].clone())));
+            let host = |s: &Option<Tensor>| -> Tensor {
+                let t = s
+                    .as_ref()
+                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
+                    .unwrap_or_else(|| zero_like_cpu(self.params[i].tensor().numel()));
+                // Stored flat (one element per parameter): file-format parity.
+                let n = t.numel();
+                t.reshape(&[n]).expect("flat reshape")
+            };
+            out.push((format!("m.{i}"), host(&self.m[i])));
+            out.push((format!("v.{i}"), host(&self.v[i])));
             out.push((format!("t.{i}"), Tensor::scalar(self.t[i] as f32)));
         }
         out
@@ -262,8 +385,9 @@ impl OptimizerState for Adam {
             });
         }
         for i in 0..self.params.len() {
-            check_buf(&mut self.m[i], &format!("m.{i}"), tensors)?;
-            check_buf(&mut self.v[i], &format!("v.{i}"), tensors)?;
+            let shape = self.params[i].tensor().shape().to_vec();
+            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors)?;
+            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors)?;
             let ts = tensors
                 .iter()
                 .find(|(n, _)| n == &format!("t.{i}"))
@@ -297,20 +421,15 @@ pub struct AdamW {
     weight_decay: f32,
     max_grad_norm: Option<f32>,
     t: u32,
-    m: Vec<Vec<f32>>,
-    v: Vec<Vec<f32>>,
+    m: Vec<Option<Tensor>>,
+    v: Vec<Option<Tensor>>,
+    scalars: Scalars,
 }
 
 impl AdamW {
     pub fn new(params: Vec<Param>, lr: f32) -> AdamW {
-        let m = params
-            .iter()
-            .map(|p| vec![0.0; p.tensor().numel()])
-            .collect();
-        let v = params
-            .iter()
-            .map(|p| vec![0.0; p.tensor().numel()])
-            .collect();
+        let m = params.iter().map(|_| None).collect();
+        let v = params.iter().map(|_| None).collect();
         AdamW {
             params,
             lr,
@@ -322,6 +441,7 @@ impl AdamW {
             t: 0,
             m,
             v,
+            scalars: Scalars::default(),
         }
     }
 
@@ -348,39 +468,72 @@ impl AdamW {
     }
 
     pub fn step(&mut self) {
+        self.update().expect("adamw step");
+    }
+
+    fn update(&mut self) -> Result<()> {
         let scale = clip_scale(&self.params, self.max_grad_norm);
         self.t += 1;
         let bc1 = 1.0 - self.beta1.powi(self.t as i32);
         let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+        // One scalar upload pair per step per device, however many params.
+        let mut bcs: HashMap<Device, (Tensor, Tensor)> = HashMap::new();
         for i in 0..self.params.len() {
-            let grad = match grads(&self.params[i], scale) {
-                Some(g) => g,
-                None => continue,
+            let Some(g) = self.params[i].grad() else {
+                continue;
             };
             let p = &self.params[i];
             let cur = p.tensor();
-            let mut vals = cur.to_vec();
-            let m = &mut self.m[i];
-            let v = &mut self.v[i];
-            for j in 0..vals.len() {
-                m[j] = self.beta1 * m[j] + (1.0 - self.beta1) * grad[j];
-                v[j] = self.beta2 * v[j] + (1.0 - self.beta2) * grad[j] * grad[j];
-                let m_hat = m[j] / bc1;
-                let v_hat = v[j] / bc2;
-                vals[j] -=
-                    self.lr * (m_hat / (v_hat.sqrt() + self.eps) + self.weight_decay * vals[j]);
-            }
-            set_leaf(p, vals, cur.shape());
+            let dev = cur.device();
+            let (bc1, bc2) = bcs
+                .entry(dev)
+                .or_insert_with(|| (step_scalar(bc1, dev), step_scalar(bc2, dev)));
+            let g = if scale != 1.0 {
+                bmul(&g, &step_scalar(scale, dev))?
+            } else {
+                g
+            };
+            let b1 = self.scalars.get(dev, "beta1", self.beta1);
+            let nb1 = self.scalars.get(dev, "one_minus_beta1", 1.0 - self.beta1);
+            let b2 = self.scalars.get(dev, "beta2", self.beta2);
+            let nb2 = self.scalars.get(dev, "one_minus_beta2", 1.0 - self.beta2);
+            let eps = self.scalars.get(dev, "eps", self.eps);
+            let lr = self.scalars.get(dev, "lr", self.lr);
+            let wd = self.scalars.get(dev, "weight_decay", self.weight_decay);
+            let m = self.m[i].get_or_insert_with(|| zero_like(&cur));
+            let v = self.v[i].get_or_insert_with(|| zero_like(&cur));
+            let nm = badd(&bmul(m, &b1)?, &bmul(&g, &nb1)?)?;
+            let nv = badd(&bmul(v, &b2)?, &bmul(&bmul(&g, &g)?, &nb2)?)?;
+            *m = nm;
+            *v = nv;
+            // p -= lr * (m_hat / (sqrt(v_hat) + eps) + wd * p): the decay term
+            // reads the pre-update parameter, matching the old elementwise
+            // loop's use of vals[j] before the subtract.
+            let m_hat = bdiv(m, bc1)?;
+            let denom = raw_unary_k(&bdiv(v, bc2)?, crate::dispatch::UnaryKind::Sqrt)?;
+            let upd = badd(&bdiv(&m_hat, &badd(&denom, &eps)?)?, &bmul(&cur, &wd)?)?;
+            p.set(bsub(&cur, &bmul(&upd, &lr)?)?);
         }
+        Ok(())
     }
 }
 
 impl OptimizerState for AdamW {
     fn snapshot(&self) -> Vec<(String, Tensor)> {
+        // Cold path: state comes back to the host for serialization.
         let mut out = vec![("t".to_string(), Tensor::scalar(self.t as f32))];
+        let host = |s: &Option<Tensor>| -> Tensor {
+            let t = s
+                .as_ref()
+                .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
+                .unwrap_or_else(|| zero_like_cpu(self.params[0].tensor().numel()));
+            // Stored flat (one element per parameter): file-format parity.
+            let n = t.numel();
+            t.reshape(&[n]).expect("flat reshape")
+        };
         for i in 0..self.params.len() {
-            out.push((format!("m.{i}"), state_tensor(self.m[i].clone())));
-            out.push((format!("v.{i}"), state_tensor(self.v[i].clone())));
+            out.push((format!("m.{i}"), host(&self.m[i])));
+            out.push((format!("v.{i}"), host(&self.v[i])));
         }
         out
     }
@@ -412,8 +565,9 @@ impl OptimizerState for AdamW {
         }
         self.t = tv as u32;
         for i in 0..self.params.len() {
-            check_buf(&mut self.m[i], &format!("m.{i}"), tensors)?;
-            check_buf(&mut self.v[i], &format!("v.{i}"), tensors)?;
+            let shape = self.params[i].tensor().shape().to_vec();
+            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors)?;
+            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors)?;
         }
         Ok(())
     }
@@ -422,18 +576,23 @@ impl OptimizerState for AdamW {
 // --- gradient clipping ----------------------------------------------------
 
 /// Global L2 norm over every parameter's accumulated gradient (params without
-/// a grad contribute nothing).
+/// a grad contribute nothing). The reduction runs on the grads' device; the
+/// one scalar read back is inherent - clipping branches on the norm value.
 pub fn global_grad_norm(params: &[Param]) -> f32 {
-    params
-        .iter()
-        .filter_map(|p| p.grad())
-        .map(|g| g.to_vec().iter().map(|&x| x * x).sum::<f32>())
-        .sum::<f32>()
-        .sqrt()
+    let mut acc = 0.0f32;
+    for p in params {
+        if let Some(g) = p.grad() {
+            let sq = raw_binary_k("optim_mul", &g, &g, BinaryKind::Mul)
+                .expect("grad is f32 on a registered device");
+            acc += sq.sum().item();
+        }
+    }
+    acc.sqrt()
 }
 
 /// The multiplicative factor applied when clipping to `max` (None or already
-/// under the budget gives 1.0).
+/// under the budget gives 1.0). Opt-in: enabling it costs one scalar read per
+/// grad per step, since the clip decision needs the norm on the host.
 fn clip_scale(params: &[Param], max: Option<f32>) -> f32 {
     match max {
         None => 1.0,
@@ -446,11 +605,6 @@ fn clip_scale(params: &[Param], max: Option<f32>) -> f32 {
             }
         }
     }
-}
-
-fn grads(p: &Param, scale: f32) -> Option<Vec<f32>> {
-    p.grad()
-        .map(|g| g.to_vec().into_iter().map(|x| x * scale).collect())
 }
 
 // --- LR schedulers ---------------------------------------------------------
@@ -515,16 +669,4 @@ impl LrScheduler for CosineWithWarmup {
         self.min_lr
             + 0.5 * (self.base_lr - self.min_lr) * (1.0 + (std::f32::consts::PI * progress).cos())
     }
-}
-
-fn set_leaf(p: &Param, vals: Vec<f32>, shape: &[usize]) {
-    // Step math runs on host Vecs, but the leaf must go back to wherever the
-    // parameter lives or a device param would silently migrate to cpu.
-    let device = p.tensor().device();
-    let updated: Result<Tensor> = Tensor::from_vec(vals, shape);
-    let host = updated.expect("optimizer rebuilds a leaf with the same shape");
-    p.set(
-        host.to_device(device)
-            .expect("param's device backend is registered"),
-    );
 }

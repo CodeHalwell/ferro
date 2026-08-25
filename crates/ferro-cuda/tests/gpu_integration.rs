@@ -307,3 +307,231 @@ fn embedding_on_device_matches_cpu_forward_and_grad() {
     // Scatter-add of ones over identical float paths is also exact.
     assert_eq!(gw_gpu, gw_cpu);
 }
+
+// Fused pointwise chain (gelu -> bias-add with broadcast) vs the unfused CPU
+// reference computed through public ops. 1e-5 tolerance: the fused kernel
+// keeps the gelu intermediate at f32 precision instead of rounding it to
+// memory, so tiny drift vs the two-launch path is expected.
+#[test]
+fn fused_gelu_bias_add_chain_matches_cpu() {
+    use ferro_cuda::ChainStep;
+    use ferro_core::UnaryKind;
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let (rows, cols) = (16usize, 64usize);
+    let x: Vec<f32> = (0..rows * cols).map(|i| ((i % 37) as f32 - 18.0) * 0.2).collect();
+    let bias: Vec<f32> = (0..cols).map(|j| (j as f32 * 0.125) - 1.0).collect();
+    let steps = vec![
+        ChainStep::Unary(UnaryKind::Gelu),
+        ChainStep::BinaryBc {
+            kind: ferro_core::BinaryKind::Add,
+            other: 1,
+            dims: vec![rows as u32, cols as u32],
+            strides: vec![0, 1],
+        },
+    ];
+    let got = b.chain_res(&steps, &[&x, &bias]).unwrap();
+    // Unfused reference via public core ops on the CPU backend.
+    let xt = Tensor::from_vec(x.clone(), &[rows, cols]).unwrap().gelu();
+    let bt = Tensor::from_vec(bias.clone(), &[cols]).unwrap();
+    let want = xt.add(&bt).unwrap().to_vec();
+    close(&got, &want, 1e-5);
+}
+
+// Elementwise relu -> mul -> add chain over three same-length inputs.
+#[test]
+fn fused_relu_mul_add_chain_matches_cpu() {
+    use ferro_cuda::ChainStep;
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let n = 4096usize;
+    let x: Vec<f32> = (0..n).map(|i| ((i % 23) as f32 - 11.0) * 0.5).collect();
+    let y: Vec<f32> = (0..n).map(|i| ((i % 7) as f32 - 3.0) * 0.25).collect();
+    let z: Vec<f32> = (0..n).map(|i| i as f32 * 0.01 - 20.0).collect();
+    let steps = vec![
+        ChainStep::Unary(ferro_core::UnaryKind::Relu),
+        ChainStep::Binary { kind: ferro_core::BinaryKind::Mul, other: 1 },
+        ChainStep::Binary { kind: ferro_core::BinaryKind::Add, other: 2 },
+    ];
+    let got = b.chain_res(&steps, &[&x, &y, &z]).unwrap();
+    let want: Vec<f32> = (0..n)
+        .map(|i| {
+            let r = if x[i] > 0.0 || x[i].is_nan() { x[i] } else { 0.0 };
+            r * y[i] + z[i]
+        })
+        .collect();
+    assert_eq!(got, want);
+}
+
+// Device-resident variant: buffers stay on the GPU across the whole chain.
+#[test]
+fn chain_dev_runs_resident_and_matches_host_slice_path() {
+    use ferro_cuda::ChainStep;
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let n = 1000usize;
+    let x: Vec<f32> = (0..n).map(|i| ((i % 13) as f32 - 6.0) * 0.4).collect();
+    let y: Vec<f32> = (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.3).collect();
+    let steps = vec![
+        ChainStep::Unary(ferro_core::UnaryKind::Silu),
+        ChainStep::Binary { kind: ferro_core::BinaryKind::Mul, other: 1 },
+    ];
+    let xd = b.alloc_from_host(&x).unwrap();
+    let yd = b.alloc_from_host(&y).unwrap();
+    let out = b.chain_dev(&steps, &[xd.as_ref(), yd.as_ref()]).unwrap();
+    assert_eq!(out.device(), DEV);
+    let resident = b.copy_to_host(out.as_ref()).unwrap();
+    let host = b.chain_res(&steps, &[&x, &y]).unwrap();
+    assert_eq!(resident, host);
+}
+
+// Core-seam end-to-end: an autograd tape (relu -> add(bias, broadcast) ->
+// exp) captured from real core tensors resolves via FusedChain::resolve and
+// executes through Backend::chain_dev on the GPU as ONE launch, matching the
+// eager CPU result.
+#[test]
+fn core_fusion_seam_runs_one_gpu_launch_and_matches_eager() {
+    use ferro_core::graph::Graph;
+    let _g = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let xs: Vec<f32> = (0..256).map(|i| ((i * 7 % 19) as f32 - 9.0) / 4.0).collect();
+    let bs: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) * 0.25).collect();
+
+    let xc = Tensor::from_vec(xs.clone(), &[16, 16])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    let bc = Tensor::from_vec(bs.clone(), &[16])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    let eager = xc.relu().add(&bc).unwrap().exp();
+
+    let xd = Tensor::from_vec(xs.clone(), &[16, 16])
+        .unwrap()
+        .to_device(DEV)
+        .unwrap();
+    let bd = Tensor::from_vec(bs.clone(), &[16])
+        .unwrap()
+        .to_device(DEV)
+        .unwrap();
+    // The capture build needs requires_grad on its leaves: recording (hence
+    // op tags, hence fusion planning) only happens on grad-tracked ops.
+    let xd = xd.requires_grad_(true).unwrap();
+    let bd = bd.requires_grad_(true).unwrap();
+    let g = Graph::capture(|| xd.relu().add(&bd).unwrap().exp());
+    let plan = g.plan_fusion();
+    assert!(!plan.chains.is_empty(), "relu+add+exp must plan as a chain");
+    let fused = &plan.chains[0];
+    let exec = fused.resolve(&g).expect("chain resolves");
+    let got = fused.run(&exec).expect("fused run on gpu");
+    assert_eq!(got.device(), DEV);
+    for (a, b) in eager.to_vec().iter().zip(got.to_vec()) {
+        assert!((a - b).abs() < 1e-5, "eager {a} vs fused {b}");
+    }
+}
+
+// Replay executor on the real GPU: a captured tape re-executed from leaves
+// through the fusion plan matches eager values.
+#[test]
+fn replay_executor_matches_eager_on_gpu() {
+    use ferro_core::replay::Replay;
+    let _g = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let xs: Vec<f32> = (0..64).map(|i| ((i * 11 % 13) as f32 - 6.0) / 3.5).collect();
+    let xd = Tensor::from_vec(xs.clone(), &[8, 8]).unwrap().to_device(DEV).unwrap();
+    let r = Replay::capture(|| {
+        let a = xd.clone().requires_grad_(true).unwrap();
+        a.silu().exp().relu()
+    });
+    let got = r.replay(&[xd.clone()]).expect("gpu replay");
+    assert_eq!(got.device(), DEV);
+    let cpu = Tensor::from_vec(xs, &[8, 8])
+        .unwrap()
+        .silu()
+        .exp()
+        .relu();
+    for (a, b) in cpu.to_vec().iter().zip(got.to_vec()) {
+        assert!((a - b).abs() < 1e-5, "eager {a} vs replayed {b}");
+    }
+}
+
+// CUDA-graph capture: a fused chain launch captured once, then replayed N
+// times with one host call each. Replay must write into the SAME output
+// buffer and reproduce the eager result exactly - including after the inputs
+// are overwritten in place (the stable-address contract).
+#[test]
+fn captured_three_step_chain_replays() {
+    use ferro_cuda::ChainStep;
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let n = 4096usize;
+    let x: Vec<f32> = (0..n).map(|i| ((i * 13 % 29) as f32 - 14.0) / 7.0).collect();
+    let y: Vec<f32> = (0..n).map(|i| ((i % 9) as f32 - 4.0) * 0.5).collect();
+    let steps = vec![
+        ChainStep::Unary(ferro_core::UnaryKind::Silu),
+        ChainStep::Binary {
+            kind: ferro_core::BinaryKind::Add,
+            other: 1,
+        },
+    ];
+
+    // Eager reference.
+    let want = b.chain_res(&steps, &[&x, &y]).unwrap();
+
+    let xd = b.alloc_from_host(&x).unwrap();
+    let yd = b.alloc_from_host(&y).unwrap();
+    let captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
+        Ok(c) => c,
+        Err(e) => panic!("capture failed: {e}"),
+    };
+    captured.replay().expect("replay 1");
+    let got1 = captured.copy_output_to_host(&b).unwrap();
+    for (a, w) in got1.iter().zip(&want) {
+        assert!((a - w).abs() < 1e-5, "replay1 {a} vs eager {w}");
+    }
+}
+
+// Original capture contract test: replay + stable-address in-place update.
+#[test]
+fn captured_chain_graph_replays_correctly() {
+    use ferro_cuda::ChainStep;
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let n = 4096usize;
+    let x: Vec<f32> = (0..n).map(|i| ((i * 13 % 29) as f32 - 14.0) / 7.0).collect();
+    let y: Vec<f32> = (0..n).map(|i| ((i % 9) as f32 - 4.0) * 0.5).collect();
+    let steps = vec![
+        ChainStep::Unary(ferro_core::UnaryKind::Silu),
+        ChainStep::Binary {
+            kind: ferro_core::BinaryKind::Add,
+            other: 1,
+        },
+    ];
+    let want = b.chain_res(&steps, &[&x, &y]).unwrap();
+    let xd = b.alloc_from_host(&x).unwrap();
+    let yd = b.alloc_from_host(&y).unwrap();
+    let captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
+        Ok(c) => c,
+        Err(e) => panic!("capture failed: {e}"),
+    };
+    captured.replay().expect("replay 1");
+    let got1 = captured.copy_output_to_host(&b).unwrap();
+    for (a, w) in got1.iter().zip(&want) {
+        assert!((a - w).abs() < 1e-5, "replay1 {a} vs eager {w}");
+    }
+}
