@@ -40,7 +40,11 @@ pub fn unary_expr(kind: UnaryKind) -> String {
         // min > max yields max everywhere; NaN passes through explicitly
         // since fmaxf/fminf would drop it.
         UnaryKind::Clamp { min, max } => {
-            format!("(isnan(v) ? v : fminf(fmaxf(v, {}), {}))", c_f32(min), c_f32(max))
+            format!(
+                "(isnan(v) ? v : fminf(fmaxf(v, {}), {}))",
+                c_f32(min),
+                c_f32(max)
+            )
         }
         UnaryKind::Gtz => "(v > 0.0f) ? 1.0f : 0.0f".to_string(),
         // Tanh-approximation GELU, matching core's ops_ext/gelu.rs constants.
@@ -91,7 +95,10 @@ pub fn binary_source(kind: BinaryKind) -> String {
 /// dim first) and accumulates the two input offsets from the padded strides
 /// (0 for broadcast dims, see [`broadcast_strides`]).
 pub fn binary_bc_source(kind: BinaryKind, rank: usize) -> String {
-    assert!(rank >= 1, "rank-0 outputs are padded to rank 1 by the caller");
+    assert!(
+        rank >= 1,
+        "rank-0 outputs are padded to rank 1 by the caller"
+    );
     let params: String = (0..rank)
         .map(|d| format!(", unsigned int d{d}"))
         .chain((0..rank).map(|d| format!(", unsigned int sa{d}")))
@@ -265,7 +272,11 @@ pub fn softmax_row_stats_source() -> String {
 /// Softmax pass 2: elementwise apply of the per-row stats. `log` selects
 /// log_softmax (y = x - (m + log s)) over plain softmax (y = exp(x - m) / s).
 pub fn softmax_apply_source(log: bool) -> String {
-    let body = if log { "x[i] - (m + logf(s))" } else { "expf(x[i] - m) / s" };
+    let body = if log {
+        "x[i] - (m + logf(s))"
+    } else {
+        "expf(x[i] - m) / s"
+    };
     format!(
         r#"extern "C" __global__ void {KERNEL_NAME}(const float* x, const float* stats, float* out, unsigned int n, unsigned int cols) {{
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -305,7 +316,10 @@ mod tests {
     #[test]
     fn unary_exprs_cover_every_kind() {
         assert_eq!(unary_expr(UnaryKind::Neg), "-v");
-        assert_eq!(unary_expr(UnaryKind::Relu), "((v > 0.0f || isnan(v)) ? v : 0.0f)");
+        assert_eq!(
+            unary_expr(UnaryKind::Relu),
+            "((v > 0.0f || isnan(v)) ? v : 0.0f)"
+        );
         assert_eq!(unary_expr(UnaryKind::Exp), "expf(v)");
         assert_eq!(unary_expr(UnaryKind::Sigmoid), "1.0f / (1.0f + expf(-v))");
         assert_eq!(unary_expr(UnaryKind::Tanh), "tanhf(v)");
@@ -313,8 +327,14 @@ mod tests {
         assert_eq!(unary_expr(UnaryKind::Abs), "fabsf(v)");
         assert_eq!(unary_expr(UnaryKind::Log), "logf(v)");
         assert_eq!(unary_expr(UnaryKind::Powf(2.5)), "powf(v, 2.5f)");
-        let clamp = UnaryKind::Clamp { min: -1.0, max: 2.0 };
-        assert_eq!(unary_expr(clamp), "(isnan(v) ? v : fminf(fmaxf(v, -1.0f), 2.0f))");
+        let clamp = UnaryKind::Clamp {
+            min: -1.0,
+            max: 2.0,
+        };
+        assert_eq!(
+            unary_expr(clamp),
+            "(isnan(v) ? v : fminf(fmaxf(v, -1.0f), 2.0f))"
+        );
         assert_eq!(unary_expr(UnaryKind::Gtz), "(v > 0.0f) ? 1.0f : 0.0f");
         assert_eq!(
             unary_expr(UnaryKind::Gelu),
@@ -338,11 +358,26 @@ mod tests {
 
     #[test]
     fn scalar_formatting_handles_nonfinite_and_exponents() {
-        let one_sided = UnaryKind::Clamp { min: 0.0, max: f32::INFINITY };
-        assert_eq!(unary_expr(one_sided), "(isnan(v) ? v : fminf(fmaxf(v, 0.0f), __int_as_float(0x7f800000)))");
-        let lo = UnaryKind::Clamp { min: f32::NEG_INFINITY, max: 1e10 };
-        assert_eq!(unary_expr(lo), "(isnan(v) ? v : fminf(fmaxf(v, __int_as_float(0xff800000)), 10000000000.0f))");
-        assert_eq!(unary_expr(UnaryKind::Powf(f32::NAN)), "powf(v, __int_as_float(0x7fc00000))");
+        let one_sided = UnaryKind::Clamp {
+            min: 0.0,
+            max: f32::INFINITY,
+        };
+        assert_eq!(
+            unary_expr(one_sided),
+            "(isnan(v) ? v : fminf(fmaxf(v, 0.0f), __int_as_float(0x7f800000)))"
+        );
+        let lo = UnaryKind::Clamp {
+            min: f32::NEG_INFINITY,
+            max: 1e10,
+        };
+        assert_eq!(
+            unary_expr(lo),
+            "(isnan(v) ? v : fminf(fmaxf(v, __int_as_float(0xff800000)), 10000000000.0f))"
+        );
+        assert_eq!(
+            unary_expr(UnaryKind::Powf(f32::NAN)),
+            "powf(v, __int_as_float(0x7fc00000))"
+        );
     }
 
     #[test]
@@ -356,7 +391,9 @@ mod tests {
     #[test]
     fn sources_declare_the_exported_kernel() {
         let src = unary_source(UnaryKind::Relu);
-        assert!(src.contains(r#"extern "C" __global__ void ferro_kernel(const float* x, float* out, unsigned int n)"#));
+        assert!(src.contains(
+            r#"extern "C" __global__ void ferro_kernel(const float* x, float* out, unsigned int n)"#
+        ));
         assert!(src.contains("out[i] = ((v > 0.0f || isnan(v)) ? v : 0.0f);"));
         let src = binary_source(BinaryKind::Div);
         assert!(src.contains(r#"extern "C" __global__ void ferro_kernel(const float* a, const float* b, float* out, unsigned int n)"#));
@@ -387,11 +424,16 @@ mod tests {
     #[test]
     fn reduce_sources_form_a_two_pass_pipeline() {
         let partial = reduce_partial_source();
-        assert!(partial.contains(r#"extern "C" __global__ void ferro_kernel(const float* x, float* out, unsigned int n)"#));
+        assert!(partial.contains(
+            r#"extern "C" __global__ void ferro_kernel(const float* x, float* out, unsigned int n)"#
+        ));
         assert!(partial.contains("__shared__ float sh[256];"));
         assert!(partial.contains("out[blockIdx.x] = sh[0];"));
         // Finalize is generated per kind and divides by the original count for Mean.
-        assert_ne!(reduce_finalize_source(ReduceKind::Sum), reduce_finalize_source(ReduceKind::Mean));
+        assert_ne!(
+            reduce_finalize_source(ReduceKind::Sum),
+            reduce_finalize_source(ReduceKind::Mean)
+        );
         assert!(reduce_finalize_source(ReduceKind::Sum).contains("out[0] = sh[0];"));
         assert!(reduce_finalize_source(ReduceKind::Mean).contains("out[0] = sh[0] / (float)total;"));
     }
@@ -416,7 +458,9 @@ mod tests {
     #[test]
     fn fill_source_writes_the_parameter_value() {
         let src = fill_source();
-        assert!(src.contains(r#"extern "C" __global__ void ferro_kernel(float* out, unsigned int n, float value)"#));
+        assert!(src.contains(
+            r#"extern "C" __global__ void ferro_kernel(float* out, unsigned int n, float value)"#
+        ));
         assert!(src.contains("out[i] = value;"));
     }
 
@@ -457,7 +501,10 @@ mod tests {
 
     #[test]
     fn parametrized_kinds_generate_distinct_sources() {
-        assert_ne!(unary_source(UnaryKind::Powf(2.0)), unary_source(UnaryKind::Powf(3.0)));
+        assert_ne!(
+            unary_source(UnaryKind::Powf(2.0)),
+            unary_source(UnaryKind::Powf(3.0))
+        );
         let a = UnaryKind::Clamp { min: 0.0, max: 1.0 };
         let b = UnaryKind::Clamp { min: 0.0, max: 2.0 };
         assert_ne!(unary_source(a), unary_source(b));

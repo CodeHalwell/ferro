@@ -63,7 +63,9 @@ impl Tensor {
         }
 
         // Whole contiguous device operands: one strided-batched cuBLAS call,
-        // no host materialization of inputs or transposes.
+        // no host materialization of inputs or transposes. A backend that
+        // accepts resident buffers but has no batched GEMM (not_resident
+        // default) falls back to the host path below.
         if self.device_resident_whole() && other.device_resident_whole() {
             let backend = dispatch::backend_for(self.device())?;
             let Storage::Device(sa) = &self.0.storage.data else {
@@ -72,17 +74,18 @@ impl Tensor {
             let Storage::Device(sb) = &other.0.storage.data else {
                 unreachable!()
             };
-            let out = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false)?;
-            let out = crate::tensor::device_leaf(out, &[batch, m, n], self.device());
-            let a = self.clone();
-            let b = other.clone();
-            return Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
-                // dA[b] = dC[b] @ B[b]^T, dB[b] = A[b]^T @ dC[b]: the ta/tb
-                // flags let cuBLAS read the transposes without materializing.
-                let da = raw_bmm_t(&g, &b, false, true);
-                let db = raw_bmm_t(&a, &g, true, false);
-                vec![da, db]
-            }));
+            if let Ok(out) = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false) {
+                let out = crate::tensor::device_leaf(out, &[batch, m, n], self.device());
+                let a = self.clone();
+                let b = other.clone();
+                return Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+                    // dA[b] = dC[b] @ B[b]^T, dB[b] = A[b]^T @ dC[b]: the ta/tb
+                    // flags let cuBLAS read the transposes without materializing.
+                    let da = raw_bmm_t(&g, &b, false, true);
+                    let db = raw_bmm_t(&a, &g, true, false);
+                    vec![da, db]
+                }));
+            }
         }
 
         let cpu = dispatch::backend_for(Device::Cpu)?;

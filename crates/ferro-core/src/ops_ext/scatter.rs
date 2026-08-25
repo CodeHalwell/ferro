@@ -6,6 +6,7 @@
 //! only (earlier writers contributed nothing), and d/dself masks out every
 //! written position.
 
+use crate::device::Device;
 use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::tensor::Tensor;
@@ -77,6 +78,7 @@ impl Tensor {
 
         let idx = index.to_vec_i64();
         let s = src.to_vec();
+        let s_len = s.len();
         let dim_size = in_shape[dim];
         let mut coord = vec![0usize; ndim];
         // Flat target for every (k, src[k]) pair; duplicates allowed.
@@ -105,13 +107,24 @@ impl Tensor {
 
         let x = self.to_vec();
         let mut y = x.clone();
-        // winner[t] = last k that wrote flat position t (usize::MAX = none).
-        let mut winner = vec![usize::MAX; y.len()];
-        for (k, (&t, &sv)) in targets.iter().zip(&s).enumerate() {
-            y[t] = sv;
-            winner[t] = k;
+        // Last write per flat position wins; a source element is the final
+        // writer iff no later k targets the same position. is_last[k] tracks
+        // that, so backward touches only s.len() entries instead of the whole
+        // output.
+        let mut is_last = vec![true; s.len()];
+        let mut last_seen = std::collections::HashMap::new();
+        for (k, &t) in targets.iter().enumerate() {
+            if let Some(&prev) = last_seen.get(&t) {
+                is_last[prev] = false;
+            }
+            last_seen.insert(t, k);
+            y[t] = s[k];
         }
-        let out = Tensor::from_vec(y, &in_shape)?;
+        let out = if self.device() == Device::Cpu {
+            Tensor::from_vec(y, &in_shape)?
+        } else {
+            Tensor::from_vec(y, &in_shape)?.to_device(self.device())?
+        };
         if !self.requires_grad() && !src.requires_grad() {
             return Ok(out);
         }
@@ -120,13 +133,12 @@ impl Tensor {
             out.record_fn(vec![self.clone(), index.clone(), src.clone()], move |g| {
                 let gd = g.to_vec();
                 let mut gx = gd.clone();
-                let mut gs = vec![0.0f32; s.len()];
-                for (t, &w) in winner.iter().enumerate() {
-                    if w == usize::MAX {
-                        continue;
-                    }
+                let mut gs = vec![0.0f32; s_len];
+                for (k, (&t, &last)) in targets.iter().zip(&is_last).enumerate() {
                     gx[t] = 0.0;
-                    gs[w] = gd[t];
+                    if last {
+                        gs[k] = gd[t];
+                    }
                 }
                 vec![
                     Tensor::from_vec(gx, &in_shape).unwrap(),

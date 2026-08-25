@@ -11,7 +11,9 @@ const DEV: ferro_core::Device = ferro_core::Device::Cuda(0);
 
 fn lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn setup() -> Option<(MutexGuard<'static, ()>, Arc<CudaBackend>)> {
@@ -31,7 +33,10 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
     assert_eq!(a.len(), b.len(), "length mismatch");
     for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
         let scale = tol.max(tol * y.abs());
-        assert!((x - y).abs() <= scale, "elem {i}: got {x} want {y} (tol {scale})");
+        assert!(
+            (x - y).abs() <= scale,
+            "elem {i}: got {x} want {y} (tol {scale})"
+        );
     }
 }
 
@@ -50,9 +55,17 @@ fn reduce_dev_matches_cpu_across_sizes() {
         let xd = b.alloc_from_host(&x).unwrap();
         let (sum, mean) = (x.iter().sum::<f32>(), x.iter().sum::<f32>() / n as f32);
         let rs = b.reduce_dev(ReduceKind::Sum, xd.as_ref()).unwrap();
-        close(&b.copy_to_host(rs.as_ref()).unwrap(), &[sum], 1e-4 * (n as f32).sqrt().max(1.0));
+        close(
+            &b.copy_to_host(rs.as_ref()).unwrap(),
+            &[sum],
+            1e-4 * (n as f32).sqrt().max(1.0),
+        );
         let rm = b.reduce_dev(ReduceKind::Mean, xd.as_ref()).unwrap();
-        close(&b.copy_to_host(rm.as_ref()).unwrap(), &[mean], 1e-4 * (n as f32).sqrt().max(1.0));
+        close(
+            &b.copy_to_host(rm.as_ref()).unwrap(),
+            &[mean],
+            1e-4 * (n as f32).sqrt().max(1.0),
+        );
     }
 }
 
@@ -73,13 +86,21 @@ fn sum_dim_and_fill_on_device_match_reference() {
         let mut want = Vec::new();
         for o in 0..outer {
             for i in 0..inner {
-                want.push((0..shape[dim]).map(|k| x[(o * shape[dim] + k) * inner + i]).sum::<f32>());
+                want.push(
+                    (0..shape[dim])
+                        .map(|k| x[(o * shape[dim] + k) * inner + i])
+                        .sum::<f32>(),
+                );
             }
         }
         close(&got, &want, 1e-3);
     }
     let fd = b.fill_dev(-2.5, 77).unwrap();
-    close(&b.copy_to_host(fd.as_ref()).unwrap(), &vec![-2.5f32; 77], 0.0);
+    close(
+        &b.copy_to_host(fd.as_ref()).unwrap(),
+        &vec![-2.5f32; 77],
+        0.0,
+    );
 }
 
 // Tensor-level ops end to end: the same expression evaluated on Device::Cuda(0)
@@ -109,7 +130,13 @@ fn tensor_ops_on_device_match_cpu() {
             .unwrap()
             .sub(&y.mul(&y).unwrap())
             .unwrap()
-            .div(&y.sigmoid().mul(&y.sigmoid()).unwrap().add(&place(Tensor::scalar(1.0))).unwrap())
+            .div(
+                &y.sigmoid()
+                    .mul(&y.sigmoid())
+                    .unwrap()
+                    .add(&place(Tensor::scalar(1.0)))
+                    .unwrap(),
+            )
             .unwrap();
         out.to_device(ferro_core::Device::Cpu).unwrap().to_vec()
     };
@@ -126,14 +153,20 @@ fn matmul_on_device_match_cpu_all_transpose_flags() {
     let a: Vec<f32> = (0..m * k).map(|i| i as f32 * 0.5 - 4.0).collect();
     let bb: Vec<f32> = (0..k * n).map(|i| i as f32 * 0.125 + 1.0).collect();
     let want = ferro_core::dispatch::naive_matmul(&a, &bb, m, k, n);
-    let tr = |v: &[f32], r: usize, c: usize| (0..c).flat_map(|j| (0..r).map(move |i| v[i * c + j])).collect::<Vec<f32>>();
+    let tr = |v: &[f32], r: usize, c: usize| {
+        (0..c)
+            .flat_map(|j| (0..r).map(move |i| v[i * c + j]))
+            .collect::<Vec<f32>>()
+    };
     for ta in [false, true] {
         for tb in [false, true] {
             let abuf = if ta { tr(&a, m, k) } else { a.clone() };
             let bbuf = if tb { tr(&bb, k, n) } else { bb.clone() };
             let ab = b.alloc_from_host(&abuf).unwrap();
             let xb = b.alloc_from_host(&bbuf).unwrap();
-            let rd = b.matmul_dev(ab.as_ref(), xb.as_ref(), m, k, n, ta, tb).unwrap();
+            let rd = b
+                .matmul_dev(ab.as_ref(), xb.as_ref(), m, k, n, ta, tb)
+                .unwrap();
             close(&b.copy_to_host(rd.as_ref()).unwrap(), &want, 1e-3);
         }
     }
@@ -156,9 +189,18 @@ fn backward_on_device_gradients_match_cpu() {
             Some(d) => t.to_device(d).unwrap(),
             None => t,
         };
-        let xd = place(Tensor::from_vec(x_data.clone(), &[2, 3]).unwrap()).requires_grad_(true).unwrap();
-        let wd = place(Tensor::from_vec(w_data.clone(), &[3, 2]).unwrap()).requires_grad_(true).unwrap();
-        let loss = xd.relu().mul(&wd.transpose(0, 1).unwrap()).unwrap().exp().mean();
+        let xd = place(Tensor::from_vec(x_data.clone(), &[2, 3]).unwrap())
+            .requires_grad_(true)
+            .unwrap();
+        let wd = place(Tensor::from_vec(w_data.clone(), &[3, 2]).unwrap())
+            .requires_grad_(true)
+            .unwrap();
+        let loss = xd
+            .relu()
+            .mul(&wd.transpose(0, 1).unwrap())
+            .unwrap()
+            .exp()
+            .mean();
         loss.backward();
         let gx = xd.grad().unwrap();
         let gw = wd.grad().unwrap();
@@ -195,7 +237,7 @@ fn foreign_device_buffers_are_rejected() {
             self
         }
     }
-    use ferro_core::{UnaryKind, dispatch::ReduceKind};
+    use ferro_core::{dispatch::ReduceKind, UnaryKind};
     let od = OtherDev;
     assert!(b.unary_dev(UnaryKind::Relu, &od).is_err());
     assert!(b.reduce_dev(ReduceKind::Sum, &od).is_err());
@@ -239,7 +281,9 @@ fn embedding_on_device_matches_cpu_forward_and_grad() {
             Some(d) => t.to_device(d).unwrap(),
             None => t,
         };
-        let w = place(Tensor::from_vec(w_data.clone(), &[6, 4]).unwrap()).requires_grad_(true).unwrap();
+        let w = place(Tensor::from_vec(w_data.clone(), &[6, 4]).unwrap())
+            .requires_grad_(true)
+            .unwrap();
         let ids = place(Tensor::from_vec_i64(ids_data.clone(), &[ids_data.len()]).unwrap());
         let out = ferro_core::ops_ext::embedding(&w, &ids).unwrap();
         if dev.is_some() {
@@ -249,7 +293,9 @@ fn embedding_on_device_matches_cpu_forward_and_grad() {
         let gw = w.grad().unwrap();
         (
             out.to_device(ferro_core::Device::Cpu).unwrap().to_vec(),
-            ids.to_device(ferro_core::Device::Cpu).unwrap_or_else(|_| ids.clone()).to_vec_i64(),
+            ids.to_device(ferro_core::Device::Cpu)
+                .unwrap_or_else(|_| ids.clone())
+                .to_vec_i64(),
             gw.to_device(ferro_core::Device::Cpu).unwrap().to_vec(),
         )
     };
