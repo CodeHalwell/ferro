@@ -23,7 +23,8 @@ fn raw_bmm_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Tensor {
         (a.shape()[1], a.shape()[2])
     };
     let n = if tb { b.shape()[1] } else { b.shape()[2] };
-    let backend = dispatch::backend_for(a.device()).expect("device tensor implies registered backend");
+    let backend =
+        dispatch::backend_for(a.device()).expect("device tensor implies registered backend");
     let Storage::Device(ba) = &a.0.storage.data else {
         unreachable!()
     };
@@ -74,7 +75,8 @@ impl Tensor {
             let Storage::Device(sb) = &other.0.storage.data else {
                 unreachable!()
             };
-            if let Ok(out) = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false) {
+            if let Ok(out) = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false)
+            {
                 let out = crate::tensor::device_leaf(out, &[batch, m, n], self.device());
                 let a = self.clone();
                 let b = other.clone();

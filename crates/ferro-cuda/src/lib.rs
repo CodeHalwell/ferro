@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, StridedBatchedConfig};
 use cudarc::driver::{
-    CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+    CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg,
 };
 use cudarc::nvrtc::compile_ptx;
 use ferro_core::dispatch::{DeviceBuffer, ReduceKind};
@@ -858,6 +858,23 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
     let backend = CudaBackend::new(ordinal)?;
     register_backend(Device::Cuda(ordinal), Arc::new(backend));
     Ok(())
+}
+
+/// Raw parts for zero-copy DLPack export of a `CudaBuf`: its base device
+/// pointer and device ordinal. The caller must keep the buffer alive while
+/// using the pointer (the DLPack capsule holds an Arc of the storage).
+pub fn exported_view(buf: &dyn DeviceBuffer) -> std::result::Result<(usize, u32), String> {
+    let b = buf
+        .as_any()
+        .downcast_ref::<CudaBuf>()
+        .ok_or_else(|| "device buffer was not allocated by the CUDA backend".to_string())?;
+    let ordinal = match b.device {
+        Device::Cuda(n) => n,
+        other => return Err(format!("unexpected device {other} on a CUDA buffer")),
+    };
+    let stream = b.data.stream();
+    let (ptr, _sync) = DevicePtr::device_ptr(&b.data, stream);
+    Ok((ptr as usize, ordinal))
 }
 
 #[cfg(test)]
