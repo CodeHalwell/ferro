@@ -640,6 +640,27 @@ impl Tensor {
         self
     }
 
+    /// Same contract as `record_fn`, but the recorded op also names which
+    /// kind-routed kernel produced this output, so the graph compiler can
+    /// re-derive the math (fusion planning). `self` must be the raw kernel's
+    /// freshly-created output; the tag must match the kernel actually run.
+    pub fn record_fn_tagged<F>(
+        mut self,
+        inputs: Vec<Tensor>,
+        tag: crate::dispatch::OpTag,
+        backward: F,
+    ) -> Tensor
+    where
+        F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
+    {
+        if inputs.iter().any(|t| t.requires_grad()) {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
+            inner.requires_grad = true;
+            inner.op = Some(Op::new_tagged(inputs, tag, Box::new(backward)));
+        }
+        self
+    }
+
     // --- version counters ---------------------------------------------------
     // Every shared storage carries a version, bumped when it is mutated. Views
     // created via from_parts clone the same Arc<StorageCell>, so they and their

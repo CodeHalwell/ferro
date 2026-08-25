@@ -655,7 +655,7 @@ impl PyTensor {
     }
 
     /// DLPack producer. `stream` is accepted for protocol compatibility but
-    /// ignored: this is a synchronous CPU tensor.
+    /// ignored: transfers are synchronous.
     #[pyo3(signature = (stream=None))]
     fn __dlpack__<'py>(
         &self,
@@ -663,13 +663,12 @@ impl PyTensor {
         stream: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let _ = stream;
-        let (data, shape) = self.inner.to_contiguous();
-        dlpack::export_capsule(py, data, shape)
+        dlpack::export_for(py, &self.inner)
     }
 
-    /// DLPack device: (kDLCPU, 0).
+    /// DLPack device: (kDLCPU, 0) or (kDLCUDA, ordinal).
     fn __dlpack_device__<'py>(&self, py: Python<'py>) -> Bound<'py, PyTuple> {
-        dlpack::dlpack_device(py)
+        dlpack::dlpack_device_for(py, &self.inner)
     }
 }
 

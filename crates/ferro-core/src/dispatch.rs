@@ -46,6 +46,37 @@ pub enum BinaryKind {
     Div,
 }
 
+/// Core-owned description of one step in a fused pointwise chain: the tag
+/// recorded on an autograd op, resolved by the fusion planner. Mirrors the
+/// backend-side chain-kernel step so core never depends on a backend crate.
+/// `other` indexes the chain's trailing operand buffers (0 is the seed).
+#[derive(Clone, Debug)]
+pub enum ChainStepRef {
+    Unary(UnaryKind),
+    Binary {
+        kind: BinaryKind,
+        other: usize,
+    },
+    BinaryBc {
+        kind: BinaryKind,
+        other: usize,
+        /// Output decomposition dims and the operand's padded strides, so one
+        /// compiled kernel serves every shape of that rank.
+        dims: Vec<u32>,
+        strides: Vec<u32>,
+    },
+}
+
+/// Which named kernel an autograd-recorded op ran, captured at record time so
+/// the graph compiler can re-derive the math of a recorded node (fusion
+/// planning, lazy re-execution). Only kind-routed ops carry a tag; composite
+/// ops record None and stay fusion barriers.
+#[derive(Clone, Copy, Debug)]
+pub enum OpTag {
+    Unary(UnaryKind),
+    Binary(BinaryKind),
+}
+
 /// Named full-tensor reductions (device kernels produce a 1-element buffer).
 #[derive(Clone, Copy, Debug)]
 pub enum ReduceKind {
@@ -187,6 +218,19 @@ pub trait Backend: Send + Sync {
         _out_shape: &[usize],
     ) -> Result<Box<dyn DeviceBuffer>> {
         not_resident("binary_bc_dev")
+    }
+
+    /// Evaluate a fused pointwise chain in ONE launch: `steps` thread the
+    /// seed buffer (inputs[0]) through locals, reading trailing operand
+    /// buffers by index per `ChainStepRef::other`. Backends without a chain
+    /// generator return the default error; callers fall back to per-op
+    /// execution.
+    fn chain_dev(
+        &self,
+        _steps: &[ChainStepRef],
+        _inputs: &[&dyn DeviceBuffer],
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("chain_dev")
     }
 
     /// Reduce the whole buffer to a single element.

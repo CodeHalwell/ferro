@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::dispatch::OpTag;
 use crate::dtype::DType;
 use crate::tensor::Tensor;
 
@@ -19,6 +20,9 @@ use crate::tensor::Tensor;
 pub(crate) struct Op {
     inputs: Vec<Tensor>,
     saved_versions: Vec<u64>,
+    /// Which named kernel this op ran (kind-routed ops only); None for
+    /// composite ops. Read by the graph compiler to plan fused execution.
+    pub(crate) tag: Option<OpTag>,
     backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
 }
 
@@ -31,6 +35,22 @@ impl Op {
         Op {
             inputs,
             saved_versions,
+            tag: None,
+            backward,
+        }
+    }
+
+    /// Like `new` but carrying the kernel tag for fusion planning.
+    pub(crate) fn new_tagged(
+        inputs: Vec<Tensor>,
+        tag: OpTag,
+        backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
+    ) -> Op {
+        let saved_versions = inputs.iter().map(|t| t.version()).collect();
+        Op {
+            inputs,
+            saved_versions,
+            tag: Some(tag),
             backward,
         }
     }

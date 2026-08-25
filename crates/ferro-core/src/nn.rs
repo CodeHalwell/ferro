@@ -4,6 +4,10 @@
 //! `matmul`, `add` (broadcasts a bias row), `relu`, `sigmoid`, and the autograd
 //! `backward()`.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+use crate::device::Device;
 use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::params::Param;
@@ -444,16 +448,35 @@ pub fn scaled_dot_product_attention(
     let scale = Tensor::full_on(&[], 1.0 / (d as f32).sqrt(), q.device())?;
     let mut scores = q.bmm(&k.transpose(1, 2)?)?.mul(&scale)?;
     if causal {
-        let mut m = vec![0.0f32; sq * sk];
-        for i in 0..sq {
-            for j in 0..sk {
-                if j > i {
-                    m[i * sk + j] = -1e9;
+        // The mask depends only on (device, sq, sk), so it is built, uploaded,
+        // and cached once per config instead of every call. Entries are
+        // immutable device buffers held for the process lifetime; memory is
+        // bounded by sq*sk f32s times the number of distinct attention shapes
+        // a run uses.
+        static MASKS: OnceLock<Mutex<HashMap<(Device, usize, usize), Tensor>>> = OnceLock::new();
+        let key = (scores.device(), sq, sk);
+        let mut cache = MASKS
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        let mask = match cache.get(&key) {
+            Some(m) => m.clone(),
+            None => {
+                let mut m = vec![0.0f32; sq * sk];
+                for i in 0..sq {
+                    for j in 0..sk {
+                        if j > i {
+                            m[i * sk + j] = -1e9;
+                        }
+                    }
                 }
+                // The mask must live on the scores' device for device-resident q/k.
+                let mask = Tensor::from_vec(m, &[sq, sk])?.to_device(scores.device())?;
+                cache.insert(key, mask.clone());
+                mask
             }
-        }
-        // The mask must live on the scores' device for device-resident q/k.
-        let mask = Tensor::from_vec(m, &[sq, sk])?.to_device(scores.device())?;
+        };
+        drop(cache);
         scores = scores.add(&mask)?;
     }
     scores.softmax(2)?.bmm(v)
@@ -535,9 +558,11 @@ impl Module for MultiHeadAttention {
         let mut k = self.heads_in(x, &self.k_proj, b, s, d)?;
         let v = self.heads_in(x, &self.v_proj, b, s, d)?;
         if let Some(base) = self.rope_base {
-            let pos = Tensor::arange(s as i64);
-            q = q.rope(&pos, base)?;
-            k = k.rope(&pos, base)?;
+            // Positions are the canonical 0..seq, so tables come from the
+            // process-global cache with no per-call rebuild or position
+            // traffic (see ops_ext::rope).
+            q = q.rope_cached(base)?;
+            k = k.rope_cached(base)?;
         }
         let attn = scaled_dot_product_attention(&q, &k, &v, self.causal)?;
         let merged = attn

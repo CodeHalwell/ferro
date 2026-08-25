@@ -1,4 +1,4 @@
-use crate::dispatch::{BinaryKind, ReduceKind, UnaryKind};
+use crate::dispatch::{BinaryKind, OpTag, ReduceKind, UnaryKind};
 use crate::error::Result;
 use crate::reduce::pairwise_sum;
 use crate::shape::numel;
@@ -12,48 +12,64 @@ const REGISTERED: &str = "tensor's device backend is always registered";
 
 /// Forward ops: compute the value with a detached raw kernel (named kind,
 /// routed through the device's backend), then attach the backward closure via
-/// `record_fn` (a no-op when no input requires grad). Backward closures also
-/// use kind-routed kernels, so gradients stay on the input's device.
+/// `record_fn_tagged` (a no-op when no input requires grad). The tag names
+/// which kernel produced the output so fusion planning can re-derive it.
+/// Backward closures also use kind-routed kernels, so gradients stay on the
+/// input's device.
 impl Tensor {
     pub fn add(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary_k("add", self, other, BinaryKind::Add)?;
         let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
-            vec![unbroadcast(g, &sa), unbroadcast(g, &sb)]
-        }))
+        Ok(out.record_fn_tagged(
+            vec![self.clone(), other.clone()],
+            OpTag::Binary(BinaryKind::Add),
+            move |g| vec![unbroadcast(g, &sa), unbroadcast(g, &sb)],
+        ))
     }
 
     pub fn sub(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary_k("sub", self, other, BinaryKind::Sub)?;
         let (sa, sb) = (self.shape().to_vec(), other.shape().to_vec());
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
-            let neg = raw_unary_k(g, UnaryKind::Neg).expect(REGISTERED);
-            vec![unbroadcast(g, &sa), unbroadcast(&neg, &sb)]
-        }))
+        Ok(out.record_fn_tagged(
+            vec![self.clone(), other.clone()],
+            OpTag::Binary(BinaryKind::Sub),
+            move |g| {
+                let neg = raw_unary_k(g, UnaryKind::Neg).expect(REGISTERED);
+                vec![unbroadcast(g, &sa), unbroadcast(&neg, &sb)]
+            },
+        ))
     }
 
     pub fn mul(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary_k("mul", self, other, BinaryKind::Mul)?;
         let (a, b) = (self.clone(), other.clone());
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
-            let ga = raw_binary_k("mul_bw", g, &b, BinaryKind::Mul).unwrap();
-            let gb = raw_binary_k("mul_bw", g, &a, BinaryKind::Mul).unwrap();
-            vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
-        }))
+        Ok(out.record_fn_tagged(
+            vec![self.clone(), other.clone()],
+            OpTag::Binary(BinaryKind::Mul),
+            move |g| {
+                let ga = raw_binary_k("mul_bw", g, &b, BinaryKind::Mul).unwrap();
+                let gb = raw_binary_k("mul_bw", g, &a, BinaryKind::Mul).unwrap();
+                vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
+            },
+        ))
     }
 
     pub fn div(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary_k("div", self, other, BinaryKind::Div)?;
         let (a, b) = (self.clone(), other.clone());
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
-            // dL/da = g / b; dL/db = -(g * a) / b^2
-            let ga = raw_binary_k("div_bw", g, &b, BinaryKind::Div).unwrap();
-            let ga_num = raw_binary_k("div_bw", g, &a, BinaryKind::Mul).unwrap();
-            let b2 = raw_binary_k("div_bw", &b, &b, BinaryKind::Mul).unwrap();
-            let gb_pos = raw_binary_k("div_bw", &ga_num, &b2, BinaryKind::Div).unwrap();
-            let gb = raw_unary_k(&gb_pos, UnaryKind::Neg).unwrap();
-            vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
-        }))
+        Ok(out.record_fn_tagged(
+            vec![self.clone(), other.clone()],
+            OpTag::Binary(BinaryKind::Div),
+            move |g| {
+                // dL/da = g / b; dL/db = -(g * a) / b^2
+                let ga = raw_binary_k("div_bw", g, &b, BinaryKind::Div).unwrap();
+                let ga_num = raw_binary_k("div_bw", g, &a, BinaryKind::Mul).unwrap();
+                let b2 = raw_binary_k("div_bw", &b, &b, BinaryKind::Mul).unwrap();
+                let gb_pos = raw_binary_k("div_bw", &ga_num, &b2, BinaryKind::Div).unwrap();
+                let gb = raw_unary_k(&gb_pos, UnaryKind::Neg).unwrap();
+                vec![unbroadcast(&ga, a.shape()), unbroadcast(&gb, b.shape())]
+            },
+        ))
     }
 
     pub fn matmul(&self, other: &Tensor) -> Result<Tensor> {
@@ -69,7 +85,7 @@ impl Tensor {
 
     pub fn neg(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Neg).expect(REGISTERED);
-        out.record_fn(vec![self.clone()], |g| {
+        out.record_fn_tagged(vec![self.clone()], OpTag::Unary(UnaryKind::Neg), |g| {
             vec![raw_unary_k(g, UnaryKind::Neg).unwrap()]
         })
     }
@@ -77,10 +93,14 @@ impl Tensor {
     pub fn relu(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Relu).expect(REGISTERED);
         let a = self.clone();
-        out.record_fn(vec![self.clone()], move |g| {
-            let mask = raw_unary_k(&a, UnaryKind::Gtz).unwrap();
-            vec![raw_binary_k("relu_bw", g, &mask, BinaryKind::Mul).unwrap()]
-        })
+        out.record_fn_tagged(
+            vec![self.clone()],
+            OpTag::Unary(UnaryKind::Relu),
+            move |g| {
+                let mask = raw_unary_k(&a, UnaryKind::Gtz).unwrap();
+                vec![raw_binary_k("relu_bw", g, &mask, BinaryKind::Mul).unwrap()]
+            },
+        )
     }
 
     pub fn exp(&self) -> Tensor {
@@ -89,9 +109,13 @@ impl Tensor {
             return out;
         }
         let y = out.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
-            vec![raw_binary_k("exp_bw", g, &y, BinaryKind::Mul).unwrap()]
-        })
+        out.record_fn_tagged(
+            vec![self.clone()],
+            OpTag::Unary(UnaryKind::Exp),
+            move |g| {
+                vec![raw_binary_k("exp_bw", g, &y, BinaryKind::Mul).unwrap()]
+            },
+        )
     }
 
     pub fn sigmoid(&self) -> Tensor {
@@ -100,12 +124,16 @@ impl Tensor {
             return out;
         }
         let y = out.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
-            // g * y * (1 - y) = g*y - (g*y)*y
-            let gy = raw_binary_k("sigmoid_bw", g, &y, BinaryKind::Mul).unwrap();
-            let gyy = raw_binary_k("sigmoid_bw", &gy, &y, BinaryKind::Mul).unwrap();
-            vec![raw_binary_k("sigmoid_bw", &gy, &gyy, BinaryKind::Sub).unwrap()]
-        })
+        out.record_fn_tagged(
+            vec![self.clone()],
+            OpTag::Unary(UnaryKind::Sigmoid),
+            move |g| {
+                // g * y * (1 - y) = g*y - (g*y)*y
+                let gy = raw_binary_k("sigmoid_bw", g, &y, BinaryKind::Mul).unwrap();
+                let gyy = raw_binary_k("sigmoid_bw", &gy, &y, BinaryKind::Mul).unwrap();
+                vec![raw_binary_k("sigmoid_bw", &gy, &gyy, BinaryKind::Sub).unwrap()]
+            },
+        )
     }
 
     pub fn sum(&self) -> Tensor {

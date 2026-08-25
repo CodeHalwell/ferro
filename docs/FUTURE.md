@@ -83,6 +83,20 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
   correctness investment - it turns "validated on examples" into "validated
   on distributions".
 
+## 2.5 CUDA-graph capture of full training steps [P]
+
+Chain-level capture works (CapturedChain, wave 5b): one chain launch
+replays in ~4.4 us vs 12-18 us eager for the same kernel (measured,
+bench_chain --n 1024..16384). Step-level capture of fwd+bwd+optimizer is
+BLOCKED on in-place operations with stable buffer addresses (2/(L) below):
+the optimizer reallocates params and AdamW m/v each step, and every backward
+intermediate gets a fresh pool address, while a captured graph freezes all
+kernel argument pointers. Once version counters + in-place ops land,
+step capture becomes: preallocate all activations/grads/state once,
+copy_into the batch, replay. Expected win at our profile (loss_bwd = 72%
+of step, launch-gap dominated): NVIDIA-published 9.6 -> 3.4 us per kernel
+effective; our own measurement shows a 3-7x reduction per chain.
+
 ## 3. Performance: CPU [P]
 
 - (M) Memory: arena/pool allocator for tensor buffers; reuse gradient
