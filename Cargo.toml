@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/ferro-core", "crates/ferro-cuda", "crates/ferro-fastcpu"]
+members = [
+    "crates/ferro-core",
+    "crates/ferro-cuda",
+    "crates/ferro-fastcpu",
+    "crates/ferro-tokenizer",
+]
 # ferro-py is built standalone via maturin (it pulls PyO3); excluding it keeps
 # `cargo test -p ferro-core` from resolving Python-binding dependencies.
 exclude = ["crates/ferro-py"]

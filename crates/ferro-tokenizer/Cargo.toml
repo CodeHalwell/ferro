@@ -1,0 +1,11 @@
+[package]
+name = "ferro-tokenizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Standalone byte-level BPE tokenizer (GPT-2 vocab.json/merges.txt format),
+# pure std: no dependency on ferro-core or anything else, so it is usable
+# from any consumer (examples, bindings, other projects) without pulling in
+# the tensor engine.
+[dependencies]

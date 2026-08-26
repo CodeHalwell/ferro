@@ -12,6 +12,7 @@ cargo test -p ferro-core          # the main suite; must be green before commit
 cargo test -p ferro-fastcpu       # optimized CPU backend
 cargo check -p ferro-cuda         # must compile WITHOUT CUDA installed
 cargo test -p ferro-cuda          # GPU tests are gated on runtime detection
+cargo test -p ferro-tokenizer     # byte-level BPE (real-vocab test gated on FERRO_GPT2_DIR)
 ```
 
 Python bindings (standalone maturin crate, excluded from the workspace):

@@ -233,9 +233,13 @@ a good substrate for an IR.
   model) from safetensors and generate tokens correctly. The prerequisites
   (transformer op set, serialization, attention/block modules) landed
   2026-07, and ferro-fastcpu's char_lm example proves the full pipeline
-  (train -> save -> reload -> generate) on a toy model. exact-erf gelu and
-  f16/bf16 weight loading landed 2026-08; remaining: a real checkpoint's
-  architecture (learned positions or GQA) plus a tokenizer. This is the
+  (train -> save -> reload -> generate) on a toy model. The prerequisite
+  list closed 2026-08: exact-erf gelu, f16/bf16 weight loading,
+  grouped-query attention (MultiHeadAttention::with_kv_heads, HF checkpoint
+  shapes), learned positional embeddings, and a dependency-free byte-level
+  BPE tokenizer (ferro-tokenizer, validated token-for-token against the
+  real GPT-2 vocab). Remaining: the end-to-end demo itself - map a real
+  checkpoint's names onto the modules and generate. This is the
   credibility milestone.
 - M4: Training parity demo - MNIST/CIFAR conv training on GPU within 2-3x of
   torch eager wall-clock.
