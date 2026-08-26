@@ -126,26 +126,57 @@ impl StorageCell {
 }
 
 /// Read guards over two tensors' storages, collapsing to ONE guard when they
-/// share a `StorageCell`: a second same-thread read of one `RwLock` can
-/// deadlock behind a queued writer, so aliased operands must never take two.
+/// share a `StorageCell` (a second same-thread read of one `RwLock` can
+/// deadlock behind a queued writer, so aliased operands must never take
+/// two), and otherwise ALWAYS acquiring the lower-address storage first
+/// regardless of argument order. Without that ordering, `PairGuard::new(a,
+/// b)` on one thread and `PairGuard::new(b, a)` on another lock the same
+/// pair of RwLocks in opposite orders; two readers alone can't deadlock, but
+/// once any writer (an in-place op) can queue on either lock, a
+/// writer-preferring RwLock blocks new readers behind it and the two
+/// PairGuards complete the classic AB-BA cycle. Fixed acquisition order
+/// (independent of which tensor is logically "first") removes the cycle for
+/// any number of concurrent callers, mirroring the address-order discipline
+/// `inplace.rs`'s multi-buffer locks already use.
 pub(crate) struct PairGuard<'a> {
-    ga: RwLockReadGuard<'a, Storage>,
-    gb: Option<RwLockReadGuard<'a, Storage>>,
+    g0: RwLockReadGuard<'a, Storage>,
+    g1: Option<RwLockReadGuard<'a, Storage>>,
+    /// True when `g0` is `a`'s guard (and `g1`, if any, is `b`'s); false
+    /// when address order put `b` first, swapping the mapping.
+    a_first: bool,
 }
 
 impl<'a> PairGuard<'a> {
     pub(crate) fn new(a: &'a Tensor, b: &'a Tensor) -> PairGuard<'a> {
-        let ga = a.0.storage.read();
-        let gb = if Arc::ptr_eq(&a.0.storage, &b.0.storage) {
-            None
+        if Arc::ptr_eq(&a.0.storage, &b.0.storage) {
+            return PairGuard {
+                g0: a.0.storage.read(),
+                g1: None,
+                a_first: true,
+            };
+        }
+        if Arc::as_ptr(&a.0.storage) < Arc::as_ptr(&b.0.storage) {
+            PairGuard {
+                g0: a.0.storage.read(),
+                g1: Some(b.0.storage.read()),
+                a_first: true,
+            }
         } else {
-            Some(b.0.storage.read())
-        };
-        PairGuard { ga, gb }
+            PairGuard {
+                g0: b.0.storage.read(),
+                g1: Some(a.0.storage.read()),
+                a_first: false,
+            }
+        }
     }
 
+    /// (a's storage, b's storage), regardless of which was locked first.
     pub(crate) fn get(&self) -> (&Storage, &Storage) {
-        (&self.ga, self.gb.as_deref().unwrap_or(&self.ga))
+        match (&self.g1, self.a_first) {
+            (None, _) => (&self.g0, &self.g0),
+            (Some(g1), true) => (&self.g0, g1),
+            (Some(g1), false) => (g1, &self.g0),
+        }
     }
 }
 
@@ -467,6 +498,29 @@ impl Tensor {
         let s = pairwise_sum(&tmp);
         crate::pool::give(tmp);
         s
+    }
+
+    /// Materialize row-major DATA IN self's OWN dtype (no cast): the general
+    /// worker `detach_copy` calls so a non-f32 host tensor's copy stays that
+    /// dtype instead of silently downcasting through `to_vec`'s f32 path.
+    /// Reads `dtype()` (which takes and releases its own guard) rather than
+    /// matching under a held guard - each `to_vec_*` call below takes its
+    /// own read guard too, and nesting two same-thread reads of one RwLock
+    /// can deadlock behind a queued writer (the exact hazard fixed in
+    /// `PairGuard`). Device storage never reaches here: the caller returns
+    /// via the device_resident_whole branch first.
+    fn detach_copy_same_dtype(&self) -> Tensor {
+        match self.dtype() {
+            DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap(),
+            DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape).unwrap(),
+            DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape).unwrap(),
+            DType::F16 => {
+                Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape).unwrap()
+            }
+            DType::BF16 => {
+                Tensor::from_vec_bf16_bits(self.to_vec_bf16_bits().unwrap(), &self.0.shape).unwrap()
+            }
+        }
     }
 
     /// Materialize as row-major f32, casting from f64/i64 storage (lossy for
@@ -902,7 +956,7 @@ impl Tensor {
                 None,
             );
         }
-        Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap()
+        self.detach_copy_same_dtype()
     }
 
     /// A detached contiguous copy that always OWNS its storage, device

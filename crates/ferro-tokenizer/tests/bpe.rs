@@ -2,7 +2,7 @@
 //! check against a real GPT-2 vocab (set FERRO_GPT2_DIR to a directory
 //! holding vocab.json and merges.txt to enable it).
 
-use ferro_tokenizer::{pretokenize, Bpe};
+use ferro_tokenizer::{is_letter, is_number, pretokenize, Bpe};
 
 #[test]
 fn pretokenizer_matches_gpt2_splits() {
@@ -34,6 +34,35 @@ fn pretokenizer_matches_gpt2_splits() {
     }
 }
 
+#[test]
+fn letter_class_matches_unicode_general_category_not_the_alphabetic_property() {
+    // U+0345 COMBINING GREEK YPOGEGRAMMENI: Rust's char::is_alphabetic() is
+    // true (it is Other_Alphabetic), but its general category is Mn (a
+    // combining Mark), not a Letter - the reference tokenizer's \p{L}
+    // excludes it. A wrong classifier would fold it into a preceding letter
+    // run instead of splitting it into its own symbol piece.
+    let ypogegrammeni = '\u{0345}';
+    assert!(ypogegrammeni.is_alphabetic(), "sanity: is_alphabetic is broader");
+    assert!(!is_letter(ypogegrammeni), "U+0345 is a mark, not \\p{{L}}");
+    assert!(!is_number(ypogegrammeni));
+
+    let text = format!("a{ypogegrammeni}b");
+    assert_eq!(pretokenize(&text), vec!["a", "\u{0345}", "b"]);
+
+    // U+2166 ROMAN NUMERAL SEVEN: general category Nl (a letter-number), so
+    // \p{N} - not \p{L} - claims it, and it must attach to a number run.
+    let roman_seven = '\u{2166}';
+    assert!(is_number(roman_seven));
+    assert!(!is_letter(roman_seven));
+    assert_eq!(pretokenize("Section\u{2166}"), vec!["Section", "\u{2166}"]);
+
+    // Ordinary letters and digits are unaffected.
+    for c in ['a', 'Z', 'A', '0', '9'] {
+        assert_eq!(is_letter(c), c.is_alphabetic());
+        assert_eq!(is_number(c), c.is_numeric());
+    }
+}
+
 /// A tiny byte-level vocab: all printable single chars used below, plus the
 /// merged pieces. Ids are arbitrary but distinct.
 fn tiny() -> Bpe {
@@ -55,7 +84,7 @@ fn merge_order_follows_ranks() {
     assert_eq!(t.encode("low").unwrap(), vec![7]);
     // "lowerlower": pieces merge fully then concatenate.
     assert_eq!(t.encode("lowerlower").unwrap(), vec![9, 9]);
-    // " low" uses the byte-mapped space (Ġ = Ġ) merge.
+    // " low" uses the byte-mapped space (U+0020 -> U+0120, "\u{0120}") merge.
     assert_eq!(t.encode("low low").unwrap(), vec![7, 11]);
     // Unmergeable leftovers fall back to single symbols.
     assert_eq!(t.encode("he").unwrap(), vec![5, 3]);
@@ -81,8 +110,8 @@ fn unknown_symbols_error_loudly() {
 
 #[test]
 fn vocab_json_escapes_and_lookup() {
-    // Ġ (Ġ), a quoted quote, a surrogate pair (🀄 = U+1F004), and a
-    // special token.
+    // The byte-mapped space (U+0120, "\u{0120}"), a quoted quote, a
+    // surrogate pair (U+1F004 MAHJONG TILE RED DRAGON), and a special token.
     let vocab = r#"{"Ġ": 0, "\"": 1, "🀄": 2, "<|endoftext|>": 3, "A": 4}"#;
     let t = Bpe::from_strs(vocab, "").unwrap();
     assert_eq!(t.vocab_size(), 5);

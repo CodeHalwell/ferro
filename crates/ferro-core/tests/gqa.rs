@@ -57,7 +57,7 @@ fn kv_equal_heads_is_exactly_the_old_mha() {
 
 #[test]
 fn grouped_kv_grads_sum_over_the_query_group() {
-    // Analytic anchor: with q ≡ 0, softmax over causal scores is uniform, so
+    // Analytic anchor: with q identically 0, softmax over causal scores is uniform, so
     // the output is a running mean of v rows - and dL/d(k_proj) must be
     // exactly zero (scores' k-gradient scales by q), while dL/d(v_proj) is
     // nonzero and finite. This exercises the expansion's backward: each kv
