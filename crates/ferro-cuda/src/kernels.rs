@@ -51,6 +51,15 @@ pub fn unary_expr(kind: UnaryKind) -> String {
         UnaryKind::Gelu => {
             "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))".to_string()
         }
+        // Exact-erf GELU via the hardware erff (agrees with the host's
+        // Abramowitz-Stegun erf to ~1.5e-7 absolute; comparisons use the
+        // usual device-vs-host tolerances). 0.70710678f = 1/sqrt(2),
+        // 0.39894228f = 1/sqrt(2*pi).
+        UnaryKind::GeluErf => "0.5f * v * (1.0f + erff(v * 0.70710678f))".to_string(),
+        UnaryKind::GeluErfGrad => {
+            "0.5f * (1.0f + erff(v * 0.70710678f)) + v * expf(-0.5f * v * v) * 0.39894228f"
+                .to_string()
+        }
         UnaryKind::Silu => "v / (1.0f + expf(-v))".to_string(),
     }
 }
@@ -529,6 +538,14 @@ mod tests {
         assert_eq!(
             unary_expr(UnaryKind::Gelu),
             "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))"
+        );
+        assert_eq!(
+            unary_expr(UnaryKind::GeluErf),
+            "0.5f * v * (1.0f + erff(v * 0.70710678f))"
+        );
+        assert_eq!(
+            unary_expr(UnaryKind::GeluErfGrad),
+            "0.5f * (1.0f + erff(v * 0.70710678f)) + v * expf(-0.5f * v * v) * 0.39894228f"
         );
         assert_eq!(unary_expr(UnaryKind::Silu), "v / (1.0f + expf(-v))");
     }

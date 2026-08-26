@@ -157,6 +157,15 @@ fn unary_chunk_body(kind: UnaryKind, x: &[f32], out: &mut [f32]) {
                 0.5 * v * (1.0 + u.tanh())
             })
         }
+        // Exact-erf GELU and its derivative: the erf itself comes from the
+        // shared core helper, so results are bit-identical to CpuBackend.
+        UnaryKind::GeluErf => apply1(x, out, |v| {
+            0.5 * v * (1.0 + ferro_core::dispatch::erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+        }),
+        UnaryKind::GeluErfGrad => apply1(x, out, |v| {
+            0.5 * (1.0 + ferro_core::dispatch::erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+                + v * (-0.5 * v * v).exp() * 0.398_942_28
+        }),
         UnaryKind::Silu => apply1(x, out, |v| v / (1.0 + (-v).exp())),
     }
 }
@@ -289,6 +298,10 @@ mod tests {
             // min > max: torch semantics are max everywhere, no panic.
             UnaryKind::Clamp { min: 2.0, max: 1.0 },
             UnaryKind::Gtz,
+            UnaryKind::Gelu,
+            UnaryKind::GeluErf,
+            UnaryKind::GeluErfGrad,
+            UnaryKind::Silu,
         ];
         for (ki, &kind) in kinds.iter().enumerate() {
             for &len in &LENGTHS {

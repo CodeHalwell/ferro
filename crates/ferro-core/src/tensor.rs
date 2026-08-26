@@ -24,6 +24,12 @@ pub enum Storage {
     F32(Vec<f32>),
     F64(Vec<f64>),
     I64(Vec<i64>),
+    /// IEEE binary16, raw bit patterns (see the `half` module). Compute is
+    /// f32-only, so these enter math via explicit `to_dtype(DType::F32)`;
+    /// they exist to carry checkpoint weights at half the memory.
+    F16(Vec<u16>),
+    /// bfloat16, raw bit patterns (f32's top half).
+    BF16(Vec<u16>),
     Device(Box<dyn DeviceBuffer>),
     /// Device-resident i64 indices. Kept as its own variant so the f32
     /// compute paths can never pick one up by mistake; produced/consumed
@@ -38,6 +44,8 @@ impl std::fmt::Debug for Storage {
             Storage::F32(v) => write!(f, "F32({} elems)", v.len()),
             Storage::F64(v) => write!(f, "F64({} elems)", v.len()),
             Storage::I64(v) => write!(f, "I64({} elems)", v.len()),
+            Storage::F16(v) => write!(f, "F16({} elems)", v.len()),
+            Storage::BF16(v) => write!(f, "BF16({} elems)", v.len()),
             Storage::Device(b) => write!(f, "Device({} elems on {})", b.len(), b.device()),
             Storage::DeviceI64(b) => write!(f, "DeviceI64({} elems on {})", b.len(), b.device()),
         }
@@ -50,6 +58,8 @@ impl Storage {
             Storage::F32(_) | Storage::Device(_) => DType::F32,
             Storage::F64(_) => DType::F64,
             Storage::I64(_) | Storage::DeviceI64(_) => DType::I64,
+            Storage::F16(_) => DType::F16,
+            Storage::BF16(_) => DType::BF16,
         }
     }
 
@@ -233,6 +243,16 @@ impl Tensor {
         Tensor::contiguous_leaf("from_vec_i64", data.len(), Storage::I64(data), shape)
     }
 
+    /// Build an f16 tensor from raw IEEE binary16 bit patterns.
+    pub fn from_vec_f16_bits(data: Vec<u16>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_f16_bits", data.len(), Storage::F16(data), shape)
+    }
+
+    /// Build a bf16 tensor from raw bfloat16 bit patterns.
+    pub fn from_vec_bf16_bits(data: Vec<u16>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_bf16_bits", data.len(), Storage::BF16(data), shape)
+    }
+
     /// I64 tensor of `[0, end)` with shape `[end]` (empty when `end <= 0`).
     pub fn arange(end: i64) -> Tensor {
         let n = end.max(0);
@@ -386,6 +406,33 @@ impl Tensor {
         }
     }
 
+    /// Raw IEEE binary16 bit patterns of an f16 tensor, row-major (strided
+    /// views gather). Errors on any other dtype: bit access never converts.
+    pub fn to_vec_f16_bits(&self) -> Result<Vec<u16>> {
+        let g = self.0.storage.read();
+        match &*g {
+            Storage::F16(v) => Ok(self.gather_view(v)),
+            _ => Err(Error::DtypeMismatch {
+                op: "to_vec_f16_bits",
+                expected: DType::F16,
+                got: g.dtype(),
+            }),
+        }
+    }
+
+    /// Raw bfloat16 bit patterns of a bf16 tensor, row-major.
+    pub fn to_vec_bf16_bits(&self) -> Result<Vec<u16>> {
+        let g = self.0.storage.read();
+        match &*g {
+            Storage::BF16(v) => Ok(self.gather_view(v)),
+            _ => Err(Error::DtypeMismatch {
+                op: "to_vec_bf16_bits",
+                expected: DType::BF16,
+                got: g.dtype(),
+            }),
+        }
+    }
+
     /// `to_vec` for INTERNAL temporaries: host f32 sources materialize into a
     /// pool buffer, and the caller must `pool::give` it back when done (the
     /// public `to_vec` hands ownership to the caller, so it never draws from
@@ -430,6 +477,16 @@ impl Tensor {
             Storage::F32(v) => self.gather_view(v),
             Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
+            Storage::F16(v) => self
+                .gather_view(v)
+                .into_iter()
+                .map(crate::half::f32_from_f16_bits)
+                .collect(),
+            Storage::BF16(v) => self
+                .gather_view(v)
+                .into_iter()
+                .map(crate::half::f32_from_bf16_bits)
+                .collect(),
             // Device-i64 index buffers materialize through the i64 channel
             // (whole-buffer download; device i64 buffers are never views).
             Storage::DeviceI64(b) => backend_for(self.0.device)
@@ -461,6 +518,20 @@ impl Tensor {
                 Storage::I64(v) => {
                     return self.gather_view(v).into_iter().map(|x| x as f64).collect()
                 }
+                Storage::F16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_f16_bits(b) as f64)
+                        .collect()
+                }
+                Storage::BF16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_bf16_bits(b) as f64)
+                        .collect()
+                }
                 Storage::Device(_) | Storage::DeviceI64(_) => {}
             }
         }
@@ -484,6 +555,20 @@ impl Tensor {
                     return self.gather_view(v).into_iter().map(|x| x as i64).collect()
                 }
                 Storage::I64(v) => return self.gather_view(v),
+                Storage::F16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_f16_bits(b) as i64)
+                        .collect()
+                }
+                Storage::BF16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_bf16_bits(b) as i64)
+                        .collect()
+                }
                 Storage::DeviceI64(b) => {
                     return backend_for(self.0.device)
                         .expect("device tensor exists, so its backend must be registered")
@@ -510,6 +595,15 @@ impl Tensor {
             DType::F32 => Storage::F32(self.to_vec()),
             DType::F64 => Storage::F64(self.to_vec_f64()),
             DType::I64 => Storage::I64(self.to_vec_i64()),
+            // Half targets round (RNE) from the f32 materialization; a
+            // same-dtype half cast round-trips bit-exactly since every f16/
+            // bf16 value is exactly representable in f32.
+            DType::F16 => Storage::F16(
+                self.to_vec().into_iter().map(crate::half::f16_bits_from_f32).collect(),
+            ),
+            DType::BF16 => Storage::BF16(
+                self.to_vec().into_iter().map(crate::half::bf16_bits_from_f32).collect(),
+            ),
         };
         Tensor::from_parts(
             Arc::new(StorageCell::new(storage)),
@@ -736,6 +830,12 @@ impl Tensor {
                 DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape)?,
                 DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape)?,
                 DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape)?,
+                DType::F16 => {
+                    Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape)?
+                }
+                DType::BF16 => {
+                    Tensor::from_vec_bf16_bits(self.to_vec_bf16_bits().unwrap(), &self.0.shape)?
+                }
             };
             host.to_device(self.0.device)?
         };
@@ -895,6 +995,7 @@ impl Tensor {
             Storage::F32(v) => v.len(),
             Storage::F64(v) => v.len(),
             Storage::I64(v) => v.len(),
+            Storage::F16(v) | Storage::BF16(v) => v.len(),
             Storage::Device(b) | Storage::DeviceI64(b) => b.len(),
         }
     }

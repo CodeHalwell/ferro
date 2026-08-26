@@ -34,6 +34,48 @@ fn roundtrip_all_dtypes_and_ranks() {
 }
 
 #[test]
+fn half_dtypes_round_trip_byte_exactly() {
+    // Raw bit patterns - including a NaN payload and a subnormal - must
+    // survive save -> load -> save with zero float round trips: this is the
+    // property that lets ferro re-emit a real checkpoint's bytes untouched.
+    let f16 = Tensor::from_vec_f16_bits(vec![0x3C00, 0xC100, 0x7E01, 0x0001], &[4]).unwrap();
+    let bf16 = Tensor::from_vec_bf16_bits(vec![0x3F80, 0xC020, 0x7FC1, 0x0001], &[2, 2]).unwrap();
+    let bytes = to_safetensors_bytes(&[("h", &f16), ("b", &bf16)]).unwrap();
+
+    let got = from_safetensors_bytes(&bytes).unwrap();
+    assert_eq!(got[0].1.dtype(), DType::F16);
+    assert_eq!(got[0].1.to_vec_f16_bits().unwrap(), vec![0x3C00, 0xC100, 0x7E01, 0x0001]);
+    assert_eq!(got[1].1.dtype(), DType::BF16);
+    assert_eq!(got[1].1.shape(), &[2, 2]);
+    assert_eq!(got[1].1.to_vec_bf16_bits().unwrap(), vec![0x3F80, 0xC020, 0x7FC1, 0x0001]);
+
+    let again = to_safetensors_bytes(&[("h", &got[0].1), ("b", &got[1].1)]).unwrap();
+    assert_eq!(bytes, again, "second save must reproduce identical bytes");
+
+    // And the values agree with the f32 casts.
+    assert_eq!(&got[0].1.to_vec()[..2], &[1.0, -2.5]);
+    assert_eq!(&got[1].1.to_vec()[..2], &[1.0, -2.5]);
+}
+
+#[test]
+fn half_load_parses_hand_built_bytes() {
+    // A minimal file written out by hand: one BF16 tensor [1.0, -2.5],
+    // little-endian bits 0x3F80, 0xC020.
+    let header = r#"{"w":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]}}"#;
+    let mut padded = header.to_string();
+    while (8 + padded.len()) % 8 != 0 {
+        padded.push(' ');
+    }
+    let mut bytes = (padded.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(padded.as_bytes());
+    bytes.extend_from_slice(&[0x80, 0x3F, 0x20, 0xC0]);
+
+    let got = from_safetensors_bytes(&bytes).unwrap();
+    assert_eq!(got[0].1.dtype(), DType::BF16);
+    assert_eq!(got[0].1.to_vec(), vec![1.0, -2.5]);
+}
+
+#[test]
 fn roundtrip_through_a_file() {
     let path = tmp_path("roundtrip");
     let t = Tensor::from_vec(vec![0.5, 1.5, 2.5, 3.5], &[4]).unwrap();
@@ -119,8 +161,10 @@ fn rejects_malformed_files() {
         );
     }
 
+    // BF16 became a supported dtype; U8 stands in as the still-unsupported
+    // example.
     let unsupported = with_header(
-        r#"{"a":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]}}"#,
+        r#"{"a":{"dtype":"U8","shape":[4],"data_offsets":[0,4]}}"#,
         &[0, 0, 0, 0],
     );
     assert!(matches!(

@@ -5,8 +5,10 @@
 //! then the raw little-endian tensor bytes. The header parser is a minimal
 //! from-scratch JSON reader because ferro-core takes no dependencies; it
 //! accepts the full format (strings with escapes, nested arrays/objects,
-//! unsigned integers) and ignores `__metadata__`. F32/F64/I64 tensors are
-//! supported; other dtypes (f16/bf16, ...) error until storage exists.
+//! unsigned integers) and ignores `__metadata__`. F32/F64/I64/F16/BF16
+//! tensors are supported; half dtypes move raw u16 bit patterns in and out of
+//! `Storage::F16`/`Storage::BF16` with no float round trip, so load -> save
+//! reproduces a checkpoint's bytes exactly. Other dtypes error.
 
 use std::fs;
 use std::path::Path;
@@ -53,6 +55,14 @@ pub fn to_safetensors_bytes(tensors: &[(&str, &Tensor)]) -> Result<Vec<u8>> {
                 .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
             DType::I64 => t
                 .to_vec_i64()
+                .iter()
+                .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
+            DType::F16 => t
+                .to_vec_f16_bits()?
+                .iter()
+                .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
+            DType::BF16 => t
+                .to_vec_bf16_bits()?
                 .iter()
                 .for_each(|v| data.extend_from_slice(&v.to_le_bytes())),
         }
@@ -150,6 +160,8 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
             "F32" => DType::F32,
             "F64" => DType::F64,
             "I64" => DType::I64,
+            "F16" => DType::F16,
+            "BF16" => DType::BF16,
             other => {
                 return Err(Error::Unsupported {
                     op: OP,
@@ -158,7 +170,11 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
             }
         };
         let numel: usize = shape.iter().product();
-        let width = if dt == DType::F32 { 4 } else { 8 };
+        let width = match dt {
+            DType::F32 => 4,
+            DType::F64 | DType::I64 => 8,
+            DType::F16 | DType::BF16 => 2,
+        };
         if end < start || end - start != numel * width || end > data.len() {
             return Err(ferr(format!(
                 "entry {name:?}: offsets [{start}, {end}] do not fit shape {shape:?} ({} dtype, {} data bytes)",
@@ -187,6 +203,18 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
                     .collect(),
                 &shape,
             )?,
+            DType::F16 => Tensor::from_vec_f16_bits(
+                raw.chunks_exact(2)
+                    .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+                &shape,
+            )?,
+            DType::BF16 => Tensor::from_vec_bf16_bits(
+                raw.chunks_exact(2)
+                    .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+                &shape,
+            )?,
         };
         out.push((name, t));
     }
@@ -198,6 +226,8 @@ fn dtype_tag(dt: DType) -> &'static str {
         DType::F32 => "F32",
         DType::F64 => "F64",
         DType::I64 => "I64",
+        DType::F16 => "F16",
+        DType::BF16 => "BF16",
     }
 }
 

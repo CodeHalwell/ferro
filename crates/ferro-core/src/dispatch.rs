@@ -33,8 +33,33 @@ pub enum UnaryKind {
     Gtz,
     /// GELU, tanh approximation: 0.5*v*(1 + tanh(sqrt(2/pi)*(v + 0.044715 v^3))).
     Gelu,
+    /// GELU, exact erf form (torch's default `gelu`): 0.5*v*(1 + erf(v/sqrt(2))).
+    GeluErf,
+    /// d/dv of GeluErf: Phi(v) + v*phi(v), the erf-gelu backward mask.
+    GeluErfGrad,
     /// SiLU (swish): v * sigmoid(v).
     Silu,
+}
+
+/// erf for f32 inputs via Abramowitz-Stegun 7.1.26 evaluated in f64
+/// (max absolute error ~1.5e-7, below f32 resolution over most of the
+/// range). Exported so every host backend computes the exact-erf GELU with
+/// one shared formula - fastcpu's bitwise-parity contract depends on it.
+/// CUDA uses the hardware `erff`, which agrees to about a ulp of true erf;
+/// device-vs-host comparisons stay within the usual 1e-5 tolerances.
+pub fn erf_f32(x: f32) -> f32 {
+    const A1: f64 = 0.254829592;
+    const A2: f64 = -0.284496736;
+    const A3: f64 = 1.421413741;
+    const A4: f64 = -1.453152027;
+    const A5: f64 = 1.061405429;
+    const P: f64 = 0.3275911;
+    let xd = x as f64;
+    let sign = if xd < 0.0 { -1.0 } else { 1.0 };
+    let ax = xd.abs();
+    let t = 1.0 / (1.0 + P * ax);
+    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
+    (sign * (1.0 - poly * (-ax * ax).exp())) as f32
 }
 
 /// Named elementwise binary kernels.
@@ -525,6 +550,12 @@ impl Backend for CpuBackend {
             UnaryKind::Gelu => {
                 let u = 0.797_884_6 * (v + 0.044715 * v * v * v);
                 0.5 * v * (1.0 + u.tanh())
+            }
+            UnaryKind::GeluErf => 0.5 * v * (1.0 + erf_f32(v * std::f32::consts::FRAC_1_SQRT_2)),
+            // Phi(v) + v*phi(v) with phi the standard normal density.
+            UnaryKind::GeluErfGrad => {
+                0.5 * (1.0 + erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+                    + v * (-0.5 * v * v).exp() * 0.398_942_28
             }
             UnaryKind::Silu => v / (1.0 + (-v).exp()),
         };

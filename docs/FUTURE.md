@@ -73,15 +73,18 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 - (L) Autograd maturity: backward(grad) for non-scalar roots; create_graph /
   double backward (backward closures currently compute detached - they must
   optionally compose recorded ops); gradient hooks; anomaly detection mode.
-- (M) Dtype completion: f16/bf16 storage + casts; f64 autograd; integer
-  arithmetic ops; an explicit type-promotion policy (currently: strict
-  f32-only math, explicit casts).
+- (M) Dtype completion: f16/bf16 storage + casts LANDED 2026-08 (raw-bit
+  Storage::F16/BF16, RNE conversions in the half module, byte-exact
+  safetensors IO - the checkpoint-weight path for M3). Remaining: f64
+  autograd; integer arithmetic ops; an explicit type-promotion policy
+  (currently: strict f32-only math, explicit casts).
 - (L) Views with autograd: as_strided family, aliasing semantics, narrow/
   slice/index_put. Today strided views materialize on read and device views
   fall back to host.
 - (XL, ongoing) Operator long tail, prioritized by workload: transformer set
-  remainder (fused softmax, scatter, exact-erf gelu), vision set (conv
-  variants, pooling, interpolate), then breadth. gelu/rmsnorm/rope/cumsum/
+  remainder (fused softmax; scatter and exact-erf gelu have landed), vision
+  set (conv variants, interpolate; conv2d is already im2col+GEMM riding the
+  swappable matmul kernel), then breadth. gelu/rmsnorm/rope/cumsum/
   topk/argmax/argmin/gather and masked causal attention landed 2026-07.
   Each op stays one-file/one-agent parallel work.
 - (M) Torch parity fuzzer: property-based random-shape/dtype op tests diffing
@@ -120,8 +123,9 @@ reduction per chain.
   matmul); strided kernels that skip materialization.
 - (M) Fusion of elementwise chains at the record_fn layer (peephole first,
   compiler later - see 5).
-- (M) conv2d via im2col+GEMM or blocked direct conv (current one is naive
-  7-loop); pooling/reduction parallelism.
+- (M) conv2d is lowered via im2col+GEMM through the swappable matmul
+  kernel (so fastcpu accelerates it); remaining here: pooling/reduction
+  parallelism and a blocked direct conv for small kernels.
 - (S) Continuous benchmarks (criterion) with a torch comparison harness and
   tracked regressions.
 
@@ -161,10 +165,10 @@ a good substrate for an IR.
 
 ## 6. Training stack completeness [P]
 
-- (M) nn: MultiHeadAttention (RoPE + causal) and a pre-norm TransformerBlock
-  landed 2026-07 - a one-block LM trains and greedy-decodes its target in
-  tests. Remaining: Dropout (needs RNG plumbing + train/eval mode), Conv2d
-  module with bias, parameter initialization registry.
+- (M) nn: MultiHeadAttention (RoPE + causal), a pre-norm TransformerBlock,
+  and Dropout (Philox-backed, train/eval mode) have landed - a one-block LM
+  trains and greedy-decodes its target in tests. Remaining: Conv2d module
+  with bias, parameter initialization registry.
 - (M) optim: AdamW, LR schedulers (StepLr/ExponentialLr/CosineWithWarmup
   with the set_lr driving seam), global-norm grad clipping, and
   device-resident optimizer state have all landed; steps are fused and
@@ -229,9 +233,10 @@ a good substrate for an IR.
   model) from safetensors and generate tokens correctly. The prerequisites
   (transformer op set, serialization, attention/block modules) landed
   2026-07, and ferro-fastcpu's char_lm example proves the full pipeline
-  (train -> save -> reload -> generate) on a toy model. Remaining: a real
-  checkpoint's architecture (learned positions or GQA, exact-erf gelu,
-  f16/bf16 weights) plus a tokenizer. This is the credibility milestone.
+  (train -> save -> reload -> generate) on a toy model. exact-erf gelu and
+  f16/bf16 weight loading landed 2026-08; remaining: a real checkpoint's
+  architecture (learned positions or GQA) plus a tokenizer. This is the
+  credibility milestone.
 - M4: Training parity demo - MNIST/CIFAR conv training on GPU within 2-3x of
   torch eager wall-clock.
 - M5: Compiler MVP - captured, fused forward+backward for an MLP beating
