@@ -22,6 +22,7 @@ pub mod ops_ext;
 pub mod optim;
 pub mod params;
 pub mod philox;
+pub mod pool;
 pub mod replay;
 mod reduce;
 pub mod rng;

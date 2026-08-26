@@ -109,11 +109,13 @@ reduction per chain.
 
 ## 3. Performance: CPU [P]
 
-- (M) Memory: arena/pool allocator for tensor buffers; reuse gradient
-  buffers across backward passes (accumulate_grad already adds in place
-  when the stored grad is provably unshared). In-place optimizer steps
-  LANDED 2026-08: params and state keep their storage, steps allocate
-  nothing for them.
+- (M) Memory: host buffer pool LANDED 2026-08 (pool.rs: thread-local
+  size-classed freelists recycling storage on drop; an MLP training step
+  performs zero fresh host allocations after warmup - CAPABILITY.md 4.2's
+  G5 host half, proven by tests/pool_zero_alloc.rs). accumulate_grad adds
+  in place when the stored grad is provably unshared, and in-place
+  optimizer steps keep params/state storage stable. Remaining: the device
+  caching allocator (see 4 below) and pooling the ops_ext host paths.
 - (M) Elementwise: SIMD + multithreaded kernels (fastcpu treatment beyond
   matmul); strided kernels that skip materialization.
 - (M) Fusion of elementwise chains at the record_fn layer (peephole first,
@@ -163,9 +165,11 @@ a good substrate for an IR.
   landed 2026-07 - a one-block LM trains and greedy-decodes its target in
   tests. Remaining: Dropout (needs RNG plumbing + train/eval mode), Conv2d
   module with bias, parameter initialization registry.
-- (M) optim: AdamW landed 2026-07. Remaining: LR schedulers, grad clipping;
-  optimizer state on device (currently host Vecs - must move for GPU
-  training).
+- (M) optim: AdamW, LR schedulers (StepLr/ExponentialLr/CosineWithWarmup
+  with the set_lr driving seam), global-norm grad clipping, and
+  device-resident optimizer state have all landed; steps are fused and
+  in-place as of 2026-08. Remaining here: parameter groups (per-group lr /
+  weight decay) and optimizer-state offloading policies.
 - (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
 - (M) Serialization: safetensors read/write and named state_dict save/load
   on the Module trait (strict torch semantics) landed 2026-07, byte-validated

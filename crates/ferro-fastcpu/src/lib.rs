@@ -59,7 +59,11 @@ const BATCH_PAR_THRESHOLD: usize = 1 << 21;
 
 /// Row-major (m,k) @ (k,n) -> (m,n).
 pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    let mut out = vec![0f32; m * n];
+    // Pool-backed output. k == 0 never enters the k-block loop, so nothing
+    // would overwrite a recycled buffer's contents: that case must be zeroed
+    // (the mathematical result). k > 0 writes every element in the first
+    // k-block iteration.
+    let mut out = mm_out(m * n, k);
     if m * k * n <= PAR_THRESHOLD {
         matmul_rows(a, b, &mut out, k, n, 0);
         return out;
@@ -80,7 +84,7 @@ pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
 /// a fixed problem size. `threads <= 1` runs inline with no spawn, matching
 /// `matmul`'s small-problem path.
 pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, threads: usize) -> Vec<f32> {
-    let mut out = vec![0f32; m * n];
+    let mut out = mm_out(m * n, k);
     // Empty output: chunks_mut(rows_per * n) would panic on a zero chunk size.
     if out.is_empty() {
         return out;
@@ -113,7 +117,7 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
 pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
     assert!(a.len() >= batch * m * k, "a has {} elements, need batch*m*k = {}", a.len(), batch * m * k);
     assert!(b.len() >= batch * k * n, "b has {} elements, need batch*k*n = {}", b.len(), batch * k * n);
-    let mut out = vec![0f32; batch * m * n];
+    let mut out = mm_out(batch * m * n, k);
     if batch == 0 || m == 0 || n == 0 {
         return out;
     }
@@ -165,6 +169,16 @@ fn matmul_batch_group(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize,
             &mut packed_b,
         );
         g += len;
+    }
+}
+
+/// Matmul output buffer from ferro-core's host pool: uninit when the
+/// k-sweep will write every element, zeroed for the empty-k edge case.
+fn mm_out(len: usize, k: usize) -> Vec<f32> {
+    if k == 0 {
+        ferro_core::pool::take_zeroed(len)
+    } else {
+        ferro_core::pool::take_uninit(len)
     }
 }
 

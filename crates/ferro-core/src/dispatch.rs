@@ -169,11 +169,14 @@ pub trait Backend: Send + Sync {
         k: usize,
         n: usize,
     ) -> Vec<f32> {
-        let mut out = vec![0f32; batch * m * n];
+        // Every batch slab is copied in below, so the pool buffer may come
+        // back uninit; per-slab results recycle immediately via give.
+        let mut out = crate::pool::take_uninit(batch * m * n);
         for bi in 0..batch {
             let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
             let c = self.matmul(&a[ao..ao + m * k], &b[bo..bo + k * n], m, k, n);
             out[co..co + m * n].copy_from_slice(&c);
+            crate::pool::give(c);
         }
         out
     }
@@ -525,12 +528,21 @@ impl Backend for CpuBackend {
             }
             UnaryKind::Silu => v / (1.0 + (-v).exp()),
         };
-        x.iter().map(|&v| f(v)).collect()
+        // Pool-backed output; every element is written below.
+        let mut out = crate::pool::take_uninit(x.len());
+        for (o, &v) in out.iter_mut().zip(x) {
+            *o = f(v);
+        }
+        out
     }
 
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
         let f = binary_scalar_fn(kind);
-        a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect()
+        let mut out = crate::pool::take_uninit(a.len());
+        for ((o, &x), &y) in out.iter_mut().zip(a).zip(b) {
+            *o = f(x, y);
+        }
+        out
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -577,7 +589,9 @@ pub fn set_matmul_kernel(kernel: MatmulKernel) {
 /// Reference implementation: ikj loop order with a zero-skip that helps the
 /// ReLU-sparse gradients common in backward passes.
 pub fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    let mut out = vec![0f32; m * n];
+    // Zeroed, not uninit: the kernel accumulates (and zero-skips), so
+    // untouched slots must already hold 0.
+    let mut out = crate::pool::take_zeroed(m * n);
     for i in 0..m {
         for p in 0..k {
             let aip = a[i * k + p];
@@ -637,13 +651,16 @@ fn binary_bc_odometer(
 ) -> Vec<f32> {
     let f = binary_scalar_fn(kind);
     if out_shape.is_empty() {
-        return vec![f(a[0], b[0])];
-    }
-    let n: usize = out_shape.iter().product();
-    let mut out = vec![0f32; n];
-    if n == 0 {
+        let mut out = crate::pool::take_uninit(1);
+        out[0] = f(a[0], b[0]);
         return out;
     }
+    let n: usize = out_shape.iter().product();
+    if n == 0 {
+        return Vec::new();
+    }
+    // Every element of the output index space is written below.
+    let mut out = crate::pool::take_uninit(n);
     let sta = broadcast_strides(sa, out_shape);
     let stb = broadcast_strides(sb, out_shape);
     let ndim = out_shape.len();

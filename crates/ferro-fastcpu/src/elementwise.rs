@@ -38,13 +38,14 @@ pub struct FastCpuBackend;
 
 impl Backend for FastCpuBackend {
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32> {
-        let mut out = vec![0f32; x.len()];
+        // Pool-backed; the chunk loops write every element.
+        let mut out = ferro_core::pool::take_uninit(x.len());
         unary_dispatch(kind, x, &mut out);
         out
     }
 
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-        let mut out = vec![0f32; a.len()];
+        let mut out = ferro_core::pool::take_uninit(a.len());
         binary_dispatch(kind, a, b, &mut out);
         out
     }
@@ -61,13 +62,13 @@ impl Backend for FastCpuBackend {
 /// Vectorized but forced single-threaded; exposed so bench_elementwise can
 /// isolate the vectorization win from the threading win.
 pub fn unary_serial(kind: UnaryKind, x: &[f32]) -> Vec<f32> {
-    let mut out = vec![0f32; x.len()];
+    let mut out = ferro_core::pool::take_uninit(x.len());
     unary_chunk(kind, x, &mut out);
     out
 }
 
 pub fn binary_serial(kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-    let mut out = vec![0f32; a.len()];
+    let mut out = ferro_core::pool::take_uninit(a.len());
     binary_chunk(kind, a, b, &mut out);
     out
 }

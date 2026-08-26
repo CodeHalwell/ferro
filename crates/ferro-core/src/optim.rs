@@ -147,6 +147,17 @@ impl Sgd {
         self
     }
 
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps: the seam an
+    /// `LrScheduler` drives, `opt.set_lr(sched.lr(step))` before each step.
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
+    }
+
     pub fn zero_grad(&self) {
         for p in &self.params {
             p.zero_grad();
@@ -304,6 +315,16 @@ impl Adam {
     pub fn with_max_grad_norm(mut self, max_norm: f32) -> Adam {
         self.max_grad_norm = Some(max_norm);
         self
+    }
+
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps (`LrScheduler` seam).
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
     }
 
     pub fn zero_grad(&self) {
@@ -477,6 +498,16 @@ impl AdamW {
     pub fn with_max_grad_norm(mut self, max_norm: f32) -> AdamW {
         self.max_grad_norm = Some(max_norm);
         self
+    }
+
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps (`LrScheduler` seam).
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
     }
 
     pub fn zero_grad(&self) {

@@ -6,7 +6,7 @@ use crate::device::Device;
 use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
-use crate::reduce::pairwise_sum_strided;
+use crate::reduce::{pairwise_sum, pairwise_sum_strided};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
 
@@ -78,6 +78,21 @@ impl Storage {
 pub(crate) struct StorageCell {
     data: RwLock<Storage>,
     version: AtomicU64,
+}
+
+/// Dying f32 storage feeds the buffer pool; the next tensor of the same
+/// size reuses the allocation instead of paying malloc + page faults
+/// (docs/CAPABILITY.md 4.2). Other dtypes free normally.
+impl Drop for StorageCell {
+    fn drop(&mut self) {
+        let data = match self.data.get_mut() {
+            Ok(d) => d,
+            Err(p) => p.into_inner(),
+        };
+        if let Storage::F32(v) = data {
+            crate::pool::give(std::mem::take(v));
+        }
+    }
 }
 
 impl StorageCell {
@@ -225,7 +240,7 @@ impl Tensor {
     }
 
     pub fn full(shape: &[usize], value: f32) -> Tensor {
-        Tensor::from_vec(vec![value; numel(shape)], shape).unwrap()
+        Tensor::from_vec(crate::pool::take_filled(numel(shape), value), shape).unwrap()
     }
 
     pub fn zeros(shape: &[usize]) -> Tensor {
@@ -237,11 +252,14 @@ impl Tensor {
     }
 
     pub fn scalar(value: f32) -> Tensor {
-        Tensor::from_vec(vec![value], &[]).unwrap()
+        Tensor::from_vec(crate::pool::take_filled(1, value), &[]).unwrap()
     }
 
     pub fn randn(shape: &[usize], rng: &Rng) -> Tensor {
-        let data = (0..numel(shape)).map(|_| rng.normal()).collect();
+        let mut data = crate::pool::take_uninit(numel(shape));
+        for x in data.iter_mut() {
+            *x = rng.normal();
+        }
         Tensor::from_vec(data, shape).unwrap()
     }
 
@@ -335,6 +353,73 @@ impl Tensor {
             }
         }
         out
+    }
+
+    /// `gather_view` writing into a caller-provided buffer instead of
+    /// allocating: the pooled-temporary path of `to_vec_pooled`.
+    fn gather_into(&self, data: &[f32], out: &mut [f32]) {
+        let inner = &self.0;
+        let n = self.numel();
+        if self.is_contiguous() {
+            out.copy_from_slice(&data[inner.offset..inner.offset + n]);
+            return;
+        }
+        let ndim = inner.shape.len();
+        if ndim == 0 {
+            out[0] = data[inner.offset];
+            return;
+        }
+        let mut idx = vec![0usize; ndim];
+        for slot in out.iter_mut().take(n) {
+            let mut off = inner.offset;
+            for d in 0..ndim {
+                off += idx[d] * inner.stride[d];
+            }
+            *slot = data[off];
+            for d in (0..ndim).rev() {
+                idx[d] += 1;
+                if idx[d] < inner.shape[d] {
+                    break;
+                }
+                idx[d] = 0;
+            }
+        }
+    }
+
+    /// `to_vec` for INTERNAL temporaries: host f32 sources materialize into a
+    /// pool buffer, and the caller must `pool::give` it back when done (the
+    /// public `to_vec` hands ownership to the caller, so it never draws from
+    /// the pool - user code would drain it). Non-f32/device sources fall
+    /// through to the ordinary allocation, which give() then recycles.
+    pub(crate) fn to_vec_pooled(&self) -> Vec<f32> {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                let mut out = crate::pool::take_uninit(self.numel());
+                self.gather_into(v, &mut out);
+                return out;
+            }
+        }
+        self.to_vec()
+    }
+
+    /// Host-side full-tensor sum without materializing a copy: contiguous f32
+    /// storage is reduced straight from the slice; anything else goes through
+    /// a pooled temporary. Same fixed pairwise reduction order either way.
+    pub(crate) fn raw_host_sum(&self) -> f32 {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                if self.is_contiguous() {
+                    let n = self.numel();
+                    return pairwise_sum(&v[self.0.offset..self.0.offset + n]);
+                }
+            }
+        }
+        let tmp = self.to_vec_pooled();
+        let s = pairwise_sum(&tmp);
+        crate::pool::give(tmp);
+        s
     }
 
     /// Materialize as row-major f32, casting from f64/i64 storage (lossy for
@@ -437,8 +522,16 @@ impl Tensor {
         )
     }
 
-    /// Scalar value of a 0-d (or single-element) tensor.
+    /// Scalar value of a 0-d (or single-element) tensor. Host f32 reads the
+    /// element straight from storage - no per-item Vec (offset addresses the
+    /// first element of any layout, matching to_vec()[0]).
     pub fn item(&self) -> f32 {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                return v[self.0.offset];
+            }
+        }
         self.to_vec()[0]
     }
 
@@ -900,7 +993,10 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
         }
     }
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.unary(kind, &a.to_vec()), &a.0.shape)?.to_device(a.0.device)
+    let va = a.to_vec_pooled();
+    let out = cpu.unary(kind, &va);
+    crate::pool::give(va);
+    Tensor::from_vec(out, &a.0.shape)?.to_device(a.0.device)
 }
 
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
@@ -985,10 +1081,13 @@ pub(crate) fn raw_binary_k(
         }
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-    let va = a.broadcast_to(&out_shape)?.to_vec();
-    let vb = b.broadcast_to(&out_shape)?.to_vec();
+    let va = a.broadcast_to(&out_shape)?.to_vec_pooled();
+    let vb = b.broadcast_to(&out_shape)?.to_vec_pooled();
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.binary(kind, &va, &vb), &out_shape)?.to_device(a.0.device)
+    let out = cpu.binary(kind, &va, &vb);
+    crate::pool::give(va);
+    crate::pool::give(vb);
+    Tensor::from_vec(out, &out_shape)?.to_device(a.0.device)
 }
 
 pub(crate) fn raw_binary(
@@ -1007,9 +1106,14 @@ pub(crate) fn raw_binary(
         });
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-    let va = a.broadcast_to(&out_shape)?.to_vec();
-    let vb = b.broadcast_to(&out_shape)?.to_vec();
-    let data = va.iter().zip(vb.iter()).map(|(&x, &y)| f(x, y)).collect();
+    let va = a.broadcast_to(&out_shape)?.to_vec_pooled();
+    let vb = b.broadcast_to(&out_shape)?.to_vec_pooled();
+    let mut data = crate::pool::take_uninit(va.len());
+    for ((o, &x), &y) in data.iter_mut().zip(&va).zip(&vb) {
+        *o = f(x, y);
+    }
+    crate::pool::give(va);
+    crate::pool::give(vb);
     Tensor::from_vec(data, &out_shape)
 }
 
@@ -1054,10 +1158,13 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
-    let va = a.to_vec();
-    let vb = b.to_vec();
+    let va = a.to_vec_pooled();
+    let vb = b.to_vec_pooled();
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.matmul(&va, &vb, m, k, n), &[m, n])?.to_device(a.0.device)
+    let out = cpu.matmul(&va, &vb, m, k, n);
+    crate::pool::give(va);
+    crate::pool::give(vb);
+    Tensor::from_vec(out, &[m, n])?.to_device(a.0.device)
 }
 
 /// Full-tensor reduction on a resident device tensor, if it is one.
@@ -1148,12 +1255,13 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
         };
         return device_leaf(out, &out_shape, t.0.device);
     }
-    let v = t.to_vec();
+    let v = t.to_vec_pooled();
     let strides = default_strides(&in_shape);
     let (n, stride) = (in_shape[dim], strides[dim]);
     let mut keep_shape = in_shape.clone();
     keep_shape[dim] = 1;
-    let mut out = vec![0f32; numel(&keep_shape)];
+    // Every slot is assigned below, so the buffer may come back uninit.
+    let mut out = crate::pool::take_uninit(numel(&keep_shape));
     let mut idx = vec![0usize; ndim];
     for slot in out.iter_mut() {
         let off: usize = (0..ndim).map(|d| idx[d] * strides[d]).sum();
@@ -1169,6 +1277,7 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
             idx[d] = 0;
         }
     }
+    crate::pool::give(v);
     let out_shape: Vec<usize> = if keepdim {
         keep_shape
     } else {

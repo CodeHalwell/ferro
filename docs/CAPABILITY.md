@@ -313,15 +313,20 @@ scalar uploads) and in-place gradient accumulation (accumulate_grad adds
 into the stored grad when it is provably unshared: sole tensor handle AND
 sole storage reference, else the allocating sum). Storage gained a
 per-cell RwLock; the cell's variant and buffer identity are immutable, so
-exported raw pointers survive mutation. What 4.2 still needs for G5 is
-the buffer pool below - backward intermediates and kernel outputs still
-allocate fresh.
+exported raw pointers survive mutation.
 
-Where the remaining allocations come from: every raw kernel returns a
-fresh Vec; `to_vec` materializes broadcast views at full output size (a
-[dim] bias becomes a [batch, dim] buffer before the add); backward
-intermediates get fresh buffers each step. Steady-state training on fixed
-shapes can be allocation-free:
+The HOST buffer pool landed next (pool.rs): thread-local exact-size
+freelists fed by StorageCell::drop and drained by the cpu kernels,
+constructors, and internal temporaries (which give their buffers back
+explicitly, keeping takes and gives balanced). take_uninit's contract -
+every element written before any read - is enforced by the whole test
+suite: debug builds poison recycled contents with NaN, so a kernel that
+misses a slot fails loudly. Gate G5's host half now PASSES:
+tests/pool_zero_alloc.rs runs an MLP training step (forward, backward,
+Adam) with ZERO pool misses after warmup, at bitwise-identical numerics
+to a pool-free run. Still open for full G5: the device caching allocator
+(4.3) so a counting device backend shows the same, and strided kernels
+(5.3) to remove the remaining broadcast materializations:
 - A buffer pool: recycle storage on drop into size-class freelists
   (thread-local fast path). Beyond allocator cost, this dodges page
   zeroing - a fresh vec![0f32; n] takes a page fault per 4 KB on first
