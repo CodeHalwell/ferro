@@ -386,11 +386,26 @@ impl FusedChain {
         if all_resident {
             if let Ok(out) = (|| {
                 let backend = backend_for(seed.device())?;
+                // One read guard per distinct StorageCell: operands can repeat
+                // a tensor, and a second same-thread read of one storage lock
+                // can deadlock behind a queued writer.
+                let mut guards: Vec<(
+                    *const crate::tensor::StorageCell,
+                    std::sync::RwLockReadGuard<crate::tensor::Storage>,
+                )> = Vec::new();
+                for t in &chain.operands {
+                    let p = std::sync::Arc::as_ptr(&t.0.storage);
+                    if !guards.iter().any(|(q, _)| *q == p) {
+                        guards.push((p, t.0.storage.read()));
+                    }
+                }
                 let bufs: Vec<&dyn crate::dispatch::DeviceBuffer> = chain
                     .operands
                     .iter()
                     .map(|t| -> &dyn crate::dispatch::DeviceBuffer {
-                        match &t.0.storage.data {
+                        let p = std::sync::Arc::as_ptr(&t.0.storage);
+                        let (_, g) = guards.iter().find(|(q, _)| *q == p).unwrap();
+                        match &**g {
                             crate::tensor::Storage::Device(b) => b.as_ref(),
                             _ => unreachable!(),
                         }

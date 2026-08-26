@@ -61,9 +61,15 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 
 - (M) N-D and batched matmul with broadcasting batch dims (bmm exists;
   general einsum-lite semantics do not).
-- (L) In-place operations + storage version counters. Everything is immutable
-  today; optimizers reallocate every step. Version counters (torch _version)
-  are the prerequisite for safe mutation, and must land BEFORE in-place ops.
+- (L) In-place operations + storage version counters: LANDED 2026-08.
+  Version counters gate mutation (backward errors loudly on stale saved
+  inputs); storage sits behind a per-cell RwLock; public in-place ops
+  (zero_/fill_/add_/sub_/mul_/div_/add_scalar_/mul_scalar_/copy_from) are
+  layout- and autograd-gated; optimizers step through fused in-place
+  kernels (see 2.5/3 updates below). Remaining from the original scope:
+  in-place through strided views, and in-place ops that rebind live graph
+  nodes (torch's grad_fn rewrite) - the current public API refuses
+  history-carrying tensors instead.
 - (L) Autograd maturity: backward(grad) for non-scalar roots; create_graph /
   double backward (backward closures currently compute detached - they must
   optionally compose recorded ops); gradient hooks; anomaly detection mode.
@@ -87,21 +93,27 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 
 Chain-level capture works (CapturedChain, wave 5b): one chain launch
 replays in ~4.4 us vs 12-18 us eager for the same kernel (measured,
-bench_chain --n 1024..16384). Step-level capture of fwd+bwd+optimizer is
-BLOCKED on in-place operations with stable buffer addresses (2/(L) below):
-the optimizer reallocates params and AdamW m/v each step, and every backward
-intermediate gets a fresh pool address, while a captured graph freezes all
-kernel argument pointers. Once version counters + in-place ops land,
-step capture becomes: preallocate all activations/grads/state once,
-copy_into the batch, replay. Expected win at our profile (loss_bwd = 72%
-of step, launch-gap dominated): NVIDIA-published 9.6 -> 3.4 us per kernel
-effective; our own measurement shows a 3-7x reduction per chain.
+bench_chain --n 1024..16384). The optimizer half of the step-capture
+blocker fell 2026-08: params and SGD/Adam/AdamW state now mutate in place
+with stable buffer addresses (one fused kernel per param per step, scalars
+as kernel arguments, zero per-step host traffic - proven by counting
+backends in tests/optim_device.rs), and `write_dev_from_host`/`copy_into`
+overwrite a buffer without moving it (the batch-upload seam capture needs;
+copy_into's dtod-clone no-op bug is fixed). Still blocking full
+fwd+bwd+optimizer capture: every backward INTERMEDIATE (activations,
+grads) gets a fresh address each step - that needs the buffer pool /
+static memory planner (CAPABILITY.md 4.2-4.4). Expected win at our
+profile (loss_bwd = 72% of step, launch-gap dominated): NVIDIA-published
+9.6 -> 3.4 us per kernel effective; our own measurement shows a 3-7x
+reduction per chain.
 
 ## 3. Performance: CPU [P]
 
 - (M) Memory: arena/pool allocator for tensor buffers; reuse gradient
-  buffers across backward passes; in-place optimizer steps (after version
-  counters).
+  buffers across backward passes (accumulate_grad already adds in place
+  when the stored grad is provably unshared). In-place optimizer steps
+  LANDED 2026-08: params and state keep their storage, steps allocate
+  nothing for them.
 - (M) Elementwise: SIMD + multithreaded kernels (fastcpu treatment beyond
   matmul); strided kernels that skip materialization.
 - (M) Fusion of elementwise chains at the record_fn layer (peephole first,

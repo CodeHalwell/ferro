@@ -306,18 +306,22 @@ matters: counters and assertions land BEFORE the first in-place op.
 
 ### 4.2 The zero-allocation training step
 
-Where allocations come from today (all visible in tensor.rs / optim.rs):
-every raw kernel returns a fresh Vec; `to_vec` materializes broadcast
-views at full output size (a [dim] bias becomes a [batch, dim] buffer
-before the add); `accumulate_grad` allocates a fresh tensor per
-accumulation; the optimizer round-trips every parameter through host Vecs
-and re-uploads to device. Steady-state training on fixed shapes can be
-allocation-free:
+Status 2026-08: 4.1 landed earlier, and the first two mutation consumers
+are in - the in-place optimizer step (fused sgd_step/adamw_step kernels;
+params and state keep their storage, one launch per param per step, zero
+scalar uploads) and in-place gradient accumulation (accumulate_grad adds
+into the stored grad when it is provably unshared: sole tensor handle AND
+sole storage reference, else the allocating sum). Storage gained a
+per-cell RwLock; the cell's variant and buffer identity are immutable, so
+exported raw pointers survive mutation. What 4.2 still needs for G5 is
+the buffer pool below - backward intermediates and kernel outputs still
+allocate fresh.
 
-- In-place optimizer step and gradient accumulation once 4.1 lands
-  (mutate when the Arc is uniquely held and version rules permit); this
-  also moves optimizer state from host Vecs to tensors on the parameter's
-  device, which GPU training requires anyway [F.6].
+Where the remaining allocations come from: every raw kernel returns a
+fresh Vec; `to_vec` materializes broadcast views at full output size (a
+[dim] bias becomes a [batch, dim] buffer before the add); backward
+intermediates get fresh buffers each step. Steady-state training on fixed
+shapes can be allocation-free:
 - A buffer pool: recycle storage on drop into size-class freelists
   (thread-local fast path). Beyond allocator cost, this dodges page
   zeroing - a fresh vec![0f32; n] takes a page fault per 4 KB on first

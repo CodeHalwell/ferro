@@ -341,6 +341,87 @@ pub fn fill_source() -> String {
     )
 }
 
+// --- in-place kernels -------------------------------------------------------
+// These mutate a buffer passed as `float*`. Arithmetic uses the explicit
+// round-to-nearest intrinsics (__fadd_rn/__fmul_rn/...) wherever an
+// expression has more than one operation: nvrtc contracts a*b+c into fma by
+// default, which rounds once instead of twice, and the fused optimizer steps
+// promise results bit-identical to the host reference loops in
+// `Backend::sgd_step`/`adamw_step` (single-op expressions can't contract, so
+// the plain elementwise kernels above need none of this).
+
+/// dst[i] = dst[i] * mul + add.
+pub fn affine_inplace_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* dst, unsigned int n, float mul, float add) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __fadd_rn(__fmul_rn(dst[i], mul), add);
+}}
+"#
+    )
+}
+
+/// dst[i] = dst[i] kind src[i]; dst may alias src (same-index access only).
+pub fn binary_inplace_source(kind: BinaryKind) -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* dst, const float* src, unsigned int n) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {{ float x = dst[i]; float y = src[i]; dst[i] = {}; }}
+}}
+"#,
+        binary_expr(kind)
+    )
+}
+
+/// dst[i] += alpha * src[i].
+pub fn axpy_inplace_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* dst, const float* src, unsigned int n, float alpha) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) dst[i] = __fadd_rn(dst[i], __fmul_rn(alpha, src[i]));
+}}
+"#
+    )
+}
+
+/// One fused SGD-with-momentum step; mirrors `Backend::sgd_step` exactly:
+/// v = momentum*v + g; p -= lr * (nesterov ? momentum*v + g : v).
+pub fn sgd_step_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* p, float* v, const float* g, unsigned int n, float lr, float momentum, int nesterov) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float vi = __fadd_rn(__fmul_rn(v[i], momentum), g[i]);
+    v[i] = vi;
+    float d = nesterov ? __fadd_rn(__fmul_rn(vi, momentum), g[i]) : vi;
+    p[i] = __fsub_rn(p[i], __fmul_rn(d, lr));
+}}
+"#
+    )
+}
+
+/// One fused Adam/AdamW step; mirrors `Backend::adamw_step` exactly
+/// (weight_decay == 0 is Adam; the decay reads the pre-update parameter).
+pub fn adamw_step_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* p, float* m, float* v, const float* g, unsigned int n, float lr, float beta1, float beta2, float bc1, float bc2, float eps, float wd) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float gi = g[i];
+    float mi = __fadd_rn(__fmul_rn(m[i], beta1), __fmul_rn(gi, __fsub_rn(1.0f, beta1)));
+    float vi = __fadd_rn(__fmul_rn(v[i], beta2), __fmul_rn(__fmul_rn(gi, gi), __fsub_rn(1.0f, beta2)));
+    m[i] = mi;
+    v[i] = vi;
+    float m_hat = __fdiv_rn(mi, bc1);
+    float denom = __fsqrt_rn(__fdiv_rn(vi, bc2));
+    float upd = __fdiv_rn(m_hat, __fadd_rn(denom, eps));
+    if (wd != 0.0f) upd = __fadd_rn(upd, __fmul_rn(wd, p[i]));
+    p[i] = __fsub_rn(p[i], __fmul_rn(upd, lr));
+}}
+"#
+    )
+}
+
 /// Softmax pass 1, one block per row of `cols` elements: block-reduce the row
 /// max via shared memory, then (reusing the buffer) block-reduce the sum of
 /// exp(x - max). Writes stats[2*row] = max, stats[2*row+1] = sum so the apply
@@ -507,6 +588,48 @@ mod tests {
         let src = binary_source(BinaryKind::Div);
         assert!(src.contains(r#"extern "C" __global__ void ferro_kernel(const float* a, const float* b, float* out, unsigned int n)"#));
         assert!(src.contains("out[i] = x / y;"));
+    }
+
+    #[test]
+    fn inplace_sources_declare_the_exported_kernel_and_mutate_dst() {
+        let src = affine_inplace_source();
+        assert!(src.contains(
+            r#"extern "C" __global__ void ferro_kernel(float* dst, unsigned int n, float mul, float add)"#
+        ));
+        assert!(src.contains("dst[i] = __fadd_rn(__fmul_rn(dst[i], mul), add);"));
+
+        let src = binary_inplace_source(BinaryKind::Sub);
+        assert!(src.contains(
+            r#"extern "C" __global__ void ferro_kernel(float* dst, const float* src, unsigned int n)"#
+        ));
+        assert!(src.contains("dst[i] = x - y;"));
+
+        let src = axpy_inplace_source();
+        assert!(src.contains("dst[i] = __fadd_rn(dst[i], __fmul_rn(alpha, src[i]));"));
+    }
+
+    #[test]
+    fn fused_step_sources_take_scalars_as_parameters() {
+        // Scalars as kernel parameters is the whole point: no per-step
+        // uploads, and one compiled function per optimizer regardless of
+        // lr/beta/bias-correction values.
+        let src = sgd_step_source();
+        assert!(src.contains(
+            r#"(float* p, float* v, const float* g, unsigned int n, float lr, float momentum, int nesterov)"#
+        ));
+        // Explicit rn intrinsics keep fmad contraction from changing
+        // rounding vs the host reference loop.
+        assert!(src.contains("__fadd_rn(__fmul_rn(v[i], momentum), g[i])"));
+        assert!(src.contains("p[i] = __fsub_rn(p[i], __fmul_rn(d, lr));"));
+
+        let src = adamw_step_source();
+        assert!(src.contains(
+            "float lr, float beta1, float beta2, float bc1, float bc2, float eps, float wd)"
+        ));
+        assert!(src.contains("__fsqrt_rn(__fdiv_rn(vi, bc2))"));
+        // Decoupled decay reads the pre-update parameter, gated so wd == 0
+        // is exactly Adam (0.0f * inf would poison an unconditional form).
+        assert!(src.contains("if (wd != 0.0f) upd = __fadd_rn(upd, __fmul_rn(wd, p[i]));"));
     }
 
     #[test]

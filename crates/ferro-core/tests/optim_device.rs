@@ -1,14 +1,18 @@
-//! Structural proof that optimizer steps are device-resident: over device
-//! params the step math runs entirely as *_dev kernels - zero copy_to_host,
-//! and uploads are bounded to Adam's per-step 4-byte bias-correction scalars
-//! (SGD uploads nothing after warmup). Follows tests/device.rs's counting
-//! backend pattern.
+//! Structural proof that optimizer steps are device-resident AND in place:
+//! over device params the step math runs as ONE fused *_dev kernel per
+//! parameter - zero copy_to_host, zero uploads (scalars ride in as f32
+//! kernel arguments, so even Adam's per-step bias corrections cost no
+//! traffic), zero allocations after warmup. Follows tests/device.rs's
+//! counting backend pattern; buffers are interior-mutable because the
+//! in-place kernels overwrite device contents behind `&dyn DeviceBuffer`.
 
 use std::any::Any;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use ferro_core::dispatch::{register_backend, Backend, BinaryKind, DeviceBuffer, UnaryKind};
+use ferro_core::dispatch::{
+    register_backend, AdamWStep, Backend, BinaryKind, DeviceBuffer, UnaryKind,
+};
 use ferro_core::optim::{Adam, AdamW, Sgd};
 use ferro_core::{Device, Param, Result, Tensor};
 
@@ -18,28 +22,38 @@ static TO_HOST: AtomicUsize = AtomicUsize::new(0);
 static BINARY: AtomicUsize = AtomicUsize::new(0);
 static UNARY: AtomicUsize = AtomicUsize::new(0);
 static FILLS: AtomicUsize = AtomicUsize::new(0);
+static FUSED_STEPS: AtomicUsize = AtomicUsize::new(0);
 
 const DEV: Device = Device::Cuda(7);
 
-struct FakeBuf(Vec<f32>);
+struct FakeBuf(Mutex<Vec<f32>>);
+
+impl FakeBuf {
+    fn new(v: Vec<f32>) -> FakeBuf {
+        FakeBuf(Mutex::new(v))
+    }
+}
 
 impl DeviceBuffer for FakeBuf {
     fn device(&self) -> Device {
         DEV
     }
     fn len(&self) -> usize {
-        self.0.len()
+        self.0.lock().unwrap().len()
     }
     fn as_any(&self) -> &dyn Any {
         self
     }
 }
 
-fn data(buf: &dyn DeviceBuffer) -> &[f32] {
-    &buf.as_any()
+fn raw(buf: &dyn DeviceBuffer) -> &FakeBuf {
+    buf.as_any()
         .downcast_ref::<FakeBuf>()
         .expect("buffer from another backend")
-        .0
+}
+
+fn data(buf: &dyn DeviceBuffer) -> Vec<f32> {
+    raw(buf).0.lock().unwrap().clone()
 }
 
 struct FakeDevice;
@@ -58,11 +72,11 @@ impl Backend for FakeDevice {
     fn alloc_from_host(&self, d: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
         ALLOCS.fetch_add(1, Ordering::SeqCst);
         ALLOC_ELEMS.fetch_add(d.len(), Ordering::SeqCst);
-        Ok(Box::new(FakeBuf(d.to_vec())))
+        Ok(Box::new(FakeBuf::new(d.to_vec())))
     }
     fn copy_to_host(&self, buf: &dyn DeviceBuffer) -> Result<Vec<f32>> {
         TO_HOST.fetch_add(1, Ordering::SeqCst);
-        Ok(data(buf).to_vec())
+        Ok(data(buf))
     }
     fn unary_dev(&self, kind: UnaryKind, x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         UNARY.fetch_add(1, Ordering::SeqCst);
@@ -76,7 +90,7 @@ impl Backend for FakeDevice {
                 .collect(),
             other => panic!("fake device kernel not implemented for {other:?}"),
         };
-        Ok(Box::new(FakeBuf(out)))
+        Ok(Box::new(FakeBuf::new(out)))
     }
     fn binary_dev(
         &self,
@@ -91,12 +105,9 @@ impl Backend for FakeDevice {
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
         };
-        let out = data(a)
-            .iter()
-            .zip(data(b))
-            .map(|(&x, &y)| f(x, y))
-            .collect();
-        Ok(Box::new(FakeBuf(out)))
+        let (va, vb) = (data(a), data(b));
+        let out = va.iter().zip(vb.iter()).map(|(&x, &y)| f(x, y)).collect();
+        Ok(Box::new(FakeBuf::new(out)))
     }
     fn matmul_dev(
         &self,
@@ -119,7 +130,7 @@ impl Backend for FakeDevice {
                 }
             }
         }
-        Ok(Box::new(FakeBuf(out)))
+        Ok(Box::new(FakeBuf::new(out)))
     }
 
     fn binary_bc_dev(
@@ -175,7 +186,7 @@ impl Backend for FakeDevice {
         let out = (0..n)
             .map(|i| f(va[idx(i, &sta)], vb[idx(i, &stb)]))
             .collect();
-        Ok(Box::new(FakeBuf(out)))
+        Ok(Box::new(FakeBuf::new(out)))
     }
 
     fn reduce_dev(
@@ -185,7 +196,7 @@ impl Backend for FakeDevice {
     ) -> Result<Box<dyn DeviceBuffer>> {
         let v = data(x);
         let s: f32 = v.iter().sum();
-        Ok(Box::new(FakeBuf(vec![s / v.len() as f32])))
+        Ok(Box::new(FakeBuf::new(vec![s / v.len() as f32])))
     }
 
     fn sum_dim_dev(
@@ -205,13 +216,101 @@ impl Backend for FakeDevice {
                 }
             }
         }
-        Ok(Box::new(FakeBuf(out)))
+        Ok(Box::new(FakeBuf::new(out)))
     }
 
     fn fill_dev(&self, value: f32, len: usize) -> Result<Box<dyn DeviceBuffer>> {
         // Device-side zero state: no host upload counted.
         FILLS.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(FakeBuf(vec![value; len])))
+        Ok(Box::new(FakeBuf::new(vec![value; len])))
+    }
+
+    // --- in-place kernels: mutate buffer contents behind &dyn DeviceBuffer.
+    // The math delegates to the trait's host defaults so fused device steps
+    // are bit-identical to the cpu path by construction.
+
+    fn write_dev_from_host(&self, dst: &dyn DeviceBuffer, d: &[f32]) -> Result<()> {
+        // Host-to-device traffic, same counters as alloc_from_host.
+        ALLOCS.fetch_add(1, Ordering::SeqCst);
+        ALLOC_ELEMS.fetch_add(d.len(), Ordering::SeqCst);
+        raw(dst).0.lock().unwrap().copy_from_slice(d);
+        Ok(())
+    }
+
+    fn copy_dev(&self, src: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        // Device-to-device: no host traffic counted.
+        Ok(Box::new(FakeBuf::new(data(src))))
+    }
+
+    fn fill_inplace_dev(&self, dst: &dyn DeviceBuffer, value: f32) -> Result<()> {
+        FILLS.fetch_add(1, Ordering::SeqCst);
+        raw(dst).0.lock().unwrap().fill(value);
+        Ok(())
+    }
+
+    fn affine_inplace_dev(&self, dst: &dyn DeviceBuffer, mul: f32, add: f32) -> Result<()> {
+        BINARY.fetch_add(1, Ordering::SeqCst);
+        self.affine_inplace(&mut raw(dst).0.lock().unwrap(), mul, add);
+        Ok(())
+    }
+
+    fn binary_inplace_dev(
+        &self,
+        kind: BinaryKind,
+        dst: &dyn DeviceBuffer,
+        src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        BINARY.fetch_add(1, Ordering::SeqCst);
+        let s = data(src); // clone first: dst may be src
+        self.binary_inplace(kind, &mut raw(dst).0.lock().unwrap(), &s);
+        Ok(())
+    }
+
+    fn axpy_inplace_dev(
+        &self,
+        alpha: f32,
+        dst: &dyn DeviceBuffer,
+        src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        BINARY.fetch_add(1, Ordering::SeqCst);
+        let s = data(src);
+        self.axpy_inplace(alpha, &mut raw(dst).0.lock().unwrap(), &s);
+        Ok(())
+    }
+
+    fn sgd_step_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        lr: f32,
+        momentum: f32,
+        nesterov: bool,
+    ) -> Result<()> {
+        FUSED_STEPS.fetch_add(1, Ordering::SeqCst);
+        let gh = data(g);
+        let (mut pl, mut vl) = (raw(p).0.lock().unwrap(), raw(v).0.lock().unwrap());
+        self.sgd_step(&mut pl, &mut vl, &gh, lr, momentum, nesterov);
+        Ok(())
+    }
+
+    fn adamw_step_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        m: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        hp: AdamWStep,
+    ) -> Result<()> {
+        FUSED_STEPS.fetch_add(1, Ordering::SeqCst);
+        let gh = data(g);
+        let (mut pl, mut ml, mut vl) = (
+            raw(p).0.lock().unwrap(),
+            raw(m).0.lock().unwrap(),
+            raw(v).0.lock().unwrap(),
+        );
+        self.adamw_step(&mut pl, &mut ml, &mut vl, &gh, hp);
+        Ok(())
     }
 }
 
@@ -223,7 +322,7 @@ fn setup() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn counts() -> (usize, usize, usize, usize, usize, usize) {
+fn counts() -> (usize, usize, usize, usize, usize, usize, usize) {
     (
         ALLOCS.load(Ordering::SeqCst),
         TO_HOST.load(Ordering::SeqCst),
@@ -231,6 +330,7 @@ fn counts() -> (usize, usize, usize, usize, usize, usize) {
         UNARY.load(Ordering::SeqCst),
         ALLOC_ELEMS.load(Ordering::SeqCst),
         FILLS.load(Ordering::SeqCst),
+        FUSED_STEPS.load(Ordering::SeqCst),
     )
 }
 
@@ -262,15 +362,15 @@ fn sgd_step_is_fully_device_resident() {
     let (w, b, x, y) = make_params(&rng);
     let mut opt = Sgd::new(vec![w.clone(), b.clone()], 0.05).with_momentum(0.9);
 
-    // Warmup step: creates velocity buffers via device fills and caches the
-    // lr/momentum scalar tensors.
+    // Warmup step: creates velocity buffers via device fills.
     mse_dev(&w, &b, &x, &y).backward();
     opt.step();
     assert_eq!(w.tensor().device(), DEV);
+    let (wp, bp) = (w.tensor()._storage_ptr(), b.tensor()._storage_ptr());
 
     // Measure around step() only: forward/backward traffic is not the
     // optimizer's.
-    let mut d = (0, 0, 0, 0, 0, 0);
+    let mut d = (0, 0, 0, 0, 0, 0, 0);
     for _ in 0..10 {
         opt.zero_grad();
         mse_dev(&w, &b, &x, &y).backward();
@@ -283,12 +383,17 @@ fn sgd_step_is_fully_device_resident() {
         d.3 += after.3 - before.3;
         d.4 += after.4 - before.4;
         d.5 += after.5 - before.5;
+        d.6 += after.6 - before.6;
     }
 
     assert_eq!(d.1, 0, "no copy_to_host during sgd steps");
-    assert_eq!(d.0, 0, "no alloc_from_host during sgd steps");
+    assert_eq!(d.0, 0, "no uploads during sgd steps");
     assert_eq!(d.5, 0, "state already allocated at warmup");
-    assert!(d.2 >= 30, "step math must run as device kernels");
+    assert_eq!(d.6, 20, "one fused kernel per param per step");
+    assert_eq!(d.2, 0, "fused steps replace the per-op binary kernels");
+    // In place: the parameters kept their storage across every step.
+    assert_eq!(w.tensor()._storage_ptr(), wp, "w reallocated");
+    assert_eq!(b.tensor()._storage_ptr(), bp, "b reallocated");
 }
 
 #[test]
@@ -302,15 +407,19 @@ fn adam_step_downloads_nothing_uploads_only_bias_scalars() {
 
     mse_dev(&w, &b, &x, &y).backward();
     opt.step();
+    let (wp, bp) = (w.tensor()._storage_ptr(), b.tensor()._storage_ptr());
 
-    // Measure around step() only; the bias-correction scalars (4 bytes each,
-    // 2 per step) are the only permitted traffic.
+    // Measure around step() only. Scalars (betas, lr, per-step bias
+    // corrections) ride into the fused kernel as f32 arguments, so a steady
+    // AdamW step moves ZERO bytes in either direction - the old
+    // per-step bias-correction uploads are gone.
     const STEPS: usize = 10;
     let mut allocs = 0;
     let mut elems = 0;
     let mut to_host = 0;
     let mut binary = 0;
     let mut unary = 0;
+    let mut fused = 0;
     for _ in 0..STEPS {
         opt.zero_grad();
         mse_dev(&w, &b, &x, &y).backward();
@@ -322,13 +431,17 @@ fn adam_step_downloads_nothing_uploads_only_bias_scalars() {
         binary += after.2 - before.2;
         unary += after.3 - before.3;
         elems += after.4 - before.4;
+        fused += after.6 - before.6;
     }
 
     assert_eq!(to_host, 0, "no copy_to_host during adamw steps");
-    assert_eq!(allocs, 2 * STEPS, "uploads per step");
-    assert_eq!(elems, 2 * STEPS, "uploaded elements per step");
-    assert!(binary > 50, "step math runs as device kernels");
-    assert!(unary >= STEPS, "sqrt runs as a device kernel");
+    assert_eq!(allocs, 0, "no uploads during adamw steps");
+    assert_eq!(elems, 0, "zero uploaded elements per step");
+    assert_eq!(fused, 2 * STEPS, "one fused kernel per param per step");
+    assert_eq!(binary, 0, "fused steps replace the per-op binary kernels");
+    assert_eq!(unary, 0, "sqrt runs inside the fused kernel");
+    assert_eq!(w.tensor()._storage_ptr(), wp, "w reallocated");
+    assert_eq!(b.tensor()._storage_ptr(), bp, "b reallocated");
 }
 
 #[test]

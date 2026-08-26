@@ -65,7 +65,11 @@ impl Tensor {
             });
         }
         let cell = self.0.storage.clone();
-        let buf: *const dyn DeviceBuffer = match &cell.data {
+        // The raw pointer is taken under the read guard and outlives it:
+        // storage cells never change their variant or buffer identity after
+        // construction (in-place ops overwrite values only), so the pointee
+        // stays valid for as long as `_keep` holds the cell alive.
+        let buf: *const dyn DeviceBuffer = match &*cell.read() {
             Storage::Device(b) => &**b,
             _ => {
                 return Err(crate::Error::Unsupported {

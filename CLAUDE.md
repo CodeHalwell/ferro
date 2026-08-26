@@ -33,8 +33,13 @@ python ../examples/safetensors_vs_python.py  # file-format parity (pip install s
   a backward closure returning one gradient per input; the engine asserts
   arity and shapes). Never capture the live output in a backward closure -
   capture `out.detach_copy()`.
-- Tensors are immutable; storage is Arc-shared. Nothing mutates in place
-  (until version counters land - see docs/FUTURE.md).
+- Storage is Arc-shared behind a per-cell RwLock; a cell's variant and buffer
+  identity NEVER change after construction (values may). In-place mutation
+  goes only through the seams in inplace.rs, always bumps the storage
+  version, and requires a whole-contiguous f32 destination; the public
+  in-place API additionally refuses tensors with autograd history, and
+  device tensors with shared storage (device detach_copy shares buffers
+  with backward-closure snapshots). Optimizers use the raw no-grad seams.
 - A tensor's grad lives on the tensor's device.
 - Device kernels see whole contiguous buffers; broadcasting/materialization
   decisions stay in core. Ops without device kernels fall back to host

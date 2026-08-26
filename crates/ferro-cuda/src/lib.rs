@@ -27,7 +27,7 @@ use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg,
 };
 use cudarc::nvrtc::compile_ptx;
-use ferro_core::dispatch::{DeviceBuffer, ReduceKind};
+use ferro_core::dispatch::{AdamWStep, DeviceBuffer, ReduceKind};
 use ferro_core::{
     register_backend, Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
 };
@@ -110,8 +110,35 @@ impl CapturedChain {
 }
 
 impl CudaBackend {
+    /// Run `f` with a mutable alias of `b`'s device allocation.
+    /// `upgrade_device_ptr` re-wraps the SAME pointer (`CudaSlice::clone`
+    /// would allocate and dtod-copy - mutating a clone mutates nothing), and
+    /// `leak()` releases the alias without freeing on success and error
+    /// alike, since dropping it would free the buffer out from under its
+    /// real owner.
+    fn with_alias_mut<R>(
+        &self,
+        b: &CudaBuf,
+        f: impl FnOnce(&mut CudaSlice<f32>) -> Result<R>,
+    ) -> Result<R> {
+        let stream = b.data.stream();
+        let (ptr, _sync) = DevicePtr::device_ptr(&b.data, stream);
+        // SAFETY: ptr/len come from a live CudaSlice on this stream's
+        // context; the alias never outlives this call and is leaked, so
+        // ownership stays with `b`.
+        let mut alias: CudaSlice<f32> = unsafe { stream.upgrade_device_ptr(ptr, b.data.len()) };
+        let res = f(&mut alias);
+        let _ = alias.leak();
+        res
+    }
+
     /// Overwrite a device buffer's contents in place, preserving its address
-    /// (the stable-address contract captured graphs rely on).
+    /// (the stable-address contract captured graphs and in-place ops rely
+    /// on). Root-caused fix over the original: this used to `memcpy_htod`
+    /// into `b.data.clone()`, but cudarc's `CudaSlice::clone` is
+    /// `clone_dtod` - a fresh allocation - so the write landed in a
+    /// temporary that was immediately dropped and the real buffer was never
+    /// touched.
     pub fn copy_into(&self, buf: &dyn DeviceBuffer, data: &[f32]) -> Result<()> {
         const OP: &str = "copy_into";
         let b = self.resident(OP, buf)?;
@@ -121,13 +148,44 @@ impl CudaBackend {
                 msg: format!("length mismatch: {} vs {}", b.data.len(), data.len()),
             });
         }
-        let mut b = self
-            .resident(OP, buf)?
-            .data
-            .clone();
-        self.stream
-            .memcpy_htod(data, &mut b)
-            .map_err(|e| cuda_err(OP, e))
+        self.with_alias_mut(b, |alias| {
+            self.stream
+                .memcpy_htod(data, alias)
+                .map_err(|e| cuda_err(OP, e))
+        })
+    }
+
+    /// Launch an in-place elementwise kernel: `dst` is aliased mutably and
+    /// passed first, then `extra` input buffers, then n and `scalars`, in
+    /// the exact parameter order of the generated source.
+    fn launch_inplace(
+        &self,
+        op: &'static str,
+        src: &str,
+        dst: &CudaBuf,
+        extra: &[&CudaSlice<f32>],
+        scalars: &[f32],
+    ) -> Result<()> {
+        let n = dst.data.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let func = self.get_kernel(op, src)?;
+        let n_arg = as_u32(op, n)?;
+        self.with_alias_mut(dst, |alias| {
+            let mut launch = self.stream.launch_builder(&func);
+            launch.arg(alias);
+            for e in extra {
+                launch.arg(*e);
+            }
+            launch.arg(&n_arg);
+            for s in scalars {
+                launch.arg(s);
+            }
+            unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                .map(|_| ())
+                .map_err(|e| cuda_err(op, e))
+        })
     }
 }
 
@@ -1087,6 +1145,180 @@ impl Backend for CudaBackend {
         Ok(self.wrap(out))
     }
 
+    fn write_dev_from_host(&self, dst: &dyn DeviceBuffer, data: &[f32]) -> Result<()> {
+        self.copy_into(dst, data)
+    }
+
+    fn copy_dev(&self, src: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "copy_dev";
+        let s = self.resident(OP, src)?;
+        let copy = s.data.try_clone().map_err(|e| cuda_err(OP, e))?;
+        Ok(self.wrap(copy))
+    }
+
+    fn copy_into_dev(&self, dst: &dyn DeviceBuffer, src: &dyn DeviceBuffer) -> Result<()> {
+        const OP: &str = "copy_into_dev";
+        let d = self.resident(OP, dst)?;
+        let s = self.resident(OP, src)?;
+        if d.data.len() != s.data.len() {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("length mismatch: {} vs {}", d.data.len(), s.data.len()),
+            });
+        }
+        self.with_alias_mut(d, |alias| {
+            self.stream
+                .memcpy_dtod(&s.data, alias)
+                .map_err(|e| cuda_err(OP, e))
+        })
+    }
+
+    fn fill_inplace_dev(&self, dst: &dyn DeviceBuffer, value: f32) -> Result<()> {
+        const OP: &str = "fill_inplace_dev";
+        let d = self.resident(OP, dst)?;
+        // fill_source's parameter order is (out, n, value): reuse it with
+        // the destination aliased as out.
+        self.launch_inplace(OP, &kernels::fill_source(), d, &[], &[value])
+    }
+
+    fn affine_inplace_dev(&self, dst: &dyn DeviceBuffer, mul: f32, add: f32) -> Result<()> {
+        const OP: &str = "affine_inplace_dev";
+        let d = self.resident(OP, dst)?;
+        self.launch_inplace(OP, &kernels::affine_inplace_source(), d, &[], &[mul, add])
+    }
+
+    fn binary_inplace_dev(
+        &self,
+        kind: BinaryKind,
+        dst: &dyn DeviceBuffer,
+        src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        const OP: &str = "binary_inplace_dev";
+        let d = self.resident(OP, dst)?;
+        let s = self.resident(OP, src)?;
+        if d.data.len() != s.data.len() {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("length mismatch: {} vs {}", d.data.len(), s.data.len()),
+            });
+        }
+        self.launch_inplace(OP, &kernels::binary_inplace_source(kind), d, &[&s.data], &[])
+    }
+
+    fn axpy_inplace_dev(
+        &self,
+        alpha: f32,
+        dst: &dyn DeviceBuffer,
+        src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        const OP: &str = "axpy_inplace_dev";
+        let d = self.resident(OP, dst)?;
+        let s = self.resident(OP, src)?;
+        if d.data.len() != s.data.len() {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("length mismatch: {} vs {}", d.data.len(), s.data.len()),
+            });
+        }
+        self.launch_inplace(OP, &kernels::axpy_inplace_source(), d, &[&s.data], &[alpha])
+    }
+
+    fn sgd_step_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        lr: f32,
+        momentum: f32,
+        nesterov: bool,
+    ) -> Result<()> {
+        const OP: &str = "sgd_step_dev";
+        let (bp, bv, bg) = (
+            self.resident(OP, p)?,
+            self.resident(OP, v)?,
+            self.resident(OP, g)?,
+        );
+        let n = bp.data.len();
+        if bv.data.len() != n || bg.data.len() != n {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "sgd_step_dev buffers must be same-length".into(),
+            });
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let func = self.get_kernel(OP, &kernels::sgd_step_source())?;
+        let n_arg = as_u32(OP, n)?;
+        let nesterov_arg: i32 = nesterov as i32;
+        self.with_alias_mut(bp, |ap| {
+            self.with_alias_mut(bv, |av| {
+                let mut launch = self.stream.launch_builder(&func);
+                launch.arg(ap);
+                launch.arg(av);
+                launch.arg(&bg.data);
+                launch.arg(&n_arg);
+                launch.arg(&lr);
+                launch.arg(&momentum);
+                launch.arg(&nesterov_arg);
+                unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                    .map(|_| ())
+                    .map_err(|e| cuda_err(OP, e))
+            })
+        })
+    }
+
+    fn adamw_step_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        m: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        hp: AdamWStep,
+    ) -> Result<()> {
+        const OP: &str = "adamw_step_dev";
+        let (bp, bm, bv, bg) = (
+            self.resident(OP, p)?,
+            self.resident(OP, m)?,
+            self.resident(OP, v)?,
+            self.resident(OP, g)?,
+        );
+        let n = bp.data.len();
+        if bm.data.len() != n || bv.data.len() != n || bg.data.len() != n {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "adamw_step_dev buffers must be same-length".into(),
+            });
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let func = self.get_kernel(OP, &kernels::adamw_step_source())?;
+        let n_arg = as_u32(OP, n)?;
+        self.with_alias_mut(bp, |ap| {
+            self.with_alias_mut(bm, |am| {
+                self.with_alias_mut(bv, |av| {
+                    let mut launch = self.stream.launch_builder(&func);
+                    launch.arg(ap);
+                    launch.arg(am);
+                    launch.arg(av);
+                    launch.arg(&bg.data);
+                    launch.arg(&n_arg);
+                    launch.arg(&hp.lr);
+                    launch.arg(&hp.beta1);
+                    launch.arg(&hp.beta2);
+                    launch.arg(&hp.bc1);
+                    launch.arg(&hp.bc2);
+                    launch.arg(&hp.eps);
+                    launch.arg(&hp.weight_decay);
+                    unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                        .map(|_| ())
+                        .map_err(|e| cuda_err(OP, e))
+                })
+            })
+        })
+    }
+
     fn alloc_i64_from_host(&self, data: &[i64]) -> Result<Box<dyn DeviceBuffer>> {
         Ok(Box::new(CudaBufI64 {
             data: self.htod_i64("alloc_i64_from_host", data)?,
@@ -1366,6 +1598,104 @@ mod tests {
     // Real-GPU smoke test: no-op without a driver, and tolerates a driver
     // with zero devices. On a GPU box it validates both the host-slice
     // fallback and the device-resident path end to end.
+    /// Gated like gpu_end_to_end: the in-place kernels must mutate the
+    /// ORIGINAL allocation (copy_into once wrote into a dtod clone and was a
+    /// silent no-op - this is its regression test), and the fused steps must
+    /// match the host reference loops bitwise.
+    #[test]
+    fn gpu_inplace_kernels_mutate_the_original_buffer() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let buf = backend.alloc_from_host(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+
+        backend.copy_into(buf.as_ref(), &[5.0, 6.0, 7.0, 8.0]).unwrap();
+        assert_eq!(
+            backend.copy_to_host(buf.as_ref()).unwrap(),
+            vec![5.0, 6.0, 7.0, 8.0],
+            "copy_into must write the original allocation, not a clone"
+        );
+
+        backend.fill_inplace_dev(buf.as_ref(), 2.0).unwrap();
+        assert_eq!(backend.copy_to_host(buf.as_ref()).unwrap(), vec![2.0; 4]);
+
+        backend.affine_inplace_dev(buf.as_ref(), 3.0, 1.0).unwrap();
+        assert_eq!(backend.copy_to_host(buf.as_ref()).unwrap(), vec![7.0; 4]);
+
+        let src = backend.alloc_from_host(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        backend
+            .binary_inplace_dev(BinaryKind::Sub, buf.as_ref(), src.as_ref())
+            .unwrap();
+        assert_eq!(
+            backend.copy_to_host(buf.as_ref()).unwrap(),
+            vec![6.0, 5.0, 4.0, 3.0]
+        );
+        backend
+            .axpy_inplace_dev(0.5, buf.as_ref(), src.as_ref())
+            .unwrap();
+        assert_eq!(
+            backend.copy_to_host(buf.as_ref()).unwrap(),
+            vec![6.5, 6.0, 5.5, 5.0]
+        );
+        // Aliased dst == src is the in-place self-op contract.
+        backend
+            .binary_inplace_dev(BinaryKind::Add, buf.as_ref(), buf.as_ref())
+            .unwrap();
+        assert_eq!(
+            backend.copy_to_host(buf.as_ref()).unwrap(),
+            vec![13.0, 12.0, 11.0, 10.0]
+        );
+
+        // Fused steps vs the trait's host reference loops: bitwise equal.
+        let (p0, v0, g0) = (
+            vec![1.0f32, -0.5, 0.25, 2.0],
+            vec![0.1f32, 0.0, -0.2, 0.05],
+            vec![0.3f32, -0.7, 0.9, -0.111],
+        );
+        let (pd, vd, gd) = (
+            backend.alloc_from_host(&p0).unwrap(),
+            backend.alloc_from_host(&v0).unwrap(),
+            backend.alloc_from_host(&g0).unwrap(),
+        );
+        let (mut ph, mut vh) = (p0.clone(), v0.clone());
+        for step in 0..3 {
+            backend
+                .sgd_step_dev(pd.as_ref(), vd.as_ref(), gd.as_ref(), 0.1, 0.9, step % 2 == 0)
+                .unwrap();
+            Backend::sgd_step(&*backend, &mut ph, &mut vh, &g0, 0.1, 0.9, step % 2 == 0);
+        }
+        assert_eq!(backend.copy_to_host(pd.as_ref()).unwrap(), ph);
+        assert_eq!(backend.copy_to_host(vd.as_ref()).unwrap(), vh);
+
+        let hp = ferro_core::dispatch::AdamWStep {
+            lr: 0.01,
+            beta1: 0.9,
+            beta2: 0.999,
+            bc1: 1.0 - 0.9f32.powi(1),
+            bc2: 1.0 - 0.999f32.powi(1),
+            eps: 1e-8,
+            weight_decay: 0.01,
+        };
+        let (m0, a0) = (vec![0.0f32; 4], p0.clone());
+        let (pa, ma, va) = (
+            backend.alloc_from_host(&a0).unwrap(),
+            backend.alloc_from_host(&m0).unwrap(),
+            backend.alloc_from_host(&m0).unwrap(),
+        );
+        let (mut pah, mut mah, mut vah) = (a0.clone(), m0.clone(), m0.clone());
+        backend
+            .adamw_step_dev(pa.as_ref(), ma.as_ref(), va.as_ref(), gd.as_ref(), hp)
+            .unwrap();
+        Backend::adamw_step(&*backend, &mut pah, &mut mah, &mut vah, &g0, hp);
+        assert_eq!(backend.copy_to_host(pa.as_ref()).unwrap(), pah);
+        assert_eq!(backend.copy_to_host(ma.as_ref()).unwrap(), mah);
+        assert_eq!(backend.copy_to_host(va.as_ref()).unwrap(), vah);
+    }
+
     #[test]
     fn gpu_end_to_end() {
         if !is_available() {

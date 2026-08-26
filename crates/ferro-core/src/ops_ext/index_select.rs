@@ -71,9 +71,11 @@ impl Tensor {
         // Requires outer == 1 (the embedding/index-select-dim0 shape).
         let outer: usize = self.shape()[..dim].iter().product();
         if self.device() != Device::Cpu && self.device_resident_whole() {
-            if let (Storage::Device(wbuf), Storage::DeviceI64(ibuf)) =
-                (&self.0.storage.data, &indices.0.storage.data)
-            {
+            // Distinct cells by construction (f32 weight vs i64 indices), so
+            // two plain read guards cannot self-deadlock here.
+            let gw = self.0.storage.read();
+            let gi = indices.0.storage.read();
+            if let (Storage::Device(wbuf), Storage::DeviceI64(ibuf)) = (&*gw, &*gi) {
                 if outer == 1 {
                     let backend = backend_for(self.0.device)?;
                     match backend.gather_rows_dev(wbuf.as_ref(), ibuf.as_ref(), dim_size, inner) {

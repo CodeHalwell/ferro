@@ -13,6 +13,7 @@ pub mod dtype;
 pub mod error;
 pub mod fused_ops;
 pub mod graph;
+pub mod inplace;
 pub mod interop;
 pub mod modules;
 pub mod nn;
