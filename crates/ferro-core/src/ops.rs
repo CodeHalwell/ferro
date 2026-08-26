@@ -1,6 +1,5 @@
 use crate::dispatch::{BinaryKind, OpTag, ReduceKind, UnaryKind};
 use crate::error::Result;
-use crate::reduce::pairwise_sum;
 use crate::shape::numel;
 use crate::tensor::{
     raw_binary_k, raw_matmul, raw_matmul_t, raw_reduce_dev, raw_unary_k, unbroadcast, Tensor,
@@ -138,7 +137,7 @@ impl Tensor {
 
     pub fn sum(&self) -> Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Sum)
-            .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec())));
+            .unwrap_or_else(|| Tensor::scalar(self.raw_host_sum()));
         let in_shape = self.shape().to_vec();
         out.record_fn(vec![self.clone()], move |g| {
             // d(sum)/dx = g: build a whole device buffer (fill+mul) rather
@@ -155,7 +154,7 @@ impl Tensor {
         // No max(1) guard: torch's empty mean is NaN (0/0), not a silent 0.
         let n = numel(self.shape()) as f32;
         let out = raw_reduce_dev(self, ReduceKind::Mean)
-            .unwrap_or_else(|| Tensor::scalar(pairwise_sum(&self.to_vec()) / n));
+            .unwrap_or_else(|| Tensor::scalar(self.raw_host_sum() / n));
         let in_shape = self.shape().to_vec();
         out.record_fn(vec![self.clone()], move |g| {
             // d(mean)/dx = g/n: same whole-buffer construction as sum's

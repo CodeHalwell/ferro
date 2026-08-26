@@ -175,3 +175,50 @@ fn schedulers_match_closed_forms() {
     assert!((cos2.lr(50) - 0.55).abs() < 1e-6);
     assert_eq!(cos2.lr(500), 0.1);
 }
+
+#[test]
+fn set_lr_lets_a_scheduler_drive_the_optimizer() {
+    // The glue: opt.set_lr(sched.lr(step)) before each step. With a constant
+    // gradient of 1 and no momentum, the parameter must trace exactly
+    // x - sum(lr_t); the warmup phase makes the per-step lr genuinely vary.
+    let sched = CosineWithWarmup {
+        base_lr: 0.1,
+        min_lr: 0.01,
+        warmup_steps: 3,
+        total_steps: 8,
+    };
+    let p = param_of(&[1.0]);
+    let mut opt = Sgd::new(vec![p.clone()], sched.lr(0));
+    let mut expected = 1.0f32;
+    for step in 0..8 {
+        opt.set_lr(sched.lr(step));
+        assert_eq!(opt.lr(), sched.lr(step));
+        set_grads(&[p.clone()], &[1.0]);
+        opt.step();
+        expected -= sched.lr(step);
+        let got = p.tensor().to_vec()[0];
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "step {step}: {got} vs {expected}"
+        );
+    }
+    // The schedule actually varied (this test is not a constant-lr rerun).
+    assert!(sched.lr(1) != sched.lr(2) && sched.lr(4) != sched.lr(7));
+
+    // Adam and AdamW expose the same seam.
+    let q = param_of(&[1.0]);
+    let mut a = ferro_core::optim::Adam::new(vec![q.clone()], 0.1);
+    a.set_lr(0.0);
+    set_grads(&[q.clone()], &[1.0]);
+    a.step();
+    assert_eq!(q.tensor().to_vec(), vec![1.0], "lr 0 freezes the param");
+    a.set_lr(0.05);
+    assert_eq!(a.lr(), 0.05);
+
+    let r = param_of(&[1.0]);
+    let mut w = AdamW::new(vec![r.clone()], 0.1).with_weight_decay(0.0);
+    w.set_lr(0.0);
+    set_grads(&[r.clone()], &[1.0]);
+    w.step();
+    assert_eq!(r.tensor().to_vec(), vec![1.0]);
+}

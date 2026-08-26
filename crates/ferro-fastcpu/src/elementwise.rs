@@ -38,13 +38,14 @@ pub struct FastCpuBackend;
 
 impl Backend for FastCpuBackend {
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32> {
-        let mut out = vec![0f32; x.len()];
+        // Pool-backed; the chunk loops write every element.
+        let mut out = ferro_core::pool::take_uninit(x.len());
         unary_dispatch(kind, x, &mut out);
         out
     }
 
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-        let mut out = vec![0f32; a.len()];
+        let mut out = ferro_core::pool::take_uninit(a.len());
         binary_dispatch(kind, a, b, &mut out);
         out
     }
@@ -61,13 +62,13 @@ impl Backend for FastCpuBackend {
 /// Vectorized but forced single-threaded; exposed so bench_elementwise can
 /// isolate the vectorization win from the threading win.
 pub fn unary_serial(kind: UnaryKind, x: &[f32]) -> Vec<f32> {
-    let mut out = vec![0f32; x.len()];
+    let mut out = ferro_core::pool::take_uninit(x.len());
     unary_chunk(kind, x, &mut out);
     out
 }
 
 pub fn binary_serial(kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-    let mut out = vec![0f32; a.len()];
+    let mut out = ferro_core::pool::take_uninit(a.len());
     binary_chunk(kind, a, b, &mut out);
     out
 }
@@ -156,6 +157,15 @@ fn unary_chunk_body(kind: UnaryKind, x: &[f32], out: &mut [f32]) {
                 0.5 * v * (1.0 + u.tanh())
             })
         }
+        // Exact-erf GELU and its derivative: the erf itself comes from the
+        // shared core helper, so results are bit-identical to CpuBackend.
+        UnaryKind::GeluErf => apply1(x, out, |v| {
+            0.5 * v * (1.0 + ferro_core::dispatch::erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+        }),
+        UnaryKind::GeluErfGrad => apply1(x, out, |v| {
+            0.5 * (1.0 + ferro_core::dispatch::erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+                + v * (-0.5 * v * v).exp() * 0.398_942_28
+        }),
         UnaryKind::Silu => apply1(x, out, |v| v / (1.0 + (-v).exp())),
     }
 }
@@ -288,6 +298,10 @@ mod tests {
             // min > max: torch semantics are max everywhere, no panic.
             UnaryKind::Clamp { min: 2.0, max: 1.0 },
             UnaryKind::Gtz,
+            UnaryKind::Gelu,
+            UnaryKind::GeluErf,
+            UnaryKind::GeluErfGrad,
+            UnaryKind::Silu,
         ];
         for (ki, &kind) in kinds.iter().enumerate() {
             for &len in &LENGTHS {

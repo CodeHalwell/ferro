@@ -11,7 +11,7 @@
 use crate::device::Device;
 use crate::dispatch;
 use crate::error::{Error, Result};
-use crate::tensor::{device_leaf, Storage, Tensor};
+use crate::tensor::{device_leaf, PairGuard, Storage, Tensor};
 
 /// Batched GEMM with logical transpose flags over device-resident whole
 /// operands: (batch, m, k) @ (batch, k, n) -> (batch, m, n).
@@ -25,10 +25,9 @@ fn raw_bmm_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Tensor {
     let n = if tb { b.shape()[1] } else { b.shape()[2] };
     let backend =
         dispatch::backend_for(a.device()).expect("device tensor implies registered backend");
-    let Storage::Device(ba) = &a.0.storage.data else {
-        unreachable!()
-    };
-    let Storage::Device(bb) = &b.0.storage.data else {
+    let pair = PairGuard::new(a, b);
+    let (sa, sb) = pair.get();
+    let (Storage::Device(ba), Storage::Device(bb)) = (sa, sb) else {
         unreachable!()
     };
     let out = backend
@@ -69,10 +68,9 @@ impl Tensor {
         // default) falls back to the host path below.
         if self.device_resident_whole() && other.device_resident_whole() {
             let backend = dispatch::backend_for(self.device())?;
-            let Storage::Device(sa) = &self.0.storage.data else {
-                unreachable!()
-            };
-            let Storage::Device(sb) = &other.0.storage.data else {
+            let pair = PairGuard::new(self, other);
+            let (st_a, st_b) = pair.get();
+            let (Storage::Device(sa), Storage::Device(sb)) = (st_a, st_b) else {
                 unreachable!()
             };
             if let Ok(out) = backend.bmm_dev(sa.as_ref(), sb.as_ref(), batch, m, k, n, false, false)

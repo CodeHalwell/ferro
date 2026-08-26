@@ -77,6 +77,41 @@ fn mutated_saved_input_panics_on_backward() {
 }
 
 #[test]
+#[should_panic(
+    expected = "one of the variables needed for gradient computation has been modified by an inplace operation"
+)]
+fn real_inplace_op_on_a_saved_input_panics_on_backward() {
+    // End-to-end through the public in-place API (not the test seam): c is a
+    // plain no-grad tensor, so add_ is allowed on it - but mul saved it for
+    // x's gradient, and the mutation must invalidate that graph loudly.
+    let x = Tensor::from_vec(vec![3.0, -2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    let c = Tensor::from_vec(vec![2.0, 4.0], &[2]).unwrap();
+    let y = x.mul(&c).unwrap();
+    c.add_scalar_(1.0).unwrap();
+    y.sum().backward();
+}
+
+#[test]
+fn inplace_before_recording_is_fine_and_after_consuming_the_graph_too() {
+    // Mutations before an op records (fresh snapshot) and after its backward
+    // completed (graph consumed, snapshots never re-read) are both legal.
+    let c = Tensor::from_vec(vec![2.0, 4.0], &[2]).unwrap();
+    c.add_scalar_(1.0).unwrap(); // pre-record mutation
+    let x = Tensor::from_vec(vec![3.0, -2.0], &[2])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    let y = x.mul(&c).unwrap();
+    y.sum().backward();
+    assert_eq!(x.grad().unwrap().to_vec(), vec![3.0, 5.0]);
+    c.add_scalar_(1.0).unwrap(); // post-backward mutation
+    assert_eq!(c.to_vec(), vec![4.0, 6.0]);
+}
+
+#[test]
 fn repeated_backward_snapshots_are_per_record_not_per_backward() {
     // Version snapshots are taken once, at record_fn time, not refreshed on
     // every backward() call - so retain-graph-style repeated backward through

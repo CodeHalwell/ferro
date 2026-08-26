@@ -483,38 +483,64 @@ pub fn scaled_dot_product_attention(
 }
 
 /// Multi-head self-attention over `[batch, seq, dim]` (LLaMA-shaped: four
-/// bias-free square projections named q_proj/k_proj/v_proj/o_proj, optional
+/// bias-free projections named q_proj/k_proj/v_proj/o_proj, optional
 /// half-split RoPE on q and k, causal masking). Heads fold into the batch dim
-/// around the shared `scaled_dot_product_attention`.
+/// around the shared `scaled_dot_product_attention`. `with_kv_heads` turns
+/// this into grouped-query attention (LLaMA-2/TinyLlama style): kv_heads <
+/// heads key/value heads, each serving heads/kv_heads adjacent query heads
+/// (query head h reads kv head h / group, torch/HF ordering); kv_heads = 1
+/// is multi-query attention.
 pub struct MultiHeadAttention {
     q_proj: Param,
     k_proj: Param,
     v_proj: Param,
     o_proj: Param,
     heads: usize,
+    kv_heads: usize,
     causal: bool,
     rope_base: Option<f32>,
 }
 
 impl MultiHeadAttention {
     pub fn new(dim: usize, heads: usize, causal: bool, rng: &Rng) -> Result<MultiHeadAttention> {
+        MultiHeadAttention::with_kv_heads(dim, heads, heads, causal, rng)
+    }
+
+    /// Grouped-query attention: `kv_heads` k/v heads shared across `heads`
+    /// query heads. k_proj/v_proj are `[dim, kv_heads * head_dim]`
+    /// (rectangular), matching the HF checkpoint shapes this exists to load.
+    pub fn with_kv_heads(
+        dim: usize,
+        heads: usize,
+        kv_heads: usize,
+        causal: bool,
+        rng: &Rng,
+    ) -> Result<MultiHeadAttention> {
         if heads == 0 || dim % heads != 0 {
             return Err(Error::InvalidShape {
                 op: "multi_head_attention",
                 msg: format!("dim {dim} is not divisible into {heads} heads"),
             });
         }
+        if kv_heads == 0 || heads % kv_heads != 0 {
+            return Err(Error::InvalidShape {
+                op: "multi_head_attention",
+                msg: format!("{heads} query heads are not divisible into {kv_heads} kv heads"),
+            });
+        }
+        let hd = dim / heads;
         let scale = 1.0 / (dim as f32).sqrt();
-        let proj = || {
-            let w: Vec<f32> = (0..dim * dim).map(|_| rng.normal() * scale).collect();
-            Param::new(Tensor::from_vec(w, &[dim, dim]).unwrap())
+        let proj = |cols: usize| {
+            let w: Vec<f32> = (0..dim * cols).map(|_| rng.normal() * scale).collect();
+            Param::new(Tensor::from_vec(w, &[dim, cols]).unwrap())
         };
         Ok(MultiHeadAttention {
-            q_proj: proj(),
-            k_proj: proj(),
-            v_proj: proj(),
-            o_proj: proj(),
+            q_proj: proj(dim),
+            k_proj: proj(kv_heads * hd),
+            v_proj: proj(kv_heads * hd),
+            o_proj: proj(dim),
             heads,
+            kv_heads,
             causal,
             rope_base: None,
         })
@@ -526,12 +552,28 @@ impl MultiHeadAttention {
         self
     }
 
-    /// `[b, s, d] -> [b*h, s, d/h]`: project, split heads, fold into batch.
-    fn heads_in(&self, x: &Tensor, w: &Param, b: usize, s: usize, d: usize) -> Result<Tensor> {
+    /// `[b, s, d] -> [b*h, s, hd]`: project to `h * hd` columns, split heads,
+    /// fold into batch. `h` is `heads` for q and `kv_heads` for k/v.
+    fn heads_in(&self, x: &Tensor, w: &Param, b: usize, s: usize, d: usize, h: usize) -> Result<Tensor> {
         let hd = d / self.heads;
         let p = x.reshape(&[b * s, d])?.matmul(&w.tensor())?;
-        p.reshape(&[b, s, self.heads, hd])?
+        p.reshape(&[b, s, h, hd])?
             .transpose(1, 2)?
+            .reshape(&[b * h, s, hd])
+    }
+
+    /// Expand `[b*kv, s, hd]` k/v to `[b*heads, s, hd]` by repeating each kv
+    /// head for its query group, via index_select on the head axis - its
+    /// scatter-add backward sums the group's gradients back into the shared
+    /// head, exactly repeat's adjoint. A no-op when kv_heads == heads.
+    fn expand_kv(&self, t: Tensor, b: usize, s: usize, hd: usize) -> Result<Tensor> {
+        if self.kv_heads == self.heads {
+            return Ok(t);
+        }
+        let group = self.heads / self.kv_heads;
+        let idx: Vec<usize> = (0..self.kv_heads).flat_map(|k| std::iter::repeat(k).take(group)).collect();
+        t.reshape(&[b, self.kv_heads, s, hd])?
+            .index_select(1, &idx)?
             .reshape(&[b * self.heads, s, hd])
     }
 }
@@ -554,16 +596,21 @@ impl Module for MultiHeadAttention {
                 ),
             });
         }
-        let mut q = self.heads_in(x, &self.q_proj, b, s, d)?;
-        let mut k = self.heads_in(x, &self.k_proj, b, s, d)?;
-        let v = self.heads_in(x, &self.v_proj, b, s, d)?;
+        let hd = d / self.heads;
+        let mut q = self.heads_in(x, &self.q_proj, b, s, d, self.heads)?;
+        let mut k = self.heads_in(x, &self.k_proj, b, s, d, self.kv_heads)?;
+        let v = self.heads_in(x, &self.v_proj, b, s, d, self.kv_heads)?;
         if let Some(base) = self.rope_base {
             // Positions are the canonical 0..seq, so tables come from the
             // process-global cache with no per-call rebuild or position
-            // traffic (see ops_ext::rope).
+            // traffic (see ops_ext::rope). RoPE applies before kv expansion:
+            // the rotation is identical across a group, and the smaller
+            // tensor is cheaper to rotate.
             q = q.rope_cached(base)?;
             k = k.rope_cached(base)?;
         }
+        let k = self.expand_kv(k, b, s, hd)?;
+        let v = self.expand_kv(v, b, s, hd)?;
         let attn = scaled_dot_product_attention(&q, &k, &v, self.causal)?;
         let merged = attn
             .reshape(&[b, self.heads, s, d / self.heads])?
@@ -579,6 +626,59 @@ impl Module for MultiHeadAttention {
             ("v_proj".into(), self.v_proj.clone()),
             ("o_proj".into(), self.o_proj.clone()),
         ]
+    }
+}
+
+/// Learned absolute positional embeddings (GPT-2's wpe): adds row p of a
+/// `[max_len, dim]` table to every batch element's position p. Rows enter
+/// through index_select, so position gradients scatter-add back into the
+/// table, and the broadcast batch dim's gradient sums over the batch.
+pub struct LearnedPositionalEmbedding {
+    weight: Param,
+    max_len: usize,
+}
+
+impl LearnedPositionalEmbedding {
+    pub fn new(max_len: usize, dim: usize, rng: &Rng) -> LearnedPositionalEmbedding {
+        // GPT-2's initializer_range.
+        let w: Vec<f32> = (0..max_len * dim).map(|_| rng.normal() * 0.02).collect();
+        LearnedPositionalEmbedding {
+            weight: Param::new(Tensor::from_vec(w, &[max_len, dim]).unwrap()),
+            max_len,
+        }
+    }
+}
+
+impl Module for LearnedPositionalEmbedding {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        if x.ndim() != 3 {
+            return Err(Error::InvalidShape {
+                op: "learned_positional_embedding",
+                msg: format!("input must be 3-D [batch, seq, dim], got {:?}", x.shape()),
+            });
+        }
+        let (s, d) = (x.shape()[1], x.shape()[2]);
+        let w_shape = self.weight.tensor().shape().to_vec();
+        if s > self.max_len {
+            return Err(Error::InvalidShape {
+                op: "learned_positional_embedding",
+                msg: format!("sequence length {s} exceeds max_len {}", self.max_len),
+            });
+        }
+        if d != w_shape[1] {
+            return Err(Error::ShapeMismatch {
+                op: "learned_positional_embedding",
+                lhs: x.shape().to_vec(),
+                rhs: w_shape,
+            });
+        }
+        let idx: Vec<usize> = (0..s).collect();
+        let rows = self.weight.tensor().index_select(0, &idx)?;
+        x.add(&rows.reshape(&[1, s, d])?)
+    }
+
+    fn named_parameters(&self) -> Vec<(String, Param)> {
+        vec![("weight".into(), self.weight.clone())]
     }
 }
 

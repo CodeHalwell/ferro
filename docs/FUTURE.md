@@ -61,21 +61,30 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 
 - (M) N-D and batched matmul with broadcasting batch dims (bmm exists;
   general einsum-lite semantics do not).
-- (L) In-place operations + storage version counters. Everything is immutable
-  today; optimizers reallocate every step. Version counters (torch _version)
-  are the prerequisite for safe mutation, and must land BEFORE in-place ops.
+- (L) In-place operations + storage version counters: LANDED 2026-08.
+  Version counters gate mutation (backward errors loudly on stale saved
+  inputs); storage sits behind a per-cell RwLock; public in-place ops
+  (zero_/fill_/add_/sub_/mul_/div_/add_scalar_/mul_scalar_/copy_from) are
+  layout- and autograd-gated; optimizers step through fused in-place
+  kernels (see 2.5/3 updates below). Remaining from the original scope:
+  in-place through strided views, and in-place ops that rebind live graph
+  nodes (torch's grad_fn rewrite) - the current public API refuses
+  history-carrying tensors instead.
 - (L) Autograd maturity: backward(grad) for non-scalar roots; create_graph /
   double backward (backward closures currently compute detached - they must
   optionally compose recorded ops); gradient hooks; anomaly detection mode.
-- (M) Dtype completion: f16/bf16 storage + casts; f64 autograd; integer
-  arithmetic ops; an explicit type-promotion policy (currently: strict
-  f32-only math, explicit casts).
+- (M) Dtype completion: f16/bf16 storage + casts LANDED 2026-08 (raw-bit
+  Storage::F16/BF16, RNE conversions in the half module, byte-exact
+  safetensors IO - the checkpoint-weight path for M3). Remaining: f64
+  autograd; integer arithmetic ops; an explicit type-promotion policy
+  (currently: strict f32-only math, explicit casts).
 - (L) Views with autograd: as_strided family, aliasing semantics, narrow/
   slice/index_put. Today strided views materialize on read and device views
   fall back to host.
 - (XL, ongoing) Operator long tail, prioritized by workload: transformer set
-  remainder (fused softmax, scatter, exact-erf gelu), vision set (conv
-  variants, pooling, interpolate), then breadth. gelu/rmsnorm/rope/cumsum/
+  remainder (fused softmax; scatter and exact-erf gelu have landed), vision
+  set (conv variants, interpolate; conv2d is already im2col+GEMM riding the
+  swappable matmul kernel), then breadth. gelu/rmsnorm/rope/cumsum/
   topk/argmax/argmin/gather and masked causal attention landed 2026-07.
   Each op stays one-file/one-agent parallel work.
 - (M) Torch parity fuzzer: property-based random-shape/dtype op tests diffing
@@ -87,27 +96,36 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 
 Chain-level capture works (CapturedChain, wave 5b): one chain launch
 replays in ~4.4 us vs 12-18 us eager for the same kernel (measured,
-bench_chain --n 1024..16384). Step-level capture of fwd+bwd+optimizer is
-BLOCKED on in-place operations with stable buffer addresses (2/(L) below):
-the optimizer reallocates params and AdamW m/v each step, and every backward
-intermediate gets a fresh pool address, while a captured graph freezes all
-kernel argument pointers. Once version counters + in-place ops land,
-step capture becomes: preallocate all activations/grads/state once,
-copy_into the batch, replay. Expected win at our profile (loss_bwd = 72%
-of step, launch-gap dominated): NVIDIA-published 9.6 -> 3.4 us per kernel
-effective; our own measurement shows a 3-7x reduction per chain.
+bench_chain --n 1024..16384). The optimizer half of the step-capture
+blocker fell 2026-08: params and SGD/Adam/AdamW state now mutate in place
+with stable buffer addresses (one fused kernel per param per step, scalars
+as kernel arguments, zero per-step host traffic - proven by counting
+backends in tests/optim_device.rs), and `write_dev_from_host`/`copy_into`
+overwrite a buffer without moving it (the batch-upload seam capture needs;
+copy_into's dtod-clone no-op bug is fixed). Still blocking full
+fwd+bwd+optimizer capture: every backward INTERMEDIATE (activations,
+grads) gets a fresh address each step - that needs the buffer pool /
+static memory planner (CAPABILITY.md 4.2-4.4). Expected win at our
+profile (loss_bwd = 72% of step, launch-gap dominated): NVIDIA-published
+9.6 -> 3.4 us per kernel effective; our own measurement shows a 3-7x
+reduction per chain.
 
 ## 3. Performance: CPU [P]
 
-- (M) Memory: arena/pool allocator for tensor buffers; reuse gradient
-  buffers across backward passes; in-place optimizer steps (after version
-  counters).
+- (M) Memory: host buffer pool LANDED 2026-08 (pool.rs: thread-local
+  size-classed freelists recycling storage on drop; an MLP training step
+  performs zero fresh host allocations after warmup - CAPABILITY.md 4.2's
+  G5 host half, proven by tests/pool_zero_alloc.rs). accumulate_grad adds
+  in place when the stored grad is provably unshared, and in-place
+  optimizer steps keep params/state storage stable. Remaining: the device
+  caching allocator (see 4 below) and pooling the ops_ext host paths.
 - (M) Elementwise: SIMD + multithreaded kernels (fastcpu treatment beyond
   matmul); strided kernels that skip materialization.
 - (M) Fusion of elementwise chains at the record_fn layer (peephole first,
   compiler later - see 5).
-- (M) conv2d via im2col+GEMM or blocked direct conv (current one is naive
-  7-loop); pooling/reduction parallelism.
+- (M) conv2d is lowered via im2col+GEMM through the swappable matmul
+  kernel (so fastcpu accelerates it); remaining here: pooling/reduction
+  parallelism and a blocked direct conv for small kernels.
 - (S) Continuous benchmarks (criterion) with a torch comparison harness and
   tracked regressions.
 
@@ -147,13 +165,15 @@ a good substrate for an IR.
 
 ## 6. Training stack completeness [P]
 
-- (M) nn: MultiHeadAttention (RoPE + causal) and a pre-norm TransformerBlock
-  landed 2026-07 - a one-block LM trains and greedy-decodes its target in
-  tests. Remaining: Dropout (needs RNG plumbing + train/eval mode), Conv2d
-  module with bias, parameter initialization registry.
-- (M) optim: AdamW landed 2026-07. Remaining: LR schedulers, grad clipping;
-  optimizer state on device (currently host Vecs - must move for GPU
-  training).
+- (M) nn: MultiHeadAttention (RoPE + causal), a pre-norm TransformerBlock,
+  and Dropout (Philox-backed, train/eval mode) have landed - a one-block LM
+  trains and greedy-decodes its target in tests. Remaining: Conv2d module
+  with bias, parameter initialization registry.
+- (M) optim: AdamW, LR schedulers (StepLr/ExponentialLr/CosineWithWarmup
+  with the set_lr driving seam), global-norm grad clipping, and
+  device-resident optimizer state have all landed; steps are fused and
+  in-place as of 2026-08. Remaining here: parameter groups (per-group lr /
+  weight decay) and optimizer-state offloading policies.
 - (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
 - (M) Serialization: safetensors read/write and named state_dict save/load
   on the Module trait (strict torch semantics) landed 2026-07, byte-validated
@@ -213,9 +233,14 @@ a good substrate for an IR.
   model) from safetensors and generate tokens correctly. The prerequisites
   (transformer op set, serialization, attention/block modules) landed
   2026-07, and ferro-fastcpu's char_lm example proves the full pipeline
-  (train -> save -> reload -> generate) on a toy model. Remaining: a real
-  checkpoint's architecture (learned positions or GQA, exact-erf gelu,
-  f16/bf16 weights) plus a tokenizer. This is the credibility milestone.
+  (train -> save -> reload -> generate) on a toy model. The prerequisite
+  list closed 2026-08: exact-erf gelu, f16/bf16 weight loading,
+  grouped-query attention (MultiHeadAttention::with_kv_heads, HF checkpoint
+  shapes), learned positional embeddings, and a dependency-free byte-level
+  BPE tokenizer (ferro-tokenizer, validated token-for-token against the
+  real GPT-2 vocab). Remaining: the end-to-end demo itself - map a real
+  checkpoint's names onto the modules and generate. This is the
+  credibility milestone.
 - M4: Training parity demo - MNIST/CIFAR conv training on GPU within 2-3x of
   torch eager wall-clock.
 - M5: Compiler MVP - captured, fused forward+backward for an MLP beating

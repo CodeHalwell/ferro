@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::autograd::Op;
 use crate::device::Device;
 use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
-use crate::reduce::pairwise_sum_strided;
+use crate::reduce::{pairwise_sum, pairwise_sum_strided};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, default_strides, numel};
 
@@ -24,6 +24,12 @@ pub enum Storage {
     F32(Vec<f32>),
     F64(Vec<f64>),
     I64(Vec<i64>),
+    /// IEEE binary16, raw bit patterns (see the `half` module). Compute is
+    /// f32-only, so these enter math via explicit `to_dtype(DType::F32)`;
+    /// they exist to carry checkpoint weights at half the memory.
+    F16(Vec<u16>),
+    /// bfloat16, raw bit patterns (f32's top half).
+    BF16(Vec<u16>),
     Device(Box<dyn DeviceBuffer>),
     /// Device-resident i64 indices. Kept as its own variant so the f32
     /// compute paths can never pick one up by mistake; produced/consumed
@@ -38,6 +44,8 @@ impl std::fmt::Debug for Storage {
             Storage::F32(v) => write!(f, "F32({} elems)", v.len()),
             Storage::F64(v) => write!(f, "F64({} elems)", v.len()),
             Storage::I64(v) => write!(f, "I64({} elems)", v.len()),
+            Storage::F16(v) => write!(f, "F16({} elems)", v.len()),
+            Storage::BF16(v) => write!(f, "BF16({} elems)", v.len()),
             Storage::Device(b) => write!(f, "Device({} elems on {})", b.len(), b.device()),
             Storage::DeviceI64(b) => write!(f, "DeviceI64({} elems on {})", b.len(), b.device()),
         }
@@ -50,6 +58,8 @@ impl Storage {
             Storage::F32(_) | Storage::Device(_) => DType::F32,
             Storage::F64(_) => DType::F64,
             Storage::I64(_) | Storage::DeviceI64(_) => DType::I64,
+            Storage::F16(_) => DType::F16,
+            Storage::BF16(_) => DType::BF16,
         }
     }
 
@@ -66,16 +76,106 @@ impl Storage {
 /// bumping through one view is visible through the base and every sibling
 /// view. Starts at 0; `Tensor::version`/`Tensor::bump_version` are the only
 /// readers/writers.
+///
+/// The lock guards element CONTENTS only. No code path ever changes a cell's
+/// Storage variant, a host Vec's length or allocation, or a device buffer's
+/// identity after construction: in-place ops overwrite values through
+/// `write()` (host) or through the backend's `*_inplace_dev` kernels under
+/// `read()` (device memory is not Rust-owned, so no `&mut` is needed and
+/// concurrent device-side access follows the backend's stream ordering).
+/// Raw pointers exported while unlocked (DLPack views) therefore stay valid
+/// across mutation - values change, addresses never do.
 pub(crate) struct StorageCell {
-    pub(crate) data: Storage,
+    data: RwLock<Storage>,
     version: AtomicU64,
+}
+
+/// Dying f32 storage feeds the buffer pool; the next tensor of the same
+/// size reuses the allocation instead of paying malloc + page faults
+/// (docs/CAPABILITY.md 4.2). Other dtypes free normally.
+impl Drop for StorageCell {
+    fn drop(&mut self) {
+        let data = match self.data.get_mut() {
+            Ok(d) => d,
+            Err(p) => p.into_inner(),
+        };
+        if let Storage::F32(v) = data {
+            crate::pool::give(std::mem::take(v));
+        }
+    }
 }
 
 impl StorageCell {
     fn new(data: Storage) -> StorageCell {
         StorageCell {
-            data,
+            data: RwLock::new(data),
             version: AtomicU64::new(0),
+        }
+    }
+
+    /// Poison-tolerant read guard: a panicked writer can leave torn VALUES,
+    /// but never a torn structure (the variant/allocation invariant above),
+    /// and the panicking test conventions here require poison tolerance.
+    pub(crate) fn read(&self) -> RwLockReadGuard<'_, Storage> {
+        self.data.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(crate) fn write(&self) -> RwLockWriteGuard<'_, Storage> {
+        self.data.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Read guards over two tensors' storages, collapsing to ONE guard when they
+/// share a `StorageCell` (a second same-thread read of one `RwLock` can
+/// deadlock behind a queued writer, so aliased operands must never take
+/// two), and otherwise ALWAYS acquiring the lower-address storage first
+/// regardless of argument order. Without that ordering, `PairGuard::new(a,
+/// b)` on one thread and `PairGuard::new(b, a)` on another lock the same
+/// pair of RwLocks in opposite orders; two readers alone can't deadlock, but
+/// once any writer (an in-place op) can queue on either lock, a
+/// writer-preferring RwLock blocks new readers behind it and the two
+/// PairGuards complete the classic AB-BA cycle. Fixed acquisition order
+/// (independent of which tensor is logically "first") removes the cycle for
+/// any number of concurrent callers, mirroring the address-order discipline
+/// `inplace.rs`'s multi-buffer locks already use.
+pub(crate) struct PairGuard<'a> {
+    g0: RwLockReadGuard<'a, Storage>,
+    g1: Option<RwLockReadGuard<'a, Storage>>,
+    /// True when `g0` is `a`'s guard (and `g1`, if any, is `b`'s); false
+    /// when address order put `b` first, swapping the mapping.
+    a_first: bool,
+}
+
+impl<'a> PairGuard<'a> {
+    pub(crate) fn new(a: &'a Tensor, b: &'a Tensor) -> PairGuard<'a> {
+        if Arc::ptr_eq(&a.0.storage, &b.0.storage) {
+            return PairGuard {
+                g0: a.0.storage.read(),
+                g1: None,
+                a_first: true,
+            };
+        }
+        if Arc::as_ptr(&a.0.storage) < Arc::as_ptr(&b.0.storage) {
+            PairGuard {
+                g0: a.0.storage.read(),
+                g1: Some(b.0.storage.read()),
+                a_first: true,
+            }
+        } else {
+            PairGuard {
+                g0: b.0.storage.read(),
+                g1: Some(a.0.storage.read()),
+                a_first: false,
+            }
+        }
+    }
+
+    /// (a's storage, b's storage), regardless of which was locked first.
+    pub(crate) fn get(&self) -> (&Storage, &Storage) {
+        match (&self.g1, self.a_first) {
+            (None, _) => (&self.g0, &self.g0),
+            (Some(g1), true) => (&self.g0, g1),
+            (Some(g1), false) => (g1, &self.g0),
         }
     }
 }
@@ -174,6 +274,16 @@ impl Tensor {
         Tensor::contiguous_leaf("from_vec_i64", data.len(), Storage::I64(data), shape)
     }
 
+    /// Build an f16 tensor from raw IEEE binary16 bit patterns.
+    pub fn from_vec_f16_bits(data: Vec<u16>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_f16_bits", data.len(), Storage::F16(data), shape)
+    }
+
+    /// Build a bf16 tensor from raw bfloat16 bit patterns.
+    pub fn from_vec_bf16_bits(data: Vec<u16>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_bf16_bits", data.len(), Storage::BF16(data), shape)
+    }
+
     /// I64 tensor of `[0, end)` with shape `[end]` (empty when `end <= 0`).
     pub fn arange(end: i64) -> Tensor {
         let n = end.max(0);
@@ -181,7 +291,7 @@ impl Tensor {
     }
 
     pub fn full(shape: &[usize], value: f32) -> Tensor {
-        Tensor::from_vec(vec![value; numel(shape)], shape).unwrap()
+        Tensor::from_vec(crate::pool::take_filled(numel(shape), value), shape).unwrap()
     }
 
     pub fn zeros(shape: &[usize]) -> Tensor {
@@ -193,11 +303,14 @@ impl Tensor {
     }
 
     pub fn scalar(value: f32) -> Tensor {
-        Tensor::from_vec(vec![value], &[]).unwrap()
+        Tensor::from_vec(crate::pool::take_filled(1, value), &[]).unwrap()
     }
 
     pub fn randn(shape: &[usize], rng: &Rng) -> Tensor {
-        let data = (0..numel(shape)).map(|_| rng.normal()).collect();
+        let mut data = crate::pool::take_uninit(numel(shape));
+        for x in data.iter_mut() {
+            *x = rng.normal();
+        }
         Tensor::from_vec(data, shape).unwrap()
     }
 
@@ -222,7 +335,7 @@ impl Tensor {
         self.0.device
     }
     pub fn dtype(&self) -> DType {
-        self.0.storage.data.dtype()
+        self.0.storage.read().dtype()
     }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
@@ -293,16 +406,150 @@ impl Tensor {
         out
     }
 
+    /// `gather_view` writing into a caller-provided buffer instead of
+    /// allocating: the pooled-temporary path of `to_vec_pooled`.
+    fn gather_into(&self, data: &[f32], out: &mut [f32]) {
+        let inner = &self.0;
+        let n = self.numel();
+        if self.is_contiguous() {
+            out.copy_from_slice(&data[inner.offset..inner.offset + n]);
+            return;
+        }
+        let ndim = inner.shape.len();
+        if ndim == 0 {
+            out[0] = data[inner.offset];
+            return;
+        }
+        let mut idx = vec![0usize; ndim];
+        for slot in out.iter_mut().take(n) {
+            let mut off = inner.offset;
+            for d in 0..ndim {
+                off += idx[d] * inner.stride[d];
+            }
+            *slot = data[off];
+            for d in (0..ndim).rev() {
+                idx[d] += 1;
+                if idx[d] < inner.shape[d] {
+                    break;
+                }
+                idx[d] = 0;
+            }
+        }
+    }
+
+    /// Raw IEEE binary16 bit patterns of an f16 tensor, row-major (strided
+    /// views gather). Errors on any other dtype: bit access never converts.
+    pub fn to_vec_f16_bits(&self) -> Result<Vec<u16>> {
+        let g = self.0.storage.read();
+        match &*g {
+            Storage::F16(v) => Ok(self.gather_view(v)),
+            _ => Err(Error::DtypeMismatch {
+                op: "to_vec_f16_bits",
+                expected: DType::F16,
+                got: g.dtype(),
+            }),
+        }
+    }
+
+    /// Raw bfloat16 bit patterns of a bf16 tensor, row-major.
+    pub fn to_vec_bf16_bits(&self) -> Result<Vec<u16>> {
+        let g = self.0.storage.read();
+        match &*g {
+            Storage::BF16(v) => Ok(self.gather_view(v)),
+            _ => Err(Error::DtypeMismatch {
+                op: "to_vec_bf16_bits",
+                expected: DType::BF16,
+                got: g.dtype(),
+            }),
+        }
+    }
+
+    /// `to_vec` for INTERNAL temporaries: host f32 sources materialize into a
+    /// pool buffer, and the caller must `pool::give` it back when done (the
+    /// public `to_vec` hands ownership to the caller, so it never draws from
+    /// the pool - user code would drain it). Non-f32/device sources fall
+    /// through to the ordinary allocation, which give() then recycles.
+    pub(crate) fn to_vec_pooled(&self) -> Vec<f32> {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                let mut out = crate::pool::take_uninit(self.numel());
+                self.gather_into(v, &mut out);
+                return out;
+            }
+        }
+        self.to_vec()
+    }
+
+    /// Host-side full-tensor sum without materializing a copy: contiguous f32
+    /// storage is reduced straight from the slice; anything else goes through
+    /// a pooled temporary. Same fixed pairwise reduction order either way.
+    pub(crate) fn raw_host_sum(&self) -> f32 {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                if self.is_contiguous() {
+                    let n = self.numel();
+                    return pairwise_sum(&v[self.0.offset..self.0.offset + n]);
+                }
+            }
+        }
+        let tmp = self.to_vec_pooled();
+        let s = pairwise_sum(&tmp);
+        crate::pool::give(tmp);
+        s
+    }
+
+    /// Materialize row-major DATA IN self's OWN dtype (no cast): the general
+    /// worker `detach_copy` calls so a non-f32 host tensor's copy stays that
+    /// dtype instead of silently downcasting through `to_vec`'s f32 path.
+    /// Reads `dtype()` (which takes and releases its own guard) rather than
+    /// matching under a held guard - each `to_vec_*` call below takes its
+    /// own read guard too, and nesting two same-thread reads of one RwLock
+    /// can deadlock behind a queued writer (the exact hazard fixed in
+    /// `PairGuard`). Device storage never reaches here: the caller returns
+    /// via the device_resident_whole branch first.
+    fn detach_copy_same_dtype(&self) -> Tensor {
+        match self.dtype() {
+            DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap(),
+            DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape).unwrap(),
+            DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape).unwrap(),
+            DType::F16 => {
+                Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape).unwrap()
+            }
+            DType::BF16 => {
+                Tensor::from_vec_bf16_bits(self.to_vec_bf16_bits().unwrap(), &self.0.shape).unwrap()
+            }
+        }
+    }
+
     /// Materialize as row-major f32, casting from f64/i64 storage (lossy for
     /// |i64| > 2^24). Every compute kernel reads through this, so strided
     /// views (transpose, broadcast) work transparently.
     pub fn to_vec(&self) -> Vec<f32> {
-        match &self.0.storage.data {
+        match &*self.0.storage.read() {
             Storage::F32(v) => self.gather_view(v),
             Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
-            // Device-i64 index buffers materialize through the i64 channel.
-            Storage::DeviceI64(_) => self.to_vec_i64().into_iter().map(|x| x as f32).collect(),
+            Storage::F16(v) => self
+                .gather_view(v)
+                .into_iter()
+                .map(crate::half::f32_from_f16_bits)
+                .collect(),
+            Storage::BF16(v) => self
+                .gather_view(v)
+                .into_iter()
+                .map(crate::half::f32_from_bf16_bits)
+                .collect(),
+            // Device-i64 index buffers materialize through the i64 channel
+            // (whole-buffer download; device i64 buffers are never views).
+            Storage::DeviceI64(b) => backend_for(self.0.device)
+                .expect("device tensor exists, so its backend must be registered")
+                .copy_i64_to_host(b.as_ref())
+                .expect("device i64-to-host copy failed")
+                .into_iter()
+                .map(|x| x as f32)
+                .collect(),
             Storage::Device(b) => {
                 let host = device_to_host(self.0.device, b.as_ref());
                 self.gather_view(&host)
@@ -310,30 +557,82 @@ impl Tensor {
         }
     }
 
-    /// Materialize as row-major f64 (exact from f32/i64 up to 2^53).
+    /// Materialize as row-major f64 (exact from f32/i64 up to 2^53). Host
+    /// storage reads under one guard; device storage falls through to the
+    /// download paths after releasing it (nested reads of one storage lock
+    /// on a single thread can deadlock behind a queued writer).
     pub fn to_vec_f64(&self) -> Vec<f64> {
-        match &self.0.storage.data {
-            Storage::F32(v) => self.gather_view(v).into_iter().map(|x| x as f64).collect(),
-            Storage::F64(v) => self.gather_view(v),
-            Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f64).collect(),
-            Storage::Device(_) => self.to_vec().into_iter().map(|x| x as f64).collect(),
-            Storage::DeviceI64(_) => self.to_vec_i64().into_iter().map(|x| x as f64).collect(),
+        {
+            let g = self.0.storage.read();
+            match &*g {
+                Storage::F32(v) => {
+                    return self.gather_view(v).into_iter().map(|x| x as f64).collect()
+                }
+                Storage::F64(v) => return self.gather_view(v),
+                Storage::I64(v) => {
+                    return self.gather_view(v).into_iter().map(|x| x as f64).collect()
+                }
+                Storage::F16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_f16_bits(b) as f64)
+                        .collect()
+                }
+                Storage::BF16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_bf16_bits(b) as f64)
+                        .collect()
+                }
+                Storage::Device(_) | Storage::DeviceI64(_) => {}
+            }
+        }
+        if self.dtype() == DType::I64 {
+            self.to_vec_i64().into_iter().map(|x| x as f64).collect()
+        } else {
+            self.to_vec().into_iter().map(|x| x as f64).collect()
         }
     }
 
     /// Materialize as row-major i64; floats truncate toward zero. Device-i64
     /// storage downloads through the backend's i64 channel.
     pub fn to_vec_i64(&self) -> Vec<i64> {
-        match &self.0.storage.data {
-            Storage::F32(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
-            Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as i64).collect(),
-            Storage::I64(v) => self.gather_view(v),
-            Storage::DeviceI64(b) => backend_for(self.0.device)
-                .expect("device tensor exists, so its backend must be registered")
-                .copy_i64_to_host(b.as_ref())
-                .expect("device i64-to-host copy failed"),
-            Storage::Device(_) => self.to_vec().into_iter().map(|x| x as i64).collect(),
+        {
+            let g = self.0.storage.read();
+            match &*g {
+                Storage::F32(v) => {
+                    return self.gather_view(v).into_iter().map(|x| x as i64).collect()
+                }
+                Storage::F64(v) => {
+                    return self.gather_view(v).into_iter().map(|x| x as i64).collect()
+                }
+                Storage::I64(v) => return self.gather_view(v),
+                Storage::F16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_f16_bits(b) as i64)
+                        .collect()
+                }
+                Storage::BF16(v) => {
+                    return self
+                        .gather_view(v)
+                        .into_iter()
+                        .map(|b| crate::half::f32_from_bf16_bits(b) as i64)
+                        .collect()
+                }
+                Storage::DeviceI64(b) => {
+                    return backend_for(self.0.device)
+                        .expect("device tensor exists, so its backend must be registered")
+                        .copy_i64_to_host(b.as_ref())
+                        .expect("device i64-to-host copy failed")
+                }
+                Storage::Device(_) => {}
+            }
         }
+        self.to_vec().into_iter().map(|x| x as i64).collect()
     }
 
     /// Cast to `dtype`, returning a detached contiguous leaf on the same
@@ -350,6 +649,15 @@ impl Tensor {
             DType::F32 => Storage::F32(self.to_vec()),
             DType::F64 => Storage::F64(self.to_vec_f64()),
             DType::I64 => Storage::I64(self.to_vec_i64()),
+            // Half targets round (RNE) from the f32 materialization; a
+            // same-dtype half cast round-trips bit-exactly since every f16/
+            // bf16 value is exactly representable in f32.
+            DType::F16 => Storage::F16(
+                self.to_vec().into_iter().map(crate::half::f16_bits_from_f32).collect(),
+            ),
+            DType::BF16 => Storage::BF16(
+                self.to_vec().into_iter().map(crate::half::bf16_bits_from_f32).collect(),
+            ),
         };
         Tensor::from_parts(
             Arc::new(StorageCell::new(storage)),
@@ -362,8 +670,16 @@ impl Tensor {
         )
     }
 
-    /// Scalar value of a 0-d (or single-element) tensor.
+    /// Scalar value of a 0-d (or single-element) tensor. Host f32 reads the
+    /// element straight from storage - no per-item Vec (offset addresses the
+    /// first element of any layout, matching to_vec()[0]).
     pub fn item(&self) -> f32 {
+        {
+            let g = self.0.storage.read();
+            if let Storage::F32(v) = &*g {
+                return v[self.0.offset];
+            }
+        }
         self.to_vec()[0]
     }
 
@@ -427,7 +743,7 @@ impl Tensor {
     /// the whole buffer in natural order. Only the f32 flavor counts - i64
     /// index buffers have their own gather seam.
     pub(crate) fn device_resident_whole(&self) -> bool {
-        matches!(&self.0.storage.data, Storage::Device(_))
+        matches!(&*self.0.storage.read(), Storage::Device(_))
             && self.0.offset == 0
             && self.is_contiguous()
     }
@@ -478,7 +794,28 @@ impl Tensor {
         let mut slot = self.0.grad.lock().unwrap();
         *slot = Some(match slot.take() {
             None => g,
-            Some(existing) => raw_binary_k("grad_acc", &existing, &g, BinaryKind::Add).unwrap(),
+            Some(existing) => {
+                // In-place accumulation is a pure optimization, applied only
+                // when `existing` is provably unshared (sole Tensor handle AND
+                // sole storage reference; holding the grad mutex means no new
+                // handle can appear): backward can hand several inputs the
+                // same gradient tensor (y = a + b seeds both with one), and
+                // user-held grad() clones must keep their values, so anything
+                // shared falls back to the allocating sum. A failed in-place
+                // attempt (exotic layout, backend without in-place kernels)
+                // falls back too - in-place kernels never partially mutate on
+                // Err.
+                let unshared = Arc::strong_count(&existing.0) == 1
+                    && Arc::strong_count(&existing.0.storage) == 1;
+                if unshared
+                    && crate::inplace::raw_binary_("grad_acc", BinaryKind::Add, &existing, &g)
+                        .is_ok()
+                {
+                    existing
+                } else {
+                    raw_binary_k("grad_acc", &existing, &g, BinaryKind::Add).unwrap()
+                }
+            }
         });
     }
 
@@ -547,6 +884,12 @@ impl Tensor {
                 DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape)?,
                 DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape)?,
                 DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape)?,
+                DType::F16 => {
+                    Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape)?
+                }
+                DType::BF16 => {
+                    Tensor::from_vec_bf16_bits(self.to_vec_bf16_bits().unwrap(), &self.0.shape)?
+                }
             };
             host.to_device(self.0.device)?
         };
@@ -596,11 +939,13 @@ impl Tensor {
         }))
     }
 
-    /// A detached, contiguous copy that shares no autograd history or storage.
+    /// A detached, contiguous copy sharing no autograd history. Host copies
+    /// own fresh storage; a whole device buffer is SHARED rather than copied
+    /// through the host (which would also move the tensor to cpu) - which is
+    /// why public in-place ops refuse device tensors with shared storage,
+    /// and why `Param` construction goes through `owned_detach_copy`.
     pub fn detach_copy(&self) -> Tensor {
         if self.device_resident_whole() {
-            // Device buffers are immutable and whole; share instead of copying
-            // through the host (which would also move the tensor to cpu).
             return Tensor::from_parts(
                 self.0.storage.clone(),
                 self.0.shape.clone(),
@@ -611,7 +956,25 @@ impl Tensor {
                 None,
             );
         }
-        Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap()
+        self.detach_copy_same_dtype()
+    }
+
+    /// A detached contiguous copy that always OWNS its storage, device
+    /// included (one `copy_dev` for whole device buffers; strided device
+    /// views materialize through the host and re-upload). Parameters are
+    /// built from this so an in-place optimizer step can never scribble
+    /// over the caller's tensor. Cold paths only.
+    pub(crate) fn owned_detach_copy(&self) -> Tensor {
+        if self.device_resident_whole() {
+            let backend = backend_for(self.0.device).expect("device tensor implies backend");
+            let g = self.0.storage.read();
+            let Storage::Device(buf) = &*g else { unreachable!() };
+            let copy = backend.copy_dev(buf.as_ref()).expect("device buffer copy");
+            return device_leaf(copy, &self.0.shape, self.0.device);
+        }
+        let host = Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap();
+        host.to_device(self.0.device)
+            .expect("tensor's device backend is registered")
     }
 
     /// Constant tensor on the given device (cpu allocation or backend fill).
@@ -677,8 +1040,23 @@ impl Tensor {
         self.0.storage.version.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Test-only seam to simulate an in-place mutation before real in-place ops
-    /// exist, so the version-mismatch assertion in `backward` is exercisable.
+    /// Element count of the underlying storage buffer (not the view). A
+    /// tensor is a "whole" view of its storage exactly when `offset == 0`,
+    /// it is contiguous, and this equals `numel()` - the shape in-place ops
+    /// and device kernels require.
+    pub(crate) fn storage_len(&self) -> usize {
+        match &*self.0.storage.read() {
+            Storage::F32(v) => v.len(),
+            Storage::F64(v) => v.len(),
+            Storage::I64(v) => v.len(),
+            Storage::F16(v) | Storage::BF16(v) => v.len(),
+            Storage::Device(b) | Storage::DeviceI64(b) => b.len(),
+        }
+    }
+
+    /// Test-only seam to simulate an in-place mutation directly, so the
+    /// version-mismatch assertion in `backward` is exercisable in isolation
+    /// from the real in-place ops.
     #[doc(hidden)]
     pub fn _bump_version_for_test(&self) {
         self.bump_version();
@@ -688,6 +1066,15 @@ impl Tensor {
     #[doc(hidden)]
     pub fn _version(&self) -> u64 {
         self.version()
+    }
+
+    /// Test-only identity of the storage allocation: equal values mean two
+    /// tensors share one `StorageCell` (and an unchanged value across an
+    /// optimizer step proves the step mutated in place instead of
+    /// reallocating).
+    #[doc(hidden)]
+    pub fn _storage_ptr(&self) -> usize {
+        Arc::as_ptr(&self.0.storage) as *const () as usize
     }
 }
 
@@ -737,7 +1124,8 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     check_f32("unary", a)?;
     if a.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(buf) = &a.0.storage.data else {
+        let g = a.0.storage.read();
+        let Storage::Device(buf) = &*g else {
             unreachable!()
         };
         let out = backend.unary_dev(kind, buf.as_ref())?;
@@ -746,15 +1134,24 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
     // Contiguous host f32 (any offset): slice straight into the backend, no
     // materializing copy - the read side of the ~3x-bytes-moved bug this
     // function used to have via `a.to_vec()`.
-    if let Storage::F32(v) = &a.0.storage.data {
-        if a.0.device == Device::Cpu && a.is_contiguous() {
-            let n = a.numel();
-            let cpu = backend_for(Device::Cpu)?;
-            return Tensor::from_vec(cpu.unary(kind, &v[a.0.offset..a.0.offset + n]), &a.0.shape);
+    {
+        let g = a.0.storage.read();
+        if let Storage::F32(v) = &*g {
+            if a.0.device == Device::Cpu && a.is_contiguous() {
+                let n = a.numel();
+                let cpu = backend_for(Device::Cpu)?;
+                return Tensor::from_vec(
+                    cpu.unary(kind, &v[a.0.offset..a.0.offset + n]),
+                    &a.0.shape,
+                );
+            }
         }
     }
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.unary(kind, &a.to_vec()), &a.0.shape)?.to_device(a.0.device)
+    let va = a.to_vec_pooled();
+    let out = cpu.unary(kind, &va);
+    crate::pool::give(va);
+    Tensor::from_vec(out, &a.0.shape)?.to_device(a.0.device)
 }
 
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
@@ -787,10 +1184,9 @@ pub(crate) fn raw_binary_k(
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else {
-            unreachable!()
-        };
-        let Storage::Device(bb) = &b.0.storage.data else {
+        let pair = PairGuard::new(a, b);
+        let (sa, sb) = pair.get();
+        let (Storage::Device(ba), Storage::Device(bb)) = (sa, sb) else {
             unreachable!()
         };
         if a.0.shape == b.0.shape {
@@ -809,34 +1205,44 @@ pub(crate) fn raw_binary_k(
         return Ok(device_leaf(out, &out_shape, a.0.device));
     }
     // Contiguous host f32 operands: skip the copy-then-compute path.
-    if let (Storage::F32(va), Storage::F32(vb)) = (&a.0.storage.data, &b.0.storage.data) {
-        if a.0.device == Device::Cpu && a.is_contiguous() && b.is_contiguous() {
-            let cpu = backend_for(Device::Cpu)?;
-            // Equal shapes: slice both operands directly (any offset).
-            if a.0.shape == b.0.shape {
-                let n = a.numel();
-                let sa = &va[a.0.offset..a.0.offset + n];
-                let sb = &vb[b.0.offset..b.0.offset + n];
-                return Tensor::from_vec(cpu.binary(kind, sa, sb), &a.0.shape);
-            }
-            // Different shapes: hand the backend the whole unmaterialized
-            // buffers (e.g. a [4096] bias against a [4096,4096] output) so a
-            // smaller operand is read repeatedly instead of expanded first.
-            // Restricted to zero-offset whole buffers - an offset view still
-            // takes the materializing fallback below.
-            if a.0.offset == 0 && b.0.offset == 0 && va.len() == a.numel() && vb.len() == b.numel()
-            {
-                let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-                let out = cpu.binary_bc(kind, va, &a.0.shape, vb, &b.0.shape, &out_shape);
-                return Tensor::from_vec(out, &out_shape);
+    {
+        let pair = PairGuard::new(a, b);
+        let (sa_st, sb_st) = pair.get();
+        if let (Storage::F32(va), Storage::F32(vb)) = (sa_st, sb_st) {
+            if a.0.device == Device::Cpu && a.is_contiguous() && b.is_contiguous() {
+                let cpu = backend_for(Device::Cpu)?;
+                // Equal shapes: slice both operands directly (any offset).
+                if a.0.shape == b.0.shape {
+                    let n = a.numel();
+                    let sa = &va[a.0.offset..a.0.offset + n];
+                    let sb = &vb[b.0.offset..b.0.offset + n];
+                    return Tensor::from_vec(cpu.binary(kind, sa, sb), &a.0.shape);
+                }
+                // Different shapes: hand the backend the whole unmaterialized
+                // buffers (e.g. a [4096] bias against a [4096,4096] output) so a
+                // smaller operand is read repeatedly instead of expanded first.
+                // Restricted to zero-offset whole buffers - an offset view still
+                // takes the materializing fallback below.
+                if a.0.offset == 0
+                    && b.0.offset == 0
+                    && va.len() == a.numel()
+                    && vb.len() == b.numel()
+                {
+                    let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
+                    let out = cpu.binary_bc(kind, va, &a.0.shape, vb, &b.0.shape, &out_shape);
+                    return Tensor::from_vec(out, &out_shape);
+                }
             }
         }
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-    let va = a.broadcast_to(&out_shape)?.to_vec();
-    let vb = b.broadcast_to(&out_shape)?.to_vec();
+    let va = a.broadcast_to(&out_shape)?.to_vec_pooled();
+    let vb = b.broadcast_to(&out_shape)?.to_vec_pooled();
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.binary(kind, &va, &vb), &out_shape)?.to_device(a.0.device)
+    let out = cpu.binary(kind, &va, &vb);
+    crate::pool::give(va);
+    crate::pool::give(vb);
+    Tensor::from_vec(out, &out_shape)?.to_device(a.0.device)
 }
 
 pub(crate) fn raw_binary(
@@ -855,9 +1261,14 @@ pub(crate) fn raw_binary(
         });
     }
     let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-    let va = a.broadcast_to(&out_shape)?.to_vec();
-    let vb = b.broadcast_to(&out_shape)?.to_vec();
-    let data = va.iter().zip(vb.iter()).map(|(&x, &y)| f(x, y)).collect();
+    let va = a.broadcast_to(&out_shape)?.to_vec_pooled();
+    let vb = b.broadcast_to(&out_shape)?.to_vec_pooled();
+    let mut data = crate::pool::take_uninit(va.len());
+    for ((o, &x), &y) in data.iter_mut().zip(&va).zip(&vb) {
+        *o = f(x, y);
+    }
+    crate::pool::give(va);
+    crate::pool::give(vb);
     Tensor::from_vec(data, &out_shape)
 }
 
@@ -894,19 +1305,21 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     }
     if a.device_resident_whole() && b.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else {
-            unreachable!()
-        };
-        let Storage::Device(bb) = &b.0.storage.data else {
+        let pair = PairGuard::new(a, b);
+        let (sa, sb) = pair.get();
+        let (Storage::Device(ba), Storage::Device(bb)) = (sa, sb) else {
             unreachable!()
         };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, false, false)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
-    let va = a.to_vec();
-    let vb = b.to_vec();
+    let va = a.to_vec_pooled();
+    let vb = b.to_vec_pooled();
     let cpu = backend_for(Device::Cpu)?;
-    Tensor::from_vec(cpu.matmul(&va, &vb, m, k, n), &[m, n])?.to_device(a.0.device)
+    let out = cpu.matmul(&va, &vb, m, k, n);
+    crate::pool::give(va);
+    crate::pool::give(vb);
+    Tensor::from_vec(out, &[m, n])?.to_device(a.0.device)
 }
 
 /// Full-tensor reduction on a resident device tensor, if it is one.
@@ -915,7 +1328,8 @@ pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
         return None;
     }
     let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-    let Storage::Device(buf) = &t.0.storage.data else {
+    let g = t.0.storage.read();
+    let Storage::Device(buf) = &*g else {
         unreachable!()
     };
     let out = backend
@@ -948,10 +1362,9 @@ pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result
             });
         }
         let backend = backend_for(a.0.device)?;
-        let Storage::Device(ba) = &a.0.storage.data else {
-            unreachable!()
-        };
-        let Storage::Device(bb) = &b.0.storage.data else {
+        let pair = PairGuard::new(a, b);
+        let (sa, sb) = pair.get();
+        let (Storage::Device(ba), Storage::Device(bb)) = (sa, sb) else {
             unreachable!()
         };
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, ta, tb)?;
@@ -976,7 +1389,8 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
     let ndim = in_shape.len();
     if t.device_resident_whole() {
         let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-        let Storage::Device(buf) = &t.0.storage.data else {
+        let g = t.0.storage.read();
+        let Storage::Device(buf) = &*g else {
             unreachable!()
         };
         let out = backend
@@ -996,12 +1410,13 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
         };
         return device_leaf(out, &out_shape, t.0.device);
     }
-    let v = t.to_vec();
+    let v = t.to_vec_pooled();
     let strides = default_strides(&in_shape);
     let (n, stride) = (in_shape[dim], strides[dim]);
     let mut keep_shape = in_shape.clone();
     keep_shape[dim] = 1;
-    let mut out = vec![0f32; numel(&keep_shape)];
+    // Every slot is assigned below, so the buffer may come back uninit.
+    let mut out = crate::pool::take_uninit(numel(&keep_shape));
     let mut idx = vec![0usize; ndim];
     for slot in out.iter_mut() {
         let off: usize = (0..ndim).map(|d| idx[d] * strides[d]).sum();
@@ -1017,6 +1432,7 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
             idx[d] = 0;
         }
     }
+    crate::pool::give(v);
     let out_shape: Vec<usize> = if keepdim {
         keep_shape
     } else {
@@ -1039,7 +1455,8 @@ pub(crate) fn raw_row_softmax(t: &Tensor, dim: usize, log: bool) -> Option<Tenso
         return None;
     }
     let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
-    let Storage::Device(buf) = &t.0.storage.data else {
+    let g = t.0.storage.read();
+    let Storage::Device(buf) = &*g else {
         unreachable!()
     };
     let cols = t.0.shape[dim];

@@ -386,11 +386,38 @@ impl FusedChain {
         if all_resident {
             if let Ok(out) = (|| {
                 let backend = backend_for(seed.device())?;
+                // One read guard per distinct StorageCell, ACQUIRED in
+                // global address order (not operand order): operands can
+                // repeat a tensor (a same-thread double read of one lock
+                // can itself deadlock behind a queued writer, so dedup
+                // first), and two chains sharing operands in reversed order
+                // would otherwise lock them in opposite orders - the same
+                // AB-BA hazard fixed in `tensor::PairGuard`, once any writer
+                // (an in-place op) can queue on either lock. Two passes:
+                // collect the distinct (tensor, pointer) pairs, sort by
+                // pointer, THEN lock in that order.
+                let mut by_ptr: Vec<(*const crate::tensor::StorageCell, &Tensor)> = Vec::new();
+                for t in &chain.operands {
+                    let p = std::sync::Arc::as_ptr(&t.0.storage);
+                    if !by_ptr.iter().any(|&(q, _)| q == p) {
+                        by_ptr.push((p, t));
+                    }
+                }
+                by_ptr.sort_unstable_by_key(|&(p, _)| p);
+                let mut guards: Vec<(
+                    *const crate::tensor::StorageCell,
+                    std::sync::RwLockReadGuard<crate::tensor::Storage>,
+                )> = Vec::with_capacity(by_ptr.len());
+                for (p, t) in by_ptr {
+                    guards.push((p, t.0.storage.read()));
+                }
                 let bufs: Vec<&dyn crate::dispatch::DeviceBuffer> = chain
                     .operands
                     .iter()
                     .map(|t| -> &dyn crate::dispatch::DeviceBuffer {
-                        match &t.0.storage.data {
+                        let p = std::sync::Arc::as_ptr(&t.0.storage);
+                        let (_, g) = guards.iter().find(|(q, _)| *q == p).unwrap();
+                        match &**g {
                             crate::tensor::Storage::Device(b) => b.as_ref(),
                             _ => unreachable!(),
                         }

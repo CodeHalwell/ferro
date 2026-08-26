@@ -169,11 +169,15 @@ mutable slot holding a leaf tensor with `requires_grad = true`. It is
 `Rc<RefCell<Tensor>>` for the single-threaded MVP (a threaded runtime would swap
 these for `Arc<Mutex<...>>`).
 
-Because tensors are immutable and `Arc`-shared, an optimizer step never mutates
-storage in place. Instead the flow is: read `param.tensor()` (the current leaf)
-and `param.grad()`, compute new leaf values as a plain `Vec<f32>`, and reinstall
-a fresh leaf via `param.set(...)` (which re-flags it as grad-requiring). This is
-exactly what the `optim` module and the linear-regression test do.
+`Param::new`/`Param::set` take an OWNING copy of their argument, so the slot's
+leaf never aliases caller-held storage. Optimizer steps mutate that leaf's
+storage in place through the no-grad seams in `inplace.rs` (fused
+`sgd_step`/`adamw_step` kernels): the leaf's identity and storage address are
+stable across steps, the storage version is bumped each step, and a stale
+graph that saved the parameter fails loudly on its next backward instead of
+silently reusing old values. See `inplace.rs` for the mutation rules
+(whole-contiguous f32 destinations; the public API additionally refuses
+tensors with autograd history).
 
 ## nn and optim (in progress)
 
@@ -181,9 +185,10 @@ exactly what the `optim` module and the linear-regression test do.
 
 - `nn`: a `Module` trait (`forward`, `parameters`) with `Linear`
   (`y = x @ W + b`, He-initialized), `Relu`, `Sigmoid`, and `Sequential`.
-- `optim`: `Sgd` (optional heavy-ball momentum) and `Adam` (with bias
-  correction). Optimizer state (velocity, Adam moments, timestep) is kept as
-  plain `Vec<f32>`, one entry per parameter element, since tensors are immutable.
+- `optim`: `Sgd` (optional heavy-ball momentum) and `Adam`/`AdamW` (with bias
+  correction). Optimizer state (velocity, Adam moments) lives as tensors on
+  the parameter's device and is mutated in place by the fused step kernels;
+  timestep counters stay host-side.
 
 These are described here at a high level because they are still evolving; the MVP
 correctness guarantees rest on `tensor.rs`, `ops.rs`, `autograd.rs`, `shape.rs`,

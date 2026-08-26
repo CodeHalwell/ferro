@@ -33,8 +33,33 @@ pub enum UnaryKind {
     Gtz,
     /// GELU, tanh approximation: 0.5*v*(1 + tanh(sqrt(2/pi)*(v + 0.044715 v^3))).
     Gelu,
+    /// GELU, exact erf form (torch's default `gelu`): 0.5*v*(1 + erf(v/sqrt(2))).
+    GeluErf,
+    /// d/dv of GeluErf: Phi(v) + v*phi(v), the erf-gelu backward mask.
+    GeluErfGrad,
     /// SiLU (swish): v * sigmoid(v).
     Silu,
+}
+
+/// erf for f32 inputs via Abramowitz-Stegun 7.1.26 evaluated in f64
+/// (max absolute error ~1.5e-7, below f32 resolution over most of the
+/// range). Exported so every host backend computes the exact-erf GELU with
+/// one shared formula - fastcpu's bitwise-parity contract depends on it.
+/// CUDA uses the hardware `erff`, which agrees to about a ulp of true erf;
+/// device-vs-host comparisons stay within the usual 1e-5 tolerances.
+pub fn erf_f32(x: f32) -> f32 {
+    const A1: f64 = 0.254829592;
+    const A2: f64 = -0.284496736;
+    const A3: f64 = 1.421413741;
+    const A4: f64 = -1.453152027;
+    const A5: f64 = 1.061405429;
+    const P: f64 = 0.3275911;
+    let xd = x as f64;
+    let sign = if xd < 0.0 { -1.0 } else { 1.0 };
+    let ax = xd.abs();
+    let t = 1.0 / (1.0 + P * ax);
+    let poly = ((((A5 * t + A4) * t + A3) * t + A2) * t + A1) * t;
+    (sign * (1.0 - poly * (-ax * ax).exp())) as f32
 }
 
 /// Named elementwise binary kernels.
@@ -44,6 +69,29 @@ pub enum BinaryKind {
     Sub,
     Mul,
     Div,
+}
+
+/// The scalar math behind a `BinaryKind`, shared by every host loop here.
+fn binary_scalar_fn(kind: BinaryKind) -> impl Fn(f32, f32) -> f32 {
+    move |x: f32, y: f32| match kind {
+        BinaryKind::Add => x + y,
+        BinaryKind::Sub => x - y,
+        BinaryKind::Mul => x * y,
+        BinaryKind::Div => x / y,
+    }
+}
+
+/// Hyperparameters of one fused Adam/AdamW step (`Backend::adamw_step`).
+/// bc1/bc2 are the step's bias corrections 1 - beta^t, computed host-side.
+#[derive(Clone, Copy, Debug)]
+pub struct AdamWStep {
+    pub lr: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub bc1: f32,
+    pub bc2: f32,
+    pub eps: f32,
+    pub weight_decay: f32,
 }
 
 /// Core-owned description of one step in a fused pointwise chain: the tag
@@ -146,11 +194,14 @@ pub trait Backend: Send + Sync {
         k: usize,
         n: usize,
     ) -> Vec<f32> {
-        let mut out = vec![0f32; batch * m * n];
+        // Every batch slab is copied in below, so the pool buffer may come
+        // back uninit; per-slab results recycle immediately via give.
+        let mut out = crate::pool::take_uninit(batch * m * n);
         for bi in 0..batch {
             let (ao, bo, co) = (bi * m * k, bi * k * n, bi * m * n);
             let c = self.matmul(&a[ao..ao + m * k], &b[bo..bo + k * n], m, k, n);
             out[co..co + m * n].copy_from_slice(&c);
+            crate::pool::give(c);
         }
         out
     }
@@ -280,6 +331,148 @@ pub trait Backend: Send + Sync {
         self.alloc_from_host(&vec![value; len])
     }
 
+    // --- in-place kernels ---------------------------------------------------
+    // Mutating counterparts of the compute kernels above, used by the in-place
+    // tensor ops and the optimizers. Host variants take `&mut [f32]` (core
+    // holds the storage write lock) and carry loop defaults every backend
+    // inherits; an override may vectorize/thread but must keep the exact
+    // per-element operation order - optimizer results are asserted bitwise
+    // against the unfused reference math. Device variants mutate contents
+    // behind `&dyn DeviceBuffer` (device memory is not Rust-owned; the same
+    // buffer may legally appear as both dst and src, so kernels must only
+    // ever combine same-index elements). Their defaults FAIL FAST with no
+    // side effects - no downloads, no partial writes - so a backend without
+    // them keeps its exact legacy behavior (callers fall back to allocating
+    // paths) and transfer-counting tests stay byte-honest. On any Err a
+    // kernel must have mutated nothing: callers treat Err as "unchanged" and
+    // rerun the math through the allocating fallback.
+
+    fn fill_inplace(&self, dst: &mut [f32], value: f32) {
+        dst.fill(value);
+    }
+
+    /// dst[i] = dst[i] * mul + add.
+    fn affine_inplace(&self, dst: &mut [f32], mul: f32, add: f32) {
+        for d in dst.iter_mut() {
+            *d = *d * mul + add;
+        }
+    }
+
+    /// dst[i] = dst[i] kind src[i]; same-length contract as `binary`.
+    fn binary_inplace(&self, kind: BinaryKind, dst: &mut [f32], src: &[f32]) {
+        let f = binary_scalar_fn(kind);
+        for (d, &s) in dst.iter_mut().zip(src) {
+            *d = f(*d, s);
+        }
+    }
+
+    /// dst[i] += alpha * src[i].
+    fn axpy_inplace(&self, alpha: f32, dst: &mut [f32], src: &[f32]) {
+        for (d, &s) in dst.iter_mut().zip(src) {
+            *d += alpha * s;
+        }
+    }
+
+    /// One fused SGD step with heavy-ball momentum (callers handle the
+    /// momentum == 0 case via `axpy_inplace`): v = momentum*v + g, then
+    /// p -= lr * (nesterov ? momentum*v + g : v). Buffers are same-length.
+    fn sgd_step(&self, p: &mut [f32], v: &mut [f32], g: &[f32], lr: f32, momentum: f32, nesterov: bool) {
+        for i in 0..p.len() {
+            v[i] = v[i] * momentum + g[i];
+            let d = if nesterov { v[i] * momentum + g[i] } else { v[i] };
+            p[i] -= d * lr;
+        }
+    }
+
+    /// One fused Adam/AdamW step (weight_decay == 0 is exactly Adam):
+    /// m = beta1*m + (1-beta1)*g; v = beta2*v + (1-beta2)*g*g;
+    /// p -= lr * (m/bc1 / (sqrt(v/bc2) + eps) [+ weight_decay*p]).
+    /// The decay term reads the pre-update parameter (decoupled decay).
+    fn adamw_step(&self, p: &mut [f32], m: &mut [f32], v: &mut [f32], g: &[f32], hp: AdamWStep) {
+        let (nb1, nb2) = (1.0 - hp.beta1, 1.0 - hp.beta2);
+        for i in 0..p.len() {
+            let gi = g[i];
+            m[i] = m[i] * hp.beta1 + gi * nb1;
+            v[i] = v[i] * hp.beta2 + (gi * gi) * nb2;
+            let m_hat = m[i] / hp.bc1;
+            let denom = (v[i] / hp.bc2).sqrt();
+            let mut upd = m_hat / (denom + hp.eps);
+            if hp.weight_decay != 0.0 {
+                upd += hp.weight_decay * p[i];
+            }
+            p[i] -= upd * hp.lr;
+        }
+    }
+
+    /// Overwrite a device buffer's contents from host data, preserving the
+    /// buffer's address (the stable-address contract in-place ops establish).
+    fn write_dev_from_host(&self, _dst: &dyn DeviceBuffer, _data: &[f32]) -> Result<()> {
+        not_resident("write_dev_from_host")
+    }
+
+    fn fill_inplace_dev(&self, dst: &dyn DeviceBuffer, value: f32) -> Result<()> {
+        self.write_dev_from_host(dst, &vec![value; dst.len()])
+    }
+
+    fn affine_inplace_dev(&self, _dst: &dyn DeviceBuffer, _mul: f32, _add: f32) -> Result<()> {
+        not_resident("affine_inplace_dev")
+    }
+
+    /// dst and src are same-length device buffers; dst may be src.
+    fn binary_inplace_dev(
+        &self,
+        _kind: BinaryKind,
+        _dst: &dyn DeviceBuffer,
+        _src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        not_resident("binary_inplace_dev")
+    }
+
+    fn axpy_inplace_dev(
+        &self,
+        _alpha: f32,
+        _dst: &dyn DeviceBuffer,
+        _src: &dyn DeviceBuffer,
+    ) -> Result<()> {
+        not_resident("axpy_inplace_dev")
+    }
+
+    /// Copy src's contents into dst (same length, same backend), preserving
+    /// dst's address.
+    fn copy_into_dev(&self, _dst: &dyn DeviceBuffer, _src: &dyn DeviceBuffer) -> Result<()> {
+        not_resident("copy_into_dev")
+    }
+
+    /// Fresh device buffer with src's contents. Defaulted via a host round
+    /// trip so every resident backend gets it (cold paths only: parameter
+    /// construction); override with a device-side copy.
+    fn copy_dev(&self, src: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        self.alloc_from_host(&self.copy_to_host(src)?)
+    }
+
+    fn sgd_step_dev(
+        &self,
+        _p: &dyn DeviceBuffer,
+        _v: &dyn DeviceBuffer,
+        _g: &dyn DeviceBuffer,
+        _lr: f32,
+        _momentum: f32,
+        _nesterov: bool,
+    ) -> Result<()> {
+        not_resident("sgd_step_dev")
+    }
+
+    fn adamw_step_dev(
+        &self,
+        _p: &dyn DeviceBuffer,
+        _m: &dyn DeviceBuffer,
+        _v: &dyn DeviceBuffer,
+        _g: &dyn DeviceBuffer,
+        _hp: AdamWStep,
+    ) -> Result<()> {
+        not_resident("adamw_step_dev")
+    }
+
     // --- i64 index buffers --------------------------------------------------
     // DeviceBuffer stays opaque: i64 device buffers are produced only by
     // `alloc_i64_from_host` and consumed only by `copy_i64_to_host` /
@@ -358,19 +551,29 @@ impl Backend for CpuBackend {
                 let u = 0.797_884_6 * (v + 0.044715 * v * v * v);
                 0.5 * v * (1.0 + u.tanh())
             }
+            UnaryKind::GeluErf => 0.5 * v * (1.0 + erf_f32(v * std::f32::consts::FRAC_1_SQRT_2)),
+            // Phi(v) + v*phi(v) with phi the standard normal density.
+            UnaryKind::GeluErfGrad => {
+                0.5 * (1.0 + erf_f32(v * std::f32::consts::FRAC_1_SQRT_2))
+                    + v * (-0.5 * v * v).exp() * 0.398_942_28
+            }
             UnaryKind::Silu => v / (1.0 + (-v).exp()),
         };
-        x.iter().map(|&v| f(v)).collect()
+        // Pool-backed output; every element is written below.
+        let mut out = crate::pool::take_uninit(x.len());
+        for (o, &v) in out.iter_mut().zip(x) {
+            *o = f(v);
+        }
+        out
     }
 
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32> {
-        let f = move |x: f32, y: f32| match kind {
-            BinaryKind::Add => x + y,
-            BinaryKind::Sub => x - y,
-            BinaryKind::Mul => x * y,
-            BinaryKind::Div => x / y,
-        };
-        a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect()
+        let f = binary_scalar_fn(kind);
+        let mut out = crate::pool::take_uninit(a.len());
+        for ((o, &x), &y) in out.iter_mut().zip(a).zip(b) {
+            *o = f(x, y);
+        }
+        out
     }
 
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -417,7 +620,9 @@ pub fn set_matmul_kernel(kernel: MatmulKernel) {
 /// Reference implementation: ikj loop order with a zero-skip that helps the
 /// ReLU-sparse gradients common in backward passes.
 pub fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    let mut out = vec![0f32; m * n];
+    // Zeroed, not uninit: the kernel accumulates (and zero-skips), so
+    // untouched slots must already hold 0.
+    let mut out = crate::pool::take_zeroed(m * n);
     for i in 0..m {
         for p in 0..k {
             let aip = a[i * k + p];
@@ -475,20 +680,18 @@ fn binary_bc_odometer(
     sb: &[usize],
     out_shape: &[usize],
 ) -> Vec<f32> {
-    let f = move |x: f32, y: f32| match kind {
-        BinaryKind::Add => x + y,
-        BinaryKind::Sub => x - y,
-        BinaryKind::Mul => x * y,
-        BinaryKind::Div => x / y,
-    };
+    let f = binary_scalar_fn(kind);
     if out_shape.is_empty() {
-        return vec![f(a[0], b[0])];
-    }
-    let n: usize = out_shape.iter().product();
-    let mut out = vec![0f32; n];
-    if n == 0 {
+        let mut out = crate::pool::take_uninit(1);
+        out[0] = f(a[0], b[0]);
         return out;
     }
+    let n: usize = out_shape.iter().product();
+    if n == 0 {
+        return Vec::new();
+    }
+    // Every element of the output index space is written below.
+    let mut out = crate::pool::take_uninit(n);
     let sta = broadcast_strides(sa, out_shape);
     let stb = broadcast_strides(sb, out_shape);
     let ndim = out_shape.len();

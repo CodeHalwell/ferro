@@ -1,21 +1,30 @@
 //! Optimizers (SGD, Adam, AdamW), LR schedulers, and gradient clipping,
 //! operating on parameter tensors and their `.grad()`.
 //!
-//! Tensors are immutable and `Arc`-shared, so a step never mutates in place:
-//! it reads `param.tensor()` and `param.grad()` and rebuilds the leaf through
-//! the raw dispatch kernels (`raw_binary_k`/`raw_unary_k`), bypassing autograd
-//! recording. All step math runs as whole-buffer kernels on whatever device
-//! the parameter lives on - after warmup a CUDA step performs no host
-//! round-trips (the only uploads are the few per-step bias-correction
-//! scalars, 4 bytes each). Optimizer state (momentum buffers, Adam moments)
-//! lives on the parameter's device as tensors; timestep counters stay host-
-//! side since they feed powi, not elementwise math.
-
-use std::collections::HashMap;
+//! Steps mutate IN PLACE through the fused no-grad seams in `inplace`
+//! (`raw_sgd_step_`/`raw_adamw_step_`/`raw_axpy_`): a parameter and its
+//! optimizer state (momentum buffers, Adam moments - tensors on the
+//! parameter's device) keep their storage addresses across every step, the
+//! step allocates nothing for them, and scalars (lr, betas, per-step bias
+//! corrections) ride into the kernels as plain f32 arguments - a steady-state
+//! device step is one fused kernel launch per parameter with zero host
+//! traffic in either direction. The update math is elementwise-identical to
+//! the unfused formulas, so results are bitwise unchanged. Mutating a
+//! grad-requiring leaf is the engine's `torch.no_grad()` step equivalent:
+//! nothing is recorded, the storage version is bumped, and a stale graph that
+//! saved the parameter fails loudly on backward instead of silently reusing
+//! old values.
+//!
+//! A parameter the fused seams reject (a strided/aliased leaf, a backend
+//! without in-place kernels) falls back to the original allocating update -
+//! same numbers, fresh storage, visible through `_storage_ptr` staying
+//! unstable. Timestep counters stay host-side since they feed powi, not
+//! elementwise math.
 
 use crate::device::Device;
-use crate::dispatch::BinaryKind;
+use crate::dispatch::{AdamWStep, BinaryKind, UnaryKind};
 use crate::error::Error;
+use crate::inplace::{raw_adamw_step_, raw_axpy_, raw_sgd_step_};
 use crate::params::Param;
 use crate::tensor::{raw_binary_k, raw_unary_k, Tensor};
 use crate::Result;
@@ -48,27 +57,10 @@ fn bdiv(a: &Tensor, b: &Tensor) -> Result<Tensor> {
     raw_binary_k("optim_div", a, b, BinaryKind::Div)
 }
 
-/// A constant scalar as a tensor already resident on `dev` (a device-side
-/// fill for non-cpu devices: no host upload). Cached per device by the
-/// optimizers so steady-state steps upload nothing for fixed hyperparameters.
-#[derive(Default)]
-struct Scalars(HashMap<Device, HashMap<&'static str, Tensor>>);
-
-impl Scalars {
-    fn get(&mut self, dev: Device, key: &'static str, val: f32) -> Tensor {
-        self.0
-            .entry(dev)
-            .or_default()
-            .entry(key)
-            .or_insert_with(|| {
-                Tensor::full_on(&[1], val, dev).expect("param's device backend is registered")
-            })
-            .clone()
-    }
-}
-
-/// Per-step (non-cacheable) scalar - Adam's bias corrections - uploaded to
-/// `dev`. 4 bytes; the only warmup-path traffic an Adam step has.
+/// A scalar as a tensor on `dev`, for the cold paths that still combine
+/// tensors with scalars through binary kernels (the clip pre-scale and the
+/// legacy fallback update): the fused in-place steps take scalars as plain
+/// f32 kernel arguments and never touch this.
 fn step_scalar(val: f32, dev: Device) -> Tensor {
     if dev == Device::Cpu {
         return Tensor::scalar(val);
@@ -125,7 +117,6 @@ pub struct Sgd {
     nesterov: bool,
     max_grad_norm: Option<f32>,
     velocity: Vec<Option<Tensor>>,
-    scalars: Scalars,
 }
 
 impl Sgd {
@@ -138,7 +129,6 @@ impl Sgd {
             nesterov: false,
             max_grad_norm: None,
             velocity,
-            scalars: Scalars::default(),
         }
     }
 
@@ -155,6 +145,17 @@ impl Sgd {
     pub fn with_max_grad_norm(mut self, max_norm: f32) -> Sgd {
         self.max_grad_norm = Some(max_norm);
         self
+    }
+
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps: the seam an
+    /// `LrScheduler` drives, `opt.set_lr(sched.lr(step))` before each step.
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
     }
 
     pub fn zero_grad(&self) {
@@ -180,13 +181,29 @@ impl Sgd {
             } else {
                 g
             };
+            // Fused in-place step: parameter and velocity keep their storage.
+            let stepped = if self.momentum == 0.0 {
+                raw_axpy_("sgd_step", -self.lr, &cur, &g).is_ok()
+            } else {
+                let v = self.velocity[i].get_or_insert_with(|| zero_like(&cur));
+                raw_sgd_step_(&cur, v, &g, self.lr, self.momentum, self.nesterov).is_ok()
+            };
+            if stepped {
+                // The old step replaced the leaf, implicitly dropping its
+                // grad; the in-place step keeps the tensor, so consume the
+                // grad explicitly - silent cross-step accumulation is the
+                // torch footgun this engine refuses to inherit.
+                p.zero_grad();
+                continue;
+            }
+            // Fallback (strided/aliased param, backend without in-place
+            // kernels): the original allocating update, identical numbers.
             let d = if self.momentum == 0.0 {
                 g
             } else {
-                let mom = self.scalars.get(dev, "momentum", self.momentum);
+                let mom = step_scalar(self.momentum, dev);
                 let v = self.velocity[i].get_or_insert_with(|| zero_like(&cur));
                 let nv = badd(&bmul(v, &mom)?, &g)?;
-                // Tensor clones are Arc-share cheap; the buffer is immutable.
                 let d = if self.nesterov {
                     badd(&bmul(&nv, &mom)?, &g)?
                 } else {
@@ -195,7 +212,7 @@ impl Sgd {
                 *v = nv;
                 d
             };
-            let lr_s = self.scalars.get(dev, "lr", self.lr);
+            let lr_s = step_scalar(self.lr, dev);
             p.set(bsub(&cur, &bmul(&d, &lr_s)?)?);
         }
         Ok(())
@@ -264,7 +281,6 @@ pub struct Adam {
     t: Vec<u32>,
     m: Vec<Option<Tensor>>,
     v: Vec<Option<Tensor>>,
-    scalars: Scalars,
 }
 
 impl Adam {
@@ -282,7 +298,6 @@ impl Adam {
             t,
             m,
             v,
-            scalars: Scalars::default(),
         }
     }
 
@@ -300,6 +315,16 @@ impl Adam {
     pub fn with_max_grad_norm(mut self, max_norm: f32) -> Adam {
         self.max_grad_norm = Some(max_norm);
         self
+    }
+
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps (`LrScheduler` seam).
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
     }
 
     pub fn zero_grad(&self) {
@@ -322,29 +347,45 @@ impl Adam {
             let cur = p.tensor();
             let dev = cur.device();
             self.t[i] += 1;
-            // Bias corrections change every step: two 4-byte uploads, the only
-            // per-step host traffic an Adam step has.
-            let bc1 = step_scalar(1.0 - self.beta1.powi(self.t[i] as i32), dev);
-            let bc2 = step_scalar(1.0 - self.beta2.powi(self.t[i] as i32), dev);
+            let bc1 = 1.0 - self.beta1.powi(self.t[i] as i32);
+            let bc2 = 1.0 - self.beta2.powi(self.t[i] as i32);
             let g = if scale != 1.0 {
                 bmul(&g, &step_scalar(scale, dev))?
             } else {
                 g
             };
-            let b1 = self.scalars.get(dev, "beta1", self.beta1);
-            let nb1 = self.scalars.get(dev, "one_minus_beta1", 1.0 - self.beta1);
-            let b2 = self.scalars.get(dev, "beta2", self.beta2);
-            let nb2 = self.scalars.get(dev, "one_minus_beta2", 1.0 - self.beta2);
-            let eps = self.scalars.get(dev, "eps", self.eps);
-            let lr = self.scalars.get(dev, "lr", self.lr);
             let m = self.m[i].get_or_insert_with(|| zero_like(&cur));
             let v = self.v[i].get_or_insert_with(|| zero_like(&cur));
+            // Fused in-place step: parameter and both moments keep their
+            // storage; every scalar rides in as an f32 kernel argument.
+            let hp = AdamWStep {
+                lr: self.lr,
+                beta1: self.beta1,
+                beta2: self.beta2,
+                bc1,
+                bc2,
+                eps: self.eps,
+                weight_decay: 0.0,
+            };
+            if raw_adamw_step_(&cur, m, v, &g, hp).is_ok() {
+                p.zero_grad(); // consume the grad, like the old leaf replace
+                continue;
+            }
+            // Fallback: the original allocating update, identical numbers.
+            let b1 = step_scalar(self.beta1, dev);
+            let nb1 = step_scalar(1.0 - self.beta1, dev);
+            let b2 = step_scalar(self.beta2, dev);
+            let nb2 = step_scalar(1.0 - self.beta2, dev);
+            let eps = step_scalar(self.eps, dev);
+            let lr = step_scalar(self.lr, dev);
+            let bc1 = step_scalar(bc1, dev);
+            let bc2 = step_scalar(bc2, dev);
             let nm = badd(&bmul(m, &b1)?, &bmul(&g, &nb1)?)?;
             let nv = badd(&bmul(v, &b2)?, &bmul(&bmul(&g, &g)?, &nb2)?)?;
             *m = nm;
             *v = nv;
             let m_hat = bdiv(m, &bc1)?;
-            let denom = raw_unary_k(&bdiv(v, &bc2)?, crate::dispatch::UnaryKind::Sqrt)?;
+            let denom = raw_unary_k(&bdiv(v, &bc2)?, UnaryKind::Sqrt)?;
             let upd = bdiv(&m_hat, &badd(&denom, &eps)?)?;
             p.set(bsub(&cur, &bmul(&upd, &lr)?)?);
         }
@@ -423,7 +464,6 @@ pub struct AdamW {
     t: u32,
     m: Vec<Option<Tensor>>,
     v: Vec<Option<Tensor>>,
-    scalars: Scalars,
 }
 
 impl AdamW {
@@ -441,7 +481,6 @@ impl AdamW {
             t: 0,
             m,
             v,
-            scalars: Scalars::default(),
         }
     }
 
@@ -461,6 +500,16 @@ impl AdamW {
         self
     }
 
+    /// The learning rate the next step will use.
+    pub fn lr(&self) -> f32 {
+        self.lr
+    }
+
+    /// Set the learning rate for subsequent steps (`LrScheduler` seam).
+    pub fn set_lr(&mut self, lr: f32) {
+        self.lr = lr;
+    }
+
     pub fn zero_grad(&self) {
         for p in &self.params {
             p.zero_grad();
@@ -476,8 +525,6 @@ impl AdamW {
         self.t += 1;
         let bc1 = 1.0 - self.beta1.powi(self.t as i32);
         let bc2 = 1.0 - self.beta2.powi(self.t as i32);
-        // One scalar upload pair per step per device, however many params.
-        let mut bcs: HashMap<Device, (Tensor, Tensor)> = HashMap::new();
         for i in 0..self.params.len() {
             let Some(g) = self.params[i].grad() else {
                 continue;
@@ -485,23 +532,38 @@ impl AdamW {
             let p = &self.params[i];
             let cur = p.tensor();
             let dev = cur.device();
-            let (bc1, bc2) = bcs
-                .entry(dev)
-                .or_insert_with(|| (step_scalar(bc1, dev), step_scalar(bc2, dev)));
             let g = if scale != 1.0 {
                 bmul(&g, &step_scalar(scale, dev))?
             } else {
                 g
             };
-            let b1 = self.scalars.get(dev, "beta1", self.beta1);
-            let nb1 = self.scalars.get(dev, "one_minus_beta1", 1.0 - self.beta1);
-            let b2 = self.scalars.get(dev, "beta2", self.beta2);
-            let nb2 = self.scalars.get(dev, "one_minus_beta2", 1.0 - self.beta2);
-            let eps = self.scalars.get(dev, "eps", self.eps);
-            let lr = self.scalars.get(dev, "lr", self.lr);
-            let wd = self.scalars.get(dev, "weight_decay", self.weight_decay);
             let m = self.m[i].get_or_insert_with(|| zero_like(&cur));
             let v = self.v[i].get_or_insert_with(|| zero_like(&cur));
+            // Fused in-place step (decoupled decay reads the pre-update
+            // parameter inside the kernel): stable storage, f32 scalar args.
+            let hp = AdamWStep {
+                lr: self.lr,
+                beta1: self.beta1,
+                beta2: self.beta2,
+                bc1,
+                bc2,
+                eps: self.eps,
+                weight_decay: self.weight_decay,
+            };
+            if raw_adamw_step_(&cur, m, v, &g, hp).is_ok() {
+                p.zero_grad(); // consume the grad, like the old leaf replace
+                continue;
+            }
+            // Fallback: the original allocating update, identical numbers.
+            let b1 = step_scalar(self.beta1, dev);
+            let nb1 = step_scalar(1.0 - self.beta1, dev);
+            let b2 = step_scalar(self.beta2, dev);
+            let nb2 = step_scalar(1.0 - self.beta2, dev);
+            let eps = step_scalar(self.eps, dev);
+            let lr = step_scalar(self.lr, dev);
+            let wd = step_scalar(self.weight_decay, dev);
+            let bc1 = step_scalar(bc1, dev);
+            let bc2 = step_scalar(bc2, dev);
             let nm = badd(&bmul(m, &b1)?, &bmul(&g, &nb1)?)?;
             let nv = badd(&bmul(v, &b2)?, &bmul(&bmul(&g, &g)?, &nb2)?)?;
             *m = nm;
@@ -509,8 +571,8 @@ impl AdamW {
             // p -= lr * (m_hat / (sqrt(v_hat) + eps) + wd * p): the decay term
             // reads the pre-update parameter, matching the old elementwise
             // loop's use of vals[j] before the subtract.
-            let m_hat = bdiv(m, bc1)?;
-            let denom = raw_unary_k(&bdiv(v, bc2)?, crate::dispatch::UnaryKind::Sqrt)?;
+            let m_hat = bdiv(m, &bc1)?;
+            let denom = raw_unary_k(&bdiv(v, &bc2)?, UnaryKind::Sqrt)?;
             let upd = badd(&bdiv(&m_hat, &badd(&denom, &eps)?)?, &bmul(&cur, &wd)?)?;
             p.set(bsub(&cur, &bmul(&upd, &lr)?)?);
         }

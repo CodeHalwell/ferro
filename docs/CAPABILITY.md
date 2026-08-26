@@ -306,18 +306,27 @@ matters: counters and assertions land BEFORE the first in-place op.
 
 ### 4.2 The zero-allocation training step
 
-Where allocations come from today (all visible in tensor.rs / optim.rs):
-every raw kernel returns a fresh Vec; `to_vec` materializes broadcast
-views at full output size (a [dim] bias becomes a [batch, dim] buffer
-before the add); `accumulate_grad` allocates a fresh tensor per
-accumulation; the optimizer round-trips every parameter through host Vecs
-and re-uploads to device. Steady-state training on fixed shapes can be
-allocation-free:
+Status 2026-08: 4.1 landed earlier, and the first two mutation consumers
+are in - the in-place optimizer step (fused sgd_step/adamw_step kernels;
+params and state keep their storage, one launch per param per step, zero
+scalar uploads) and in-place gradient accumulation (accumulate_grad adds
+into the stored grad when it is provably unshared: sole tensor handle AND
+sole storage reference, else the allocating sum). Storage gained a
+per-cell RwLock; the cell's variant and buffer identity are immutable, so
+exported raw pointers survive mutation.
 
-- In-place optimizer step and gradient accumulation once 4.1 lands
-  (mutate when the Arc is uniquely held and version rules permit); this
-  also moves optimizer state from host Vecs to tensors on the parameter's
-  device, which GPU training requires anyway [F.6].
+The HOST buffer pool landed next (pool.rs): thread-local exact-size
+freelists fed by StorageCell::drop and drained by the cpu kernels,
+constructors, and internal temporaries (which give their buffers back
+explicitly, keeping takes and gives balanced). take_uninit's contract -
+every element written before any read - is enforced by the whole test
+suite: debug builds poison recycled contents with NaN, so a kernel that
+misses a slot fails loudly. Gate G5's host half now PASSES:
+tests/pool_zero_alloc.rs runs an MLP training step (forward, backward,
+Adam) with ZERO pool misses after warmup, at bitwise-identical numerics
+to a pool-free run. Still open for full G5: the device caching allocator
+(4.3) so a counting device backend shows the same, and strided kernels
+(5.3) to remove the remaining broadcast materializations:
 - A buffer pool: recycle storage on drop into size-class freelists
   (thread-local fast path). Beyond allocator cost, this dodges page
   zeroing - a fresh vec![0f32; n] takes a page fault per 4 KB on first
