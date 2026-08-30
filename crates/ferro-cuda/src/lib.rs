@@ -15,6 +15,7 @@
 //! (never panics) when no driver or device is present.
 
 mod kernels;
+mod alloc;
 
 pub use kernels::{chain_bc_args, chain_source, broadcast_strides, ChainStep};
 
@@ -72,8 +73,30 @@ fn as_i32(op: &'static str, n: usize) -> Result<i32> {
 /// lives on. Core hands these back through `&dyn DeviceBuffer`; the backend
 /// recovers the slice by downcasting via `as_any`.
 pub struct CudaBuf {
-    data: CudaSlice<f32>,
+    // ManuallyDrop so `Drop` can move the slice out and hand it to the
+    // caching allocator for recycling instead of freeing it. Deref keeps
+    // every `buf.data.len()` / method call site working unchanged; only
+    // `&buf.data` reference sites need `&*buf.data`.
+    data: std::mem::ManuallyDrop<CudaSlice<f32>>,
     device: Device,
+    // Allocator this buffer's slice returns to on drop. Cheap Arc clone.
+    alloc: crate::alloc::CachingAllocator,
+}
+
+impl std::ops::Deref for CudaBuf {
+    type Target = CudaSlice<f32>;
+    fn deref(&self) -> &CudaSlice<f32> {
+        &self.data
+    }
+}
+
+impl Drop for CudaBuf {
+    fn drop(&mut self) {
+        // SAFETY: `data` is never touched again after this take (we are in
+        // drop), so the ManuallyDrop is not double-read.
+        let slice = unsafe { std::mem::ManuallyDrop::take(&mut self.data) };
+        self.alloc.recycle(slice);
+    }
 }
 
 /// A CUDA-graph-captured chain launch. `replay()` re-runs the recorded
@@ -122,7 +145,7 @@ impl CudaBackend {
         f: impl FnOnce(&mut CudaSlice<f32>) -> Result<R>,
     ) -> Result<R> {
         let stream = b.data.stream();
-        let (ptr, _sync) = DevicePtr::device_ptr(&b.data, stream);
+        let (ptr, _sync) = DevicePtr::device_ptr(&*b.data, stream);
         // SAFETY: ptr/len come from a live CudaSlice on this stream's
         // context; the alias never outlives this call and is leaked, so
         // ownership stays with `b`.
@@ -230,6 +253,9 @@ pub struct CudaBackend {
     // nvrtc-compiled elementwise kernels, keyed by generated source text so
     // parametrized kinds (Powf, Clamp) cache per scalar value.
     funcs: Mutex<HashMap<String, CudaFunction>>,
+    // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
+    // carries a clone and returns its slice here on drop.
+    alloc: crate::alloc::CachingAllocator,
 }
 
 impl CudaBackend {
@@ -279,13 +305,26 @@ impl CudaBackend {
             let _ = ws;
         }
         let device = Device::Cuda(ordinal);
+        let alloc = crate::alloc::CachingAllocator::new(stream.clone());
         Ok(CudaBackend {
             ctx,
             stream,
             blas,
             device,
             funcs: Mutex::new(HashMap::new()),
+            alloc,
         })
+    }
+
+    /// Build a backend whose allocator is a pure pass-through (no recycling):
+    /// every buffer request hits the driver and every drop frees. This is the
+    /// G6 baseline arm — identical code path, caching disabled — so the
+    /// allocator's effect can be measured against it. Test/bench use only.
+    #[doc(hidden)]
+    pub fn new_passthrough(ordinal: u32) -> std::result::Result<CudaBackend, String> {
+        let mut backend = CudaBackend::new(ordinal)?;
+        backend.alloc = crate::alloc::CachingAllocator::passthrough(backend.stream.clone());
+        Ok(backend)
     }
 
     /// Downcast a core-provided buffer back to this backend's `CudaBuf`,
@@ -311,10 +350,46 @@ impl CudaBackend {
     }
 
     fn wrap(&self, data: CudaSlice<f32>) -> Box<dyn DeviceBuffer> {
-        Box::new(CudaBuf {
-            data,
+        Box::new(self.make_buf(data))
+    }
+
+    /// Build a `CudaBuf` carrying an allocator handle so its slice is recycled
+    /// (not freed) on drop. Single construction point for f32 device buffers.
+    fn make_buf(&self, data: CudaSlice<f32>) -> CudaBuf {
+        CudaBuf {
+            data: std::mem::ManuallyDrop::new(data),
             device: self.device,
-        })
+            alloc: self.alloc.clone(),
+        }
+    }
+
+    /// Allocate `len` zeroed f32s through the caching allocator (freelist hit
+    /// when a same-size buffer was recycled, one driver call on a miss).
+    fn alloc_zeros(&self, op: &'static str, len: usize) -> Result<CudaSlice<f32>> {
+        self.alloc.alloc_zeros(len).map_err(|e| cuda_err(op, e))
+    }
+
+    /// Allocate `len` uninitialised f32s through the caching allocator. ONLY
+    /// for buffers the caller fully overwrites before any read (matmul beta=0,
+    /// elementwise maps, gather, fill). Skips the re-zero on a freelist hit,
+    /// which is the allocator's fast path.
+    ///
+    /// # Safety
+    /// Caller must write every element it later reads.
+    unsafe fn alloc_uninit(&self, op: &'static str, len: usize) -> Result<CudaSlice<f32>> {
+        self.alloc.alloc_uninit(len).map_err(|e| cuda_err(op, e))
+    }
+
+    /// Snapshot of the caching allocator's counters. Diff two snapshots across
+    /// a training step for the G6 structural proof (zero fresh driver
+    /// allocations per step after warm-up).
+    pub fn alloc_stats(&self) -> crate::alloc::AllocStats {
+        self.alloc.stats()
+    }
+
+    /// Number of slices currently held in the allocator's freelist.
+    pub fn pooled_buffers(&self) -> usize {
+        self.alloc.pooled()
     }
 
     /// Fetch the cached kernel for `src`, compiling it with nvrtc on first
@@ -347,10 +422,7 @@ impl CudaBackend {
         n: usize,
     ) -> Result<CudaSlice<f32>> {
         let func = self.get_kernel(op, src)?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(op, e))?;
+        let mut out = unsafe { self.alloc_uninit(op, n)? };
         // Zero-sized launches are invalid; an empty tensor's result is the
         // freshly allocated empty buffer.
         if n == 0 {
@@ -384,10 +456,15 @@ impl CudaBackend {
     ) -> Result<CudaSlice<f32>> {
         // cuBLAS extents and leading dimensions are i32.
         as_i32(op, m.max(k).max(n))?;
-        let mut c = self
-            .stream
-            .alloc_zeros::<f32>(m * n)
-            .map_err(|e| cuda_err(op, e))?;
+        // k==0 is matmul over an empty reduction dim: result is all-zeros, and
+        // the cuBLAS call below is skipped, so the buffer must be zeroed rather
+        // than an uninitialised (possibly recycled) slice. Only take the
+        // alloc_uninit fast path when the GEMM will actually write every cell.
+        let mut c = if k > 0 {
+            unsafe { self.alloc_uninit(op, m * n)? }
+        } else {
+            self.alloc_zeros(op, m * n)?
+        };
         if k > 0 {
             let cfg = row_major_sgemm_cfg(m, k, n, ta, tb);
             // Swapped operands: b is cuBLAS "A", a is cuBLAS "B".
@@ -413,11 +490,16 @@ impl CudaBackend {
         tb: bool,
     ) -> Result<CudaSlice<f32>> {
         as_i32(op, batch.max(m.max(k.max(n))))?;
-        let mut c = self
-            .stream
-            .alloc_zeros::<f32>(batch * m * n)
-            .map_err(|e| cuda_err(op, e))?;
-        if k > 0 && batch > 0 && m > 0 && n > 0 {
+        // As in `sgemm`: when any dim is 0 the cuBLAS call is skipped, so the
+        // result must be a zeroed buffer (empty-reduction matmul is all-zeros),
+        // not a recycled uninitialised slice. Fast path only on a real GEMM.
+        let full = k > 0 && batch > 0 && m > 0 && n > 0;
+        let mut c = if full {
+            unsafe { self.alloc_uninit(op, batch * m * n)? }
+        } else {
+            self.alloc_zeros(op, batch * m * n)?
+        };
+        if full {
             let cfg = row_major_sgemm_strided_cfg(batch, m, k, n, ta, tb);
             unsafe { self.blas.gemm_strided_batched(cfg, b, a, &mut c) }
                 .map_err(|e| cuda_err(op, e))?;
@@ -426,7 +508,15 @@ impl CudaBackend {
     }
 
     fn htod(&self, op: &'static str, data: &[f32]) -> Result<CudaSlice<f32>> {
-        self.stream.clone_htod(data).map_err(|e| cuda_err(op, e))
+        // Allocate through the cache (recycling host-upload buffers too) then
+        // fill. memcpy_htod fully overwrites, so the uninitialised fast path is
+        // safe; this also means repeated same-size uploads (per-step batches)
+        // hit the freelist instead of a fresh driver allocation each time.
+        let mut slice = unsafe { self.alloc_uninit(op, data.len())? };
+        self.stream
+            .memcpy_htod(data, &mut slice)
+            .map_err(|e| cuda_err(op, e))?;
+        Ok(slice)
     }
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
@@ -450,17 +540,11 @@ impl CudaBackend {
     ) -> Result<CudaSlice<f32>> {
         let n = rows * cols;
         if n == 0 || rows == 0 {
-            return self
-                .stream
-                .alloc_zeros::<f32>(n)
-                .map_err(|e| cuda_err(op, e));
+            return self.alloc_zeros(op, n);
         }
         as_u32(op, n)?;
         let (rows_arg, cols_arg) = (as_u32(op, rows)?, as_u32(op, cols)?);
-        let stats = self
-            .stream
-            .alloc_zeros::<f32>(2 * rows)
-            .map_err(|e| cuda_err(op, e))?;
+        let stats = self.alloc_zeros(op, 2 * rows)?;
         let sfunc = self.get_kernel(op, &kernels::softmax_row_stats_source())?;
         let mut launch = self.stream.launch_builder(&sfunc);
         launch.arg(x);
@@ -493,10 +577,7 @@ impl CudaBackend {
         extra: u32,
     ) -> Result<CudaSlice<f32>> {
         let func = self.get_kernel(op, src)?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(op, e))?;
+        let mut out = unsafe { self.alloc_uninit(op, n)? };
         if n == 0 {
             return Ok(out);
         }
@@ -682,15 +763,12 @@ impl CudaBackend {
         let n_inputs = kernels::chain_input_count(steps);
         assert!(inputs.len() >= n_inputs, "chain references a missing input");
         let func = self.get_kernel(op, &kernels::chain_source(steps))?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(op, e))?;
+        let mut out = unsafe { self.alloc_uninit(op, n)? };
         if n > 0 {
             let n_arg = as_u32(op, n)?;
             let mut launch = self.stream.launch_builder(&func);
             for buf in &inputs[..n_inputs] {
-                launch.arg(&buf.data);
+                launch.arg(&*buf.data);
             }
             // Signature order: input pointers, per-bc dims/strides, out, n.
             let extra = kernels::chain_bc_args(steps);
@@ -781,7 +859,7 @@ impl CudaBackend {
                 // all event work from arg()/launch().
                 let mut launch = self.stream.launch_builder(&func);
                 for buf in &bufs[..kernels::chain_input_count(steps)] {
-                    launch.arg(&buf.data);
+                    launch.arg(&*buf.data);
                 }
                 let extra = kernels::chain_bc_args(steps);
                 for v in &extra {
@@ -825,10 +903,7 @@ impl CudaBackend {
 
         Ok(CapturedChain {
             _graph: graph,
-            buf: CudaBuf {
-                data: out.clone(),
-                device: self.device,
-            },
+            buf: self.make_buf(out.clone()),
             out,
             n,
         })
@@ -844,13 +919,7 @@ impl CudaBackend {
             .iter()
             .map(|d| self.htod(OP, d))
             .collect::<Result<Vec<_>>>()?;
-        let refs: Vec<CudaBuf> = dev
-            .iter()
-            .map(|d| CudaBuf {
-                data: d.clone(),
-                device: self.device,
-            })
-            .collect();
+        let refs: Vec<CudaBuf> = dev.iter().map(|d| self.make_buf(d.clone())).collect();
         let ptrs: Vec<&CudaBuf> = refs.iter().collect();
         let out = self.launch_chain(OP, steps, &ptrs)?;
         self.dtoh(OP, &out)
@@ -998,15 +1067,12 @@ impl Backend for CudaBackend {
         let strb = kernels::broadcast_strides(sb, out_shape);
         let n: usize = out_shape.iter().product();
         let func = self.get_kernel(OP, &kernels::binary_bc_source(kind, dims.len()))?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(OP, e))?;
+        let mut out = unsafe { self.alloc_uninit(OP, n)? };
         if n > 0 {
             let n_arg = as_u32(OP, n)?;
             let mut launch = self.stream.launch_builder(&func);
-            launch.arg(&a.data);
-            launch.arg(&b.data);
+            launch.arg(&*a.data);
+            launch.arg(&*b.data);
             launch.arg(&mut out);
             launch.arg(&n_arg);
             for d in dims.iter().chain(stra.iter()).chain(strb.iter()) {
@@ -1042,22 +1108,17 @@ impl Backend for CudaBackend {
             // Empty-input Sum is 0; Mean is 0/0 = NaN, matching core/torch.
             return match kind {
                 ReduceKind::Sum => Ok(self.wrap(
-                    self.stream
-                        .alloc_zeros::<f32>(1)
-                        .map_err(|e| cuda_err(OP, e))?,
+                    self.alloc_zeros(OP, 1)?,
                 )),
                 ReduceKind::Mean => Ok(self.wrap(self.htod(OP, &[f32::NAN])?)),
             };
         }
         as_u32(OP, n)?;
         let blocks = kernels::reduce_grid(n);
-        let partials = self
-            .stream
-            .alloc_zeros::<f32>(blocks as usize)
-            .map_err(|e| cuda_err(OP, e))?;
+        let partials = self.alloc_zeros(OP, blocks as usize)?;
         let pfunc = self.get_kernel(OP, &kernels::reduce_partial_source())?;
         let mut launch = self.stream.launch_builder(&pfunc);
-        launch.arg(&x.data);
+        launch.arg(&*x.data);
         launch.arg(&partials);
         let n_arg = n as u32;
         launch.arg(&n_arg);
@@ -1068,10 +1129,7 @@ impl Backend for CudaBackend {
         };
         unsafe { launch.launch(cfg) }.map_err(|e| cuda_err(OP, e))?;
         let ffunc = self.get_kernel("reduce_finalize", &kernels::reduce_finalize_source(kind))?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(1)
-            .map_err(|e| cuda_err(OP, e))?;
+        let mut out = self.alloc_zeros(OP, 1)?;
         let mut launch = self.stream.launch_builder(&ffunc);
         launch.arg(&partials);
         launch.arg(&mut out);
@@ -1099,15 +1157,12 @@ impl Backend for CudaBackend {
         let inner: usize = shape[dim + 1..].iter().product();
         let n = outer * inner;
         let func = self.get_kernel(OP, &kernels::sum_dim_source())?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(OP, e))?;
+        let mut out = self.alloc_zeros(OP, n)?;
         if n > 0 {
             let (red, inner) = (as_u32(OP, shape[dim])?, as_u32(OP, inner)?);
             let n_arg = as_u32(OP, n)?;
             let mut launch = self.stream.launch_builder(&func);
-            launch.arg(&x.data);
+            launch.arg(&*x.data);
             launch.arg(&mut out);
             launch.arg(&n_arg);
             launch.arg(&red);
@@ -1141,10 +1196,7 @@ impl Backend for CudaBackend {
     fn fill_dev(&self, value: f32, len: usize) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "fill_dev";
         let func = self.get_kernel(OP, &kernels::fill_source())?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(len)
-            .map_err(|e| cuda_err(OP, e))?;
+        let mut out = unsafe { self.alloc_uninit(OP, len)? };
         if len > 0 {
             let n_arg = as_u32(OP, len)?;
             let mut launch = self.stream.launch_builder(&func);
@@ -1164,8 +1216,17 @@ impl Backend for CudaBackend {
     fn copy_dev(&self, src: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "copy_dev";
         let s = self.resident(OP, src)?;
-        let copy = s.data.try_clone().map_err(|e| cuda_err(OP, e))?;
-        Ok(self.wrap(copy))
+        // Allocate the destination through the caching allocator (counted +
+        // freelist-served) and device-to-device copy into it, rather than
+        // try_clone() which bypasses the allocator: that would make a fresh
+        // driver allocation every call, pool copies copy_dev never reuses, and
+        // make alloc_stats() under-count fresh allocations for the interval.
+        // memcpy_dtod fully overwrites, so the uninitialised fast path is safe.
+        let mut dst = unsafe { self.alloc_uninit(OP, s.data.len())? };
+        self.stream
+            .memcpy_dtod(&*s.data, &mut dst)
+            .map_err(|e| cuda_err(OP, e))?;
+        Ok(self.wrap(dst))
     }
 
     fn copy_into_dev(&self, dst: &dyn DeviceBuffer, src: &dyn DeviceBuffer) -> Result<()> {
@@ -1272,7 +1333,7 @@ impl Backend for CudaBackend {
                 let mut launch = self.stream.launch_builder(&func);
                 launch.arg(ap);
                 launch.arg(av);
-                launch.arg(&bg.data);
+                launch.arg(&*bg.data);
                 launch.arg(&n_arg);
                 launch.arg(&lr);
                 launch.arg(&momentum);
@@ -1318,7 +1379,7 @@ impl Backend for CudaBackend {
                     launch.arg(ap);
                     launch.arg(am);
                     launch.arg(av);
-                    launch.arg(&bg.data);
+                    launch.arg(&*bg.data);
                     launch.arg(&n_arg);
                     launch.arg(&hp.lr);
                     launch.arg(&hp.beta1);
@@ -1393,16 +1454,13 @@ impl Backend for CudaBackend {
         let rows = idx.data.len();
         let n = rows * inner;
         let func = self.get_kernel(OP, &kernels::gather_source())?;
-        let mut out = self
-            .stream
-            .alloc_zeros::<f32>(n)
-            .map_err(|e| cuda_err(OP, e))?;
+        let mut out = unsafe { self.alloc_uninit(OP, n)? };
         if n > 0 {
             let (inner_arg, n_arg) = (as_u32(OP, inner)?, as_u32(OP, n)?);
             let _ = dim_size; // bounds were validated on the host before upload
             let mut launch = self.stream.launch_builder(&func);
             launch.arg(&idx.data);
-            launch.arg(&w.data);
+            launch.arg(&*w.data);
             launch.arg(&mut out);
             launch.arg(&inner_arg);
             launch.arg(&n_arg);
@@ -1435,7 +1493,7 @@ pub fn exported_view(buf: &dyn DeviceBuffer) -> std::result::Result<(usize, u32)
         other => return Err(format!("unexpected device {other} on a CUDA buffer")),
     };
     let stream = b.data.stream();
-    let (ptr, _sync) = DevicePtr::device_ptr(&b.data, stream);
+    let (ptr, _sync) = DevicePtr::device_ptr(&*b.data, stream);
     Ok((ptr as usize, ordinal))
 }
 
@@ -2089,5 +2147,120 @@ mod tests {
 
         run(Some(dev));
         run(None);
+    }
+
+    /// G6 structural proof: after warm-up, a repeated forward "layer" step
+    /// (matmul -> bias add -> relu) makes ZERO fresh device allocations per
+    /// step — every buffer it needs is served from the caching allocator's
+    /// freelist. Also checks the recycling allocator is bit-identical to the
+    /// pass-through baseline, so correctness is not traded for the win.
+    #[test]
+    fn g6_zero_fresh_allocations_per_step_after_warmup() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+
+        // A small "layer": y = relu(x @ w + b_bcast). Fixed shapes every step,
+        // exactly as a real training loop re-requests the same buffers.
+        let (m, k, n) = (16usize, 32usize, 16usize);
+        let x = backend
+            .alloc_from_host(&(0..m * k).map(|i| (i as f32 % 7.0) - 3.0).collect::<Vec<_>>())
+            .unwrap();
+        let w = backend
+            .alloc_from_host(&(0..k * n).map(|i| (i as f32 % 5.0) - 2.0).collect::<Vec<_>>())
+            .unwrap();
+        let b = backend
+            .alloc_from_host(&(0..m * n).map(|i| (i as f32 % 3.0) - 1.0).collect::<Vec<_>>())
+            .unwrap();
+
+        let step = |backend: &CudaBackend| -> Vec<f32> {
+            // Each intermediate buffer is dropped at the end of the closure,
+            // returning its slice to the freelist for the next step to reuse.
+            let mm = backend.matmul_dev(x.as_ref(), w.as_ref(), m, k, n, false, false).unwrap();
+            let bias = backend.binary_dev(BinaryKind::Add, mm.as_ref(), b.as_ref()).unwrap();
+            let act = backend.unary_dev(UnaryKind::Relu, bias.as_ref()).unwrap();
+            backend.copy_to_host(act.as_ref()).unwrap()
+        };
+
+        // Warm up: first two steps populate the freelist (kernel compile +
+        // first allocation of each distinct size).
+        let warm = step(&backend);
+        let _ = step(&backend);
+
+        // Measured window: allocations must be fully served from the pool.
+        let before = backend.alloc_stats();
+        let mut last = Vec::new();
+        for _ in 0..10 {
+            last = step(&backend);
+        }
+        let delta = backend.alloc_stats().since(&before);
+
+        assert_eq!(
+            delta.driver_allocs, 0,
+            "expected zero fresh driver allocations across 10 steps after warm-up, got {} \
+             (requests={}, hits={}); pool did not fully absorb the step's buffers",
+            delta.driver_allocs, delta.requests, delta.hits
+        );
+        assert!(
+            delta.requests > 0 && delta.hits == delta.requests,
+            "every request in the measured window must be a freelist hit: {delta:?}"
+        );
+        assert_eq!(warm, last, "results must be stable across steps");
+
+        // Correctness: the recycling allocator must match a pass-through
+        // backend bit-for-bit on the same inputs (re-zero-on-hit is correct).
+        let plain = match CudaBackend::new_passthrough(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let px = plain.alloc_from_host(&backend.copy_to_host(x.as_ref()).unwrap()).unwrap();
+        let pw = plain.alloc_from_host(&backend.copy_to_host(w.as_ref()).unwrap()).unwrap();
+        let pb = plain.alloc_from_host(&backend.copy_to_host(b.as_ref()).unwrap()).unwrap();
+        let mm = plain.matmul_dev(px.as_ref(), pw.as_ref(), m, k, n, false, false).unwrap();
+        let bias = plain.binary_dev(BinaryKind::Add, mm.as_ref(), pb.as_ref()).unwrap();
+        let act = plain.unary_dev(UnaryKind::Relu, bias.as_ref()).unwrap();
+        let plain_out = plain.copy_to_host(act.as_ref()).unwrap();
+        assert_eq!(
+            plain_out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            last.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "caching allocator changed numerics vs pass-through baseline"
+        );
+
+        // The pass-through backend must NOT recycle: its pool stays empty.
+        drop(mm);
+        drop(bias);
+        drop(act);
+        assert_eq!(plain.pooled_buffers(), 0, "pass-through allocator must not pool");
+    }
+
+    /// Regression: matmul over an empty reduction dim (k==0) must return
+    /// all-zeros, even when the allocator hands back a recycled (dirty) slice.
+    /// Guards the alloc_uninit fast path from leaking stale buffer contents on
+    /// the GEMM-skip path (bot review finding on PR #12).
+    #[test]
+    fn matmul_k_zero_is_zeroed_even_with_dirty_pool() {
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let (m, n) = (4usize, 3usize);
+        // Dirty the m*n bin: allocate a buffer full of non-zero values, drop it
+        // so its slice returns to the freelist for the next m*n request.
+        let dirty = backend.alloc_from_host(&vec![7.0f32; m * n]).unwrap();
+        drop(dirty);
+        // k==0 GEMM: empty operands, output must be all zeros, not the 7.0s.
+        let a = backend.alloc_from_host(&[] as &[f32]).unwrap();
+        let b = backend.alloc_from_host(&[] as &[f32]).unwrap();
+        let c = backend
+            .matmul_dev(a.as_ref(), b.as_ref(), m, 0, n, false, false)
+            .unwrap();
+        assert_eq!(
+            backend.copy_to_host(c.as_ref()).unwrap(),
+            vec![0.0f32; m * n]
+        );
     }
 }

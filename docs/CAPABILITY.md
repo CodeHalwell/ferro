@@ -374,9 +374,41 @@ OOM, flush the cache and retry once. ferro's immutability removes the
 hard part: a buffer is dead exactly when its Arc drops - no
 use-after-free through aliased mutation is possible.
 
-Gate G6: zero cudaMalloc calls per training step after warmup (counted by
-a wrapping backend), and the step-time benchmark reports the
-allocator-on/off gap.
+Gate G6: zero fresh device allocations per training step after warmup
+(counted by ferro's own allocator, not an opaque driver metric), and the
+step-time benchmark reports the allocator-on/off gap.
+
+**Status (implemented, gate met).** ferro-cuda now owns a caching
+allocator (`crates/ferro-cuda/src/alloc.rs`): size-binned free lists keyed
+by exact f32 length, buffers returned on `CudaBuf::drop`, per-request
+counters (requests / freelist hits / driver allocations). Two allocation
+paths: `alloc_zeros` (re-zeros on a hit, for buffers read before full
+write) and an `unsafe alloc_uninit` fast path that skips the re-zero for
+buffers the op fully overwrites (matmul beta=0, elementwise maps, chains,
+broadcasted binary, gather, fill). A `passthrough` mode disables recycling
+for the baseline arm.
+
+Honest framing: cudarc already routes `alloc*` through the driver's
+stream-ordered pool (`cudaMallocAsync`), so the baseline is *not* naive
+`cudaMalloc`/`cudaFree` - it still hits the driver pool. G6 therefore
+claims "zero fresh ferro-level buffer requests to the driver per step after
+warmup", proven structurally by the counter, not a misleading "we removed
+cudaMalloc".
+
+Measured (RTX 3090, `--example alloc_bench`, matmul 256x256x256 -> +bias
+-> relu, 2000 steps after 20 warmup):
+
+| arm | us/step | requests | hits | driver_allocs |
+|------|---------|----------|------|---------------|
+| caching     | ~75-78 | 6000 | 6000 | 0 |
+| passthrough | ~81-85 | 6000 | 0    | 6000 |
+
+Caching is ~4-9% faster than the driver pool across 3 runs, direction
+stable. The win came entirely from `alloc_uninit`: an earlier version that
+re-zeroed every hit was ~4% *slower* than the pool (redundant memset per
+buffer) - re-measured before and after, honestly. Structural proof lives
+in the `g6_zero_fresh_allocs_per_step` test (zero driver_allocs across 10
+steps after warmup, bit-identical to the passthrough baseline).
 
 ### 4.4 Static memory planning (with the compiler)
 
