@@ -1216,8 +1216,17 @@ impl Backend for CudaBackend {
     fn copy_dev(&self, src: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "copy_dev";
         let s = self.resident(OP, src)?;
-        let copy = s.data.try_clone().map_err(|e| cuda_err(OP, e))?;
-        Ok(self.wrap(copy))
+        // Allocate the destination through the caching allocator (counted +
+        // freelist-served) and device-to-device copy into it, rather than
+        // try_clone() which bypasses the allocator: that would make a fresh
+        // driver allocation every call, pool copies copy_dev never reuses, and
+        // make alloc_stats() under-count fresh allocations for the interval.
+        // memcpy_dtod fully overwrites, so the uninitialised fast path is safe.
+        let mut dst = unsafe { self.alloc_uninit(OP, s.data.len())? };
+        self.stream
+            .memcpy_dtod(&*s.data, &mut dst)
+            .map_err(|e| cuda_err(OP, e))?;
+        Ok(self.wrap(dst))
     }
 
     fn copy_into_dev(&self, dst: &dyn DeviceBuffer, src: &dyn DeviceBuffer) -> Result<()> {
