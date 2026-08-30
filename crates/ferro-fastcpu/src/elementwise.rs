@@ -271,6 +271,12 @@ mod tests {
     fn assert_bitwise(got: &[f32], want: &[f32], ctx: &str) {
         assert_eq!(got.len(), want.len(), "{ctx}: length mismatch");
         for (i, (&x, &y)) in got.iter().zip(want).enumerate() {
+            // Both NaN counts as parity: the NaN payload bits are not
+            // semantically meaningful and can differ between the scalar and
+            // vectorized paths without either being wrong.
+            if x.is_nan() && y.is_nan() {
+                continue;
+            }
             assert_eq!(x.to_bits(), y.to_bits(), "{ctx}: mismatch at index {i}: {x} vs {y}");
         }
     }

@@ -8,6 +8,11 @@ license.workspace = true
 [dependencies]
 ferro-core = { path = "../ferro-core" }
 
+# Examples only (the crate itself stays zero-dep); the gpt2 example needs the
+# real GPT-2 BPE tokenizer.
+[dev-dependencies]
+ferro-tokenizer = { path = "../ferro-tokenizer" }
+
 [[bin]]
 name = "bench"
 path = "src/bin/bench.rs"
