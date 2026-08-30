@@ -93,6 +93,15 @@ struct AllocInner {
     enabled: bool,
 }
 
+/// Lock a mutex, recovering the guard even if a previous holder panicked while
+/// holding it. The allocator is locked from `CudaBuf::drop`, so a plain
+/// `.unwrap()` would turn one poisoned lock into an abort cascade on every
+/// subsequent buffer drop; the freelist invariants hold regardless of who
+/// panicked, so recovering the inner guard is safe and strictly better.
+fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl CachingAllocator {
     /// Recycling allocator bound to `stream`.
     pub fn new(stream: Arc<CudaStream>) -> Self {
@@ -126,7 +135,7 @@ impl CachingAllocator {
             // Try the freelist. len==0 slices are legal and binned like any
             // other; recycling them keeps the count honest.
             let recycled = {
-                let mut bins = self.inner.bins.lock().unwrap();
+                let mut bins = lock_recover(&self.inner.bins);
                 bins.get_mut(&len).and_then(|v| v.pop())
             };
             if let Some(mut slice) = recycled {
@@ -138,7 +147,15 @@ impl CachingAllocator {
         }
 
         c.driver_allocs.fetch_add(1, Ordering::Relaxed);
-        self.inner.stream.alloc_zeros::<f32>(len)
+        match self.inner.stream.alloc_zeros::<f32>(len) {
+            Ok(s) => Ok(s),
+            Err(_) if self.inner.enabled => {
+                // Flush the pool and retry once (see alloc_uninit note).
+                self.clear_pool();
+                self.inner.stream.alloc_zeros::<f32>(len)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Allocate `len` UNINITIALISED f32s, serving from the freelist when
@@ -160,7 +177,7 @@ impl CachingAllocator {
 
         if self.inner.enabled {
             let recycled = {
-                let mut bins = self.inner.bins.lock().unwrap();
+                let mut bins = lock_recover(&self.inner.bins);
                 bins.get_mut(&len).and_then(|v| v.pop())
             };
             if let Some(slice) = recycled {
@@ -171,7 +188,14 @@ impl CachingAllocator {
         }
 
         c.driver_allocs.fetch_add(1, Ordering::Relaxed);
-        self.inner.stream.alloc::<f32>(len)
+        match self.inner.stream.alloc::<f32>(len) {
+            Ok(s) => Ok(s),
+            Err(_) if self.inner.enabled => {
+                self.clear_pool();
+                self.inner.stream.alloc::<f32>(len)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Return a slice to its size bin (called from `CudaBuf::drop`). Slices are
@@ -183,7 +207,7 @@ impl CachingAllocator {
             return; // slice dropped -> driver free
         }
         let len = slice.len();
-        let mut bins = self.inner.bins.lock().unwrap();
+        let mut bins = lock_recover(&self.inner.bins);
         let bin = bins.entry(len).or_default();
         if bin.len() < MAX_PER_BIN {
             bin.push(slice);
@@ -210,13 +234,13 @@ impl CachingAllocator {
     /// Drop every pooled slice back to the driver. Frees the resident pool
     /// without tearing down the allocator handle.
     pub fn clear_pool(&self) {
-        let mut bins = self.inner.bins.lock().unwrap();
+        let mut bins = lock_recover(&self.inner.bins);
         bins.clear();
     }
 
     /// Total slices currently held in the freelist (all bins).
     pub fn pooled(&self) -> usize {
-        self.inner.bins.lock().unwrap().values().map(Vec::len).sum()
+        lock_recover(&self.inner.bins).values().map(Vec::len).sum()
     }
 
     pub fn is_enabled(&self) -> bool {

@@ -456,7 +456,15 @@ impl CudaBackend {
     ) -> Result<CudaSlice<f32>> {
         // cuBLAS extents and leading dimensions are i32.
         as_i32(op, m.max(k).max(n))?;
-        let mut c = unsafe { self.alloc_uninit(op, m * n)? };
+        // k==0 is matmul over an empty reduction dim: result is all-zeros, and
+        // the cuBLAS call below is skipped, so the buffer must be zeroed rather
+        // than an uninitialised (possibly recycled) slice. Only take the
+        // alloc_uninit fast path when the GEMM will actually write every cell.
+        let mut c = if k > 0 {
+            unsafe { self.alloc_uninit(op, m * n)? }
+        } else {
+            self.alloc_zeros(op, m * n)?
+        };
         if k > 0 {
             let cfg = row_major_sgemm_cfg(m, k, n, ta, tb);
             // Swapped operands: b is cuBLAS "A", a is cuBLAS "B".
@@ -482,8 +490,16 @@ impl CudaBackend {
         tb: bool,
     ) -> Result<CudaSlice<f32>> {
         as_i32(op, batch.max(m.max(k.max(n))))?;
-        let mut c = unsafe { self.alloc_uninit(op, batch * m * n)? };
-        if k > 0 && batch > 0 && m > 0 && n > 0 {
+        // As in `sgemm`: when any dim is 0 the cuBLAS call is skipped, so the
+        // result must be a zeroed buffer (empty-reduction matmul is all-zeros),
+        // not a recycled uninitialised slice. Fast path only on a real GEMM.
+        let full = k > 0 && batch > 0 && m > 0 && n > 0;
+        let mut c = if full {
+            unsafe { self.alloc_uninit(op, batch * m * n)? }
+        } else {
+            self.alloc_zeros(op, batch * m * n)?
+        };
+        if full {
             let cfg = row_major_sgemm_strided_cfg(batch, m, k, n, ta, tb);
             unsafe { self.blas.gemm_strided_batched(cfg, b, a, &mut c) }
                 .map_err(|e| cuda_err(op, e))?;
@@ -492,7 +508,15 @@ impl CudaBackend {
     }
 
     fn htod(&self, op: &'static str, data: &[f32]) -> Result<CudaSlice<f32>> {
-        self.stream.clone_htod(data).map_err(|e| cuda_err(op, e))
+        // Allocate through the cache (recycling host-upload buffers too) then
+        // fill. memcpy_htod fully overwrites, so the uninitialised fast path is
+        // safe; this also means repeated same-size uploads (per-step batches)
+        // hit the freelist instead of a fresh driver allocation each time.
+        let mut slice = unsafe { self.alloc_uninit(op, data.len())? };
+        self.stream
+            .memcpy_htod(data, &mut slice)
+            .map_err(|e| cuda_err(op, e))?;
+        Ok(slice)
     }
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
@@ -2202,5 +2226,32 @@ mod tests {
         drop(bias);
         drop(act);
         assert_eq!(plain.pooled_buffers(), 0, "pass-through allocator must not pool");
+    }
+
+    /// Regression: matmul over an empty reduction dim (k==0) must return
+    /// all-zeros, even when the allocator hands back a recycled (dirty) slice.
+    /// Guards the alloc_uninit fast path from leaking stale buffer contents on
+    /// the GEMM-skip path (bot review finding on PR #12).
+    #[test]
+    fn matmul_k_zero_is_zeroed_even_with_dirty_pool() {
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let (m, n) = (4usize, 3usize);
+        // Dirty the m*n bin: allocate a buffer full of non-zero values, drop it
+        // so its slice returns to the freelist for the next m*n request.
+        let dirty = backend.alloc_from_host(&vec![7.0f32; m * n]).unwrap();
+        drop(dirty);
+        // k==0 GEMM: empty operands, output must be all zeros, not the 7.0s.
+        let a = backend.alloc_from_host(&[] as &[f32]).unwrap();
+        let b = backend.alloc_from_host(&[] as &[f32]).unwrap();
+        let c = backend
+            .matmul_dev(a.as_ref(), b.as_ref(), m, 0, n, false, false)
+            .unwrap();
+        assert_eq!(
+            backend.copy_to_host(c.as_ref()).unwrap(),
+            vec![0.0f32; m * n]
+        );
     }
 }
