@@ -338,6 +338,20 @@ pub fn gather_source() -> String {
     )
 }
 
+/// Elementwise copy src->out as a real kernel: a kernel launch is always
+/// recorded as a graph node during stream capture, whereas a raw
+/// cuMemcpyDtoDAsync may execute eagerly, so in-place buffer refreshes
+/// inside captured training steps MUST go through this kernel.
+pub fn copy_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* out, const float* src, unsigned int n) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = src[i];
+}}
+"#
+    )
+}
+
 /// Constant fill; the value is a kernel parameter so one compiled function
 /// serves every fill.
 pub fn fill_source() -> String {

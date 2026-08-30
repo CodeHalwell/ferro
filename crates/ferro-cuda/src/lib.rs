@@ -266,6 +266,18 @@ impl CudaBackend {
             .map_err(|e| format!("failed to create stream: {e}"))?;
         let blas = CudaBlas::new(stream.clone())
             .map_err(|e| format!("failed to create cuBLAS handle: {e}"))?;
+        // cuBLAS allocates its workspace lazily from the memory pool; a
+        // malloc inside stream capture silently invalidates the graph. Keep a
+        // pre-allocated workspace so captured matmuls never allocate.
+        {
+            const BLAS_WS: usize = 4 << 20;
+            let ws = unsafe { cudarc::driver::result::malloc_async(stream.cu_stream(), BLAS_WS) }
+                .map_err(|e| format!("cublas workspace alloc failed: {e:?}"))?;
+            unsafe {
+                cudarc::cublas::sys::cublasSetWorkspace_v2(*blas.handle(), ws as _, BLAS_WS);
+            }
+            let _ = ws;
+        }
         let device = Device::Cuda(ordinal);
         Ok(CudaBackend {
             ctx,
@@ -1166,11 +1178,15 @@ impl Backend for CudaBackend {
                 msg: format!("length mismatch: {} vs {}", d.data.len(), s.data.len()),
             });
         }
-        self.with_alias_mut(d, |alias| {
-            self.stream
-                .memcpy_dtod(&s.data, alias)
-                .map_err(|e| cuda_err(OP, e))
-        })
+        if d.data.len() == 0 {
+            return Ok(());
+        }
+        // Kernel-based copy (NOT memcpy): a raw dtod memcpy can execute
+        // eagerly instead of being recorded during stream capture, which
+        // silently breaks captured training steps that rely on copy_ to
+        // write updates into stable param storage. A kernel launch is
+        // always a recorded node.
+        self.launch_inplace(OP, &kernels::copy_source(), d, &[&s.data], &[])
     }
 
     fn fill_inplace_dev(&self, dst: &dyn DeviceBuffer, value: f32) -> Result<()> {
