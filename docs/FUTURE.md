@@ -110,6 +110,25 @@ profile (loss_bwd = 72% of step, launch-gap dominated): NVIDIA-published
 9.6 -> 3.4 us per kernel effective; our own measurement shows a 3-7x
 reduction per chain.
 
+**Capturable AdamW backend primitive LANDED 2026-08 (PR #14):** timestep
+lives on-device (`t = [step, bc1, bc2]`), a 1-thread increment kernel bumps
+`step` and recomputes bias correction once per step, and the elementwise
+AdamW kernel reads the precomputed scalars - so a captured step advances the
+correction under replay instead of freezing it (mirrors PyTorch
+`capturable=True`). Proven by a graph-replay test (replay 6x, timestep
+1->6, params track eager to 1e-5). Backend layer only.
+
+- **(M) G9 - route the public `AdamW` optimiser through the capturable
+  path.** Blocker raised in PR #14 review (Codex P1): `ferro-core::AdamW::
+  update` still advances host `self.t`, computes host bc1/bc2, and calls the
+  frozen `adamw_step_dev`, so production AdamW is NOT capturable end-to-end
+  despite the backend primitive existing. Needs: device-resident optimiser
+  state (timestep buffer owned by the optimiser), a capture-aware `update`
+  that selects `adamw_step_capturable_dev` + `scalar_increment_dev` during a
+  capture window, and lifting those methods out of `pub(crate)`. Stretch:
+  on-device `lr` so LR scheduling works under replay (currently lr is baked
+  host-const, fixed per captured graph - re-capture to change).
+
 ## 3. Performance: CPU [P]
 
 - (M) Memory: host buffer pool LANDED 2026-08 (pool.rs: thread-local
