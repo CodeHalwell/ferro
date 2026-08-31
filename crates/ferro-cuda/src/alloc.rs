@@ -91,6 +91,18 @@ struct AllocInner {
     /// recycling). Lets the G6 benchmark measure allocator-on vs allocator-off
     /// on the identical code path.
     enabled: bool,
+    /// Set while a CUDA-graph step capture is open. In this window the freelist
+    /// is bypassed on BOTH ends: every allocation is a fresh, unique driver
+    /// address (so two graph nodes never alias one recycled block), and every
+    /// dropped slice is diverted into `retained` instead of a size bin (so the
+    /// pool cannot hand a captured address back out before replays run). This
+    /// is what keeps captured dataflow correct; recycling a mid-step temporary
+    /// is exactly the "frozen replay" aliasing bug.
+    capturing: std::sync::atomic::AtomicBool,
+    /// Slices allocated inside the capture window, kept alive (and NOT
+    /// reusable) until the caller drains them into the `CapturedStep`. The
+    /// graph's nodes point at these addresses.
+    retained: Mutex<Vec<CudaSlice<f32>>>,
 }
 
 /// Lock a mutex, recovering the guard even if a previous holder panicked while
@@ -121,8 +133,33 @@ impl CachingAllocator {
                 bins: Mutex::new(HashMap::new()),
                 counters: Counters::default(),
                 enabled,
+                capturing: std::sync::atomic::AtomicBool::new(false),
+                retained: Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Open a capture window: freelist bypassed, drops diverted to `retained`.
+    /// Clears any stale retained slices from a prior window first.
+    pub fn begin_capture(&self) {
+        lock_recover(&self.inner.retained).clear();
+        self.inner
+            .capturing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Close the capture window and take ownership of every slice allocated
+    /// while it was open. The caller (CapturedStep) must hold these for the
+    /// graph's lifetime; they are the addresses the graph's nodes reference.
+    pub fn end_capture(&self) -> Vec<CudaSlice<f32>> {
+        self.inner
+            .capturing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        std::mem::take(&mut *lock_recover(&self.inner.retained))
+    }
+
+    fn is_capturing(&self) -> bool {
+        self.inner.capturing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Allocate `len` zeroed f32s, serving from the freelist when possible.
@@ -131,7 +168,7 @@ impl CachingAllocator {
         let c = &self.inner.counters;
         c.requests.fetch_add(1, Ordering::Relaxed);
 
-        if self.inner.enabled {
+        if self.inner.enabled && !self.is_capturing() {
             // Try the freelist. len==0 slices are legal and binned like any
             // other; recycling them keeps the count honest.
             let recycled = {
@@ -175,7 +212,7 @@ impl CachingAllocator {
         let c = &self.inner.counters;
         c.requests.fetch_add(1, Ordering::Relaxed);
 
-        if self.inner.enabled {
+        if self.inner.enabled && !self.is_capturing() {
             let recycled = {
                 let mut bins = lock_recover(&self.inner.bins);
                 bins.get_mut(&len).and_then(|v| v.pop())
@@ -202,6 +239,19 @@ impl CachingAllocator {
     /// only recycled when the allocator is enabled and the bin isn't full;
     /// otherwise the slice drops here and the driver reclaims it.
     pub fn recycle(&self, slice: CudaSlice<f32>) {
+        if self.is_capturing() {
+            // Inside a capture window: DROP the slice so cudarc issues
+            // cudaFreeAsync on the stream, which the capture records as a
+            // graph free node paired with this buffer's alloc node. A graph
+            // whose intermediate allocations are matched by free nodes is
+            // self-contained and safe to relaunch (with AUTO_FREE_ON_LAUNCH);
+            // retaining instead leaves alloc nodes unfreed and the graph
+            // fails to replay with CUDA_ERROR_INVALID_VALUE. Params live
+            // OUTSIDE the window, so they are untouched by this.
+            self.inner.counters.released.fetch_add(1, Ordering::Relaxed);
+            drop(slice);
+            return;
+        }
         if !self.inner.enabled {
             self.inner.counters.released.fetch_add(1, Ordering::Relaxed);
             return; // slice dropped -> driver free
