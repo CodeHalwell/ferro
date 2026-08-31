@@ -496,19 +496,31 @@ impl AdamW {
     /// params' device as a `[step, bc1, bc2]` tensor and bias correction is
     /// advanced in-kernel, so a step recorded with `begin_step_capture` /
     /// `end_step_capture` replays with an advancing correction instead of a
-    /// frozen one. Requires device-resident params; `lr` and betas are fixed
-    /// for the life of a captured graph (re-capture to change them). No-op
-    /// semantics on CPU params fall back to the host path automatically.
+    /// frozen one.
+    ///
+    /// Capturable mode engages **only** when every parameter lives on the same
+    /// CUDA device (the capturable step calls device-only primitives). On CPU
+    /// params, mixed-device sets, or an empty param list this is a no-op and the
+    /// optimiser keeps the ordinary host path — `is_capturable()` then stays
+    /// `false`. `lr` and betas are fixed for the life of a captured graph
+    /// (re-capture to change them).
     pub fn capturable(mut self) -> AdamW {
-        let dev = self
-            .params
-            .first()
-            .map(|p| p.tensor().device())
-            .unwrap_or(Device::Cpu);
+        let Some(dev) = self.params.first().map(|p| p.tensor().device()) else {
+            return self; // no params: nothing to capture.
+        };
+        // Device-only path: CPU params must retain the host update.
+        if !matches!(dev, Device::Cuda(_)) {
+            return self;
+        }
+        // A single device timestep buffer serves all params, so they must all
+        // sit on the same device; otherwise fall back to the host path.
+        if self.params.iter().any(|p| p.tensor().device() != dev) {
+            return self;
+        }
         // [step, bc1, bc2]; step starts at 0 so the first increment yields t=1.
-        if let Ok(t) = Tensor::from_vec(vec![0.0f32, 0.0, 0.0], &[3]).and_then(|t| t.to_device(dev))
-        {
-            self.capturable_t = Some(t);
+        match Tensor::from_vec(vec![0.0f32, 0.0, 0.0], &[3]).and_then(|t| t.to_device(dev)) {
+            Ok(t) => self.capturable_t = Some(t),
+            Err(_) => return self, // allocation failed: stay on host path.
         }
         self
     }
@@ -633,9 +645,12 @@ impl AdamW {
         }
         // One device increment per optimiser step: advances `step` and
         // recomputes bc1/bc2 in the timestep buffer, recorded as a graph node.
+        // NOTE: under graph capture this only RECORDS; the buffer advances when
+        // the graph replays. We deliberately do NOT touch the host `self.t`
+        // here — the device buffer is the single source of truth for the
+        // timestep (see snapshot/restore), so a captured step that replays N
+        // times leaves `step` at N without this Rust code re-running.
         raw_scalar_increment_(t_dev, self.beta1, self.beta2)?;
-        // Mirror the host counter so snapshot()/load() stay meaningful.
-        self.t += 1;
         for i in 0..self.params.len() {
             let Some(g) = self.params[i].grad() else {
                 continue;
@@ -665,7 +680,14 @@ impl AdamW {
 impl OptimizerState for AdamW {
     fn snapshot(&self) -> Vec<(String, Tensor)> {
         // Cold path: state comes back to the host for serialization.
-        let mut out = vec![("t".to_string(), Tensor::scalar(self.t as f32))];
+        // In capturable mode the device timestep buffer is authoritative
+        // (the host `self.t` is not advanced by replays), so read `step` back
+        // from it; otherwise the host counter is the source of truth.
+        let step = match &self.capturable_t {
+            Some(t) => t.to_device(Device::Cpu).expect("cpu is always registered").to_vec()[0] as u32,
+            None => self.t,
+        };
+        let mut out = vec![("t".to_string(), Tensor::scalar(step as f32))];
         let host = |s: &Option<Tensor>| -> Tensor {
             let t = s
                 .as_ref()
@@ -708,6 +730,17 @@ impl OptimizerState for AdamW {
             });
         }
         self.t = tv as u32;
+        // In capturable mode the device buffer is authoritative, so push the
+        // restored timestep + its bias correction back onto the device;
+        // otherwise a resumed run would replay from step 0 (frozen correction).
+        if self.capturable_t.is_some() {
+            let bc1 = 1.0 - self.beta1.powi(self.t as i32);
+            let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+            let dev = self.params[0].tensor().device();
+            let restored =
+                Tensor::from_vec(vec![self.t as f32, bc1, bc2], &[3]).and_then(|t| t.to_device(dev))?;
+            self.capturable_t = Some(restored);
+        }
         for i in 0..self.params.len() {
             let shape = self.params[i].tensor().shape().to_vec();
             check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors)?;
