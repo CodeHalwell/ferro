@@ -445,6 +445,49 @@ pub fn adamw_step_source() -> String {
     )
 }
 
+/// Capturable AdamW step (mirrors PyTorch `capturable=True`): the timestep
+/// counter lives in device memory (`t`, a 1-element f32 buffer holding the
+/// integer step as a float) and bias correction is computed IN-KERNEL from it,
+/// so a captured graph replays with the correct, advancing correction instead
+/// of a frozen host-side bc1/bc2. Numerically identical to `adamw_step_source`
+/// when fed bc1/bc2 = 1 - beta^t for the same t. `t` must already be advanced
+/// for this step (i.e. incremented before this kernel), matching the host path
+/// which does `self.t += 1` before computing bc.
+pub fn adamw_step_capturable_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* p, float* m, float* v, const float* g, const float* t, unsigned int n, float lr, float beta1, float beta2, float eps, float wd) {{
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float step = t[0];
+    float bc1 = __fsub_rn(1.0f, __powf(beta1, step));
+    float bc2 = __fsub_rn(1.0f, __powf(beta2, step));
+    float gi = g[i];
+    float mi = __fadd_rn(__fmul_rn(m[i], beta1), __fmul_rn(gi, __fsub_rn(1.0f, beta1)));
+    float vi = __fadd_rn(__fmul_rn(v[i], beta2), __fmul_rn(__fmul_rn(gi, gi), __fsub_rn(1.0f, beta2)));
+    m[i] = mi;
+    v[i] = vi;
+    float m_hat = __fdiv_rn(mi, bc1);
+    float denom = __fsqrt_rn(__fdiv_rn(vi, bc2));
+    float upd = __fdiv_rn(m_hat, __fadd_rn(denom, eps));
+    if (wd != 0.0f) upd = __fadd_rn(upd, __fmul_rn(wd, p[i]));
+    p[i] = __fsub_rn(p[i], __fmul_rn(upd, lr));
+}}
+"#
+    )
+}
+
+/// Increment a device-resident scalar (`t[0] += 1.0`) with a single thread.
+/// Runs as a kernel so it is recorded as a graph node under stream capture,
+/// letting a captured training step advance its own timestep on every replay.
+pub fn scalar_increment_source() -> String {
+    format!(
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* t) {{
+    if (blockIdx.x == 0 && threadIdx.x == 0) t[0] = __fadd_rn(t[0], 1.0f);
+}}
+"#
+    )
+}
+
 /// Softmax pass 1, one block per row of `cols` elements: block-reduce the row
 /// max via shared memory, then (reusing the buffer) block-reduce the sum of
 /// exp(x - max). Writes stats[2*row] = max, stats[2*row+1] = sum so the apply

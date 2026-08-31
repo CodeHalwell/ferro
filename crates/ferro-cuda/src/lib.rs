@@ -1585,6 +1585,100 @@ impl Backend for CudaBackend {
     }
 }
 
+impl CudaBackend {
+    /// Capturable AdamW step: like `adamw_step_dev` but reads the timestep from
+    /// a device-resident 1-element buffer `t` and computes bias correction
+    /// in-kernel, so the step is safe to record in a CUDA graph and replay with
+    /// an advancing correction. `t` must already hold this step's index (the
+    /// caller bumps it via `scalar_increment_dev` first, mirroring the host
+    /// path's `self.t += 1` before computing bc). `beta1/beta2/eps/wd/lr`
+    /// remain host constants baked into the launch, matching PyTorch capturable
+    /// Adam where only lr/step are allowed to vary across replays.
+    pub(crate) fn adamw_step_capturable_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        m: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        t: &dyn DeviceBuffer,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) -> Result<()> {
+        const OP: &str = "adamw_step_capturable_dev";
+        let (bp, bm, bv, bg, bt) = (
+            self.resident(OP, p)?,
+            self.resident(OP, m)?,
+            self.resident(OP, v)?,
+            self.resident(OP, g)?,
+            self.resident(OP, t)?,
+        );
+        let n = bp.data.len();
+        if bm.data.len() != n || bv.data.len() != n || bg.data.len() != n {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "adamw_step_capturable_dev buffers must be same-length".into(),
+            });
+        }
+        if bt.data.len() != 1 {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "adamw_step_capturable_dev timestep buffer must have length 1".into(),
+            });
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let func = self.get_kernel(OP, &kernels::adamw_step_capturable_source())?;
+        let n_arg = as_u32(OP, n)?;
+        self.with_alias_mut(bp, |ap| {
+            self.with_alias_mut(bm, |am| {
+                self.with_alias_mut(bv, |av| {
+                    let mut launch = self.stream.launch_builder(&func);
+                    launch.arg(ap);
+                    launch.arg(am);
+                    launch.arg(av);
+                    launch.arg(&*bg.data);
+                    launch.arg(&*bt.data);
+                    launch.arg(&n_arg);
+                    launch.arg(&lr);
+                    launch.arg(&beta1);
+                    launch.arg(&beta2);
+                    launch.arg(&eps);
+                    launch.arg(&weight_decay);
+                    unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
+                        .map(|_| ())
+                        .map_err(|e| cuda_err(OP, e))
+                })
+            })
+        })
+    }
+
+    /// Advance a device-resident scalar timestep by one (`t[0] += 1`). Runs as
+    /// a one-thread kernel so it is captured as a graph node and re-executed on
+    /// every replay.
+    pub(crate) fn scalar_increment_dev(&self, t: &dyn DeviceBuffer) -> Result<()> {
+        const OP: &str = "scalar_increment_dev";
+        let bt = self.resident(OP, t)?;
+        if bt.data.len() != 1 {
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: "scalar_increment_dev buffer must have length 1".into(),
+            });
+        }
+        let func = self.get_kernel(OP, &kernels::scalar_increment_source())?;
+        self.with_alias_mut(bt, |at| {
+            let mut launch = self.stream.launch_builder(&func);
+            launch.arg(at);
+            unsafe { launch.launch(LaunchConfig::for_num_elems(1)) }
+                .map(|_| ())
+                .map_err(|e| cuda_err(OP, e))
+        })
+    }
+}
+
 /// Create a backend for CUDA device `ordinal` and register it for
 /// `Device::Cuda(ordinal)`. Returns `Err` (never panics) when no CUDA driver,
 /// runtime libraries, or device is present.
@@ -1896,6 +1990,172 @@ mod tests {
         assert_eq!(backend.copy_to_host(pa.as_ref()).unwrap(), pah);
         assert_eq!(backend.copy_to_host(ma.as_ref()).unwrap(), mah);
         assert_eq!(backend.copy_to_host(va.as_ref()).unwrap(), vah);
+    }
+
+    /// The capturable AdamW path (device timestep + in-kernel bias correction)
+    /// must match the host `adamw_step` reference across several steps. The
+    /// kernel computes `1 - beta^t` with `__powf` while the host uses `powi`,
+    /// so results agree to f32 tolerance rather than bit-identically.
+    #[test]
+    fn adamw_capturable_dev_matches_host_reference() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let (lr, beta1, beta2, eps, wd) = (0.01f32, 0.9f32, 0.999f32, 1e-8f32, 0.01f32);
+        let p0 = vec![0.5f32, -1.0, 2.0, -0.25];
+        let g0 = vec![0.1f32, -0.2, 0.3, -0.4];
+        let m0 = vec![0.0f32; 4];
+        let (pd, md, vd, gd, td) = (
+            backend.alloc_from_host(&p0).unwrap(),
+            backend.alloc_from_host(&m0).unwrap(),
+            backend.alloc_from_host(&m0).unwrap(),
+            backend.alloc_from_host(&g0).unwrap(),
+            backend.alloc_from_host(&[0.0f32]).unwrap(),
+        );
+        let (mut ph, mut mh, mut vh) = (p0.clone(), m0.clone(), m0.clone());
+        for step in 1..=5i32 {
+            // Device path: bump timestep on-device, then run capturable step.
+            backend.scalar_increment_dev(td.as_ref()).unwrap();
+            backend
+                .adamw_step_capturable_dev(
+                    pd.as_ref(),
+                    md.as_ref(),
+                    vd.as_ref(),
+                    gd.as_ref(),
+                    td.as_ref(),
+                    lr,
+                    beta1,
+                    beta2,
+                    eps,
+                    wd,
+                )
+                .unwrap();
+            // Host reference with the same step's host-computed bias correction.
+            let hp = ferro_core::dispatch::AdamWStep {
+                lr,
+                beta1,
+                beta2,
+                bc1: 1.0 - beta1.powi(step),
+                bc2: 1.0 - beta2.powi(step),
+                eps,
+                weight_decay: wd,
+            };
+            Backend::adamw_step(&*backend, &mut ph, &mut mh, &mut vh, &g0, hp);
+        }
+        // Confirm the device timestep advanced to 5.
+        assert_eq!(backend.copy_to_host(td.as_ref()).unwrap(), vec![5.0]);
+        let got_p = backend.copy_to_host(pd.as_ref()).unwrap();
+        let got_m = backend.copy_to_host(md.as_ref()).unwrap();
+        let got_v = backend.copy_to_host(vd.as_ref()).unwrap();
+        for i in 0..4 {
+            // 1e-5: __powf (device) vs powi (host) diverge by ~1e-6 per step and
+            // accumulate over the 5 steps; the update math is otherwise identical.
+            assert!(
+                (got_p[i] - ph[i]).abs() < 1e-5,
+                "param {i}: capturable {} vs host {}",
+                got_p[i],
+                ph[i]
+            );
+            assert!((got_m[i] - mh[i]).abs() < 1e-5, "m {i} mismatch");
+            assert!((got_v[i] - vh[i]).abs() < 1e-5, "v {i} mismatch");
+        }
+    }
+
+    /// PROOF that the capturable AdamW step survives CUDA-graph capture with an
+    /// ADVANCING bias correction — the whole reason it exists. The device
+    /// timestep `t`, params `p`, and moments `m`/`v` all live OUTSIDE the
+    /// capture window; the graph records `t += 1` then the capturable step, so
+    /// each replay bumps the timestep and applies that step's bias correction.
+    /// The host-scalar `adamw_step_dev` would freeze bc at capture time and fail
+    /// this test (every replay re-applying step-1's correction).
+    #[test]
+    fn captured_adamw_advances_bias_correction_across_replays() {
+        if !is_available() {
+            return;
+        }
+        let backend = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(_) => return,
+        };
+        let (lr, beta1, beta2, eps, wd) = (0.01f32, 0.9f32, 0.999f32, 1e-8f32, 0.0f32);
+        let p0 = vec![0.5f32, -1.0, 2.0, -0.25];
+        let g0 = vec![0.1f32, -0.2, 0.3, -0.4];
+        let z = vec![0.0f32; 4];
+
+        // Eager reference trajectory over N capturable steps (host bc per step).
+        let run_eager = |steps: usize| -> Vec<f32> {
+            let (pd, md, vd, gd, td) = (
+                backend.alloc_from_host(&p0).unwrap(),
+                backend.alloc_from_host(&z).unwrap(),
+                backend.alloc_from_host(&z).unwrap(),
+                backend.alloc_from_host(&g0).unwrap(),
+                backend.alloc_from_host(&[0.0f32]).unwrap(),
+            );
+            for _ in 0..steps {
+                backend.scalar_increment_dev(td.as_ref()).unwrap();
+                backend
+                    .adamw_step_capturable_dev(
+                        pd.as_ref(), md.as_ref(), vd.as_ref(), gd.as_ref(), td.as_ref(),
+                        lr, beta1, beta2, eps, wd,
+                    )
+                    .unwrap();
+            }
+            backend.copy_to_host(pd.as_ref()).unwrap()
+        };
+
+        const N: usize = 6;
+        let ref_final = run_eager(N);
+
+        // Captured path: allocate state OUTSIDE the window, record one step.
+        let (pd, md, vd, gd, td) = (
+            backend.alloc_from_host(&p0).unwrap(),
+            backend.alloc_from_host(&z).unwrap(),
+            backend.alloc_from_host(&z).unwrap(),
+            backend.alloc_from_host(&g0).unwrap(),
+            backend.alloc_from_host(&[0.0f32]).unwrap(),
+        );
+        if let Err(e) = backend.begin_step_capture() {
+            eprintln!("begin_step_capture unsupported: {e}; skipping");
+            return;
+        }
+        backend.scalar_increment_dev(td.as_ref()).unwrap();
+        backend
+            .adamw_step_capturable_dev(
+                pd.as_ref(), md.as_ref(), vd.as_ref(), gd.as_ref(), td.as_ref(),
+                lr, beta1, beta2, eps, wd,
+            )
+            .unwrap();
+        let step = match backend.end_step_capture() {
+            Ok(s) => s,
+            Err(e) => panic!("end_step_capture failed: {e}"),
+        };
+
+        // Capture RECORDS but does not execute: state is untouched, t still 0.
+        assert_eq!(backend.copy_to_host(td.as_ref()).unwrap(), vec![0.0]);
+        assert_eq!(backend.copy_to_host(pd.as_ref()).unwrap(), p0);
+
+        // Replay N times; t must climb 1..=N and params track the eager run.
+        for s in 1..=N {
+            step.replay().expect("replay");
+            assert_eq!(
+                backend.copy_to_host(td.as_ref()).unwrap(),
+                vec![s as f32],
+                "timestep must advance each replay (frozen bc bug freezes it)"
+            );
+        }
+        let got_final = backend.copy_to_host(pd.as_ref()).unwrap();
+        for i in 0..4 {
+            assert!(
+                (got_final[i] - ref_final[i]).abs() < 1e-5,
+                "param {i}: replayed {} vs eager {} — bias correction did not advance under replay",
+                got_final[i],
+                ref_final[i]
+            );
+        }
     }
 
     #[test]
