@@ -189,3 +189,44 @@ fn adam_bias_correction_ignores_skipped_steps() {
 
     assert_eq!(run(3), run(0));
 }
+
+/// G9 regression: `.capturable()` on CPU params must be a no-op that keeps the
+/// host update path — Codex/Copilot P1 flagged that it used to engage on CPU
+/// (because `to_device(Cpu)` succeeds) and then panic in `step()` when the
+/// device-only increment returned `Unsupported`. Here it must NOT engage, and a
+/// normal optimisation step must run and actually reduce the loss.
+#[test]
+fn capturable_on_cpu_params_falls_back_to_host_path() {
+    let rng = Rng::new(7);
+    let (x, y, _) = linreg_problem(32, 4, &rng);
+    let w = Param::new(Tensor::zeros(&[4, 1]).requires_grad_(true).unwrap());
+
+    let mut opt = AdamW::new(vec![w.clone()], 0.1).capturable();
+    // CPU params: capturable mode must decline to engage.
+    assert!(
+        !opt.is_capturable(),
+        "capturable() must be a no-op on CPU params (host fallback)"
+    );
+
+    // And a real step must run without panicking and reduce the loss.
+    let loss0 = {
+        let pred = x.matmul(&w.tensor()).unwrap();
+        mse(&pred, &y).item()
+    };
+    for _ in 0..20 {
+        w.zero_grad();
+        let pred = x.matmul(&w.tensor()).unwrap();
+        let loss = mse(&pred, &y);
+        loss.backward();
+        opt.step();
+    }
+    let loss1 = {
+        let pred = x.matmul(&w.tensor()).unwrap();
+        mse(&pred, &y).item()
+    };
+    assert!(
+        loss1 < loss0,
+        "host-fallback AdamW must optimise: loss {loss0} -> {loss1}"
+    );
+}
+

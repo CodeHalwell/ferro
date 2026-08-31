@@ -473,6 +473,38 @@ pub trait Backend: Send + Sync {
         not_resident("adamw_step_dev")
     }
 
+    /// Capturable AdamW step: reads this step's bias correction from a
+    /// device-resident timestep buffer `t = [step, bc1, bc2]` (see
+    /// `scalar_increment_dev`) instead of taking host-computed `bc1`/`bc2` in
+    /// `AdamWStep`, so a step recorded into a CUDA graph replays with an
+    /// ADVANCING correction rather than a frozen capture-time one. `lr` and the
+    /// betas remain host constants baked into the launch (fixed across replays
+    /// of a given graph). Same four-storage operand contract as `adamw_step_dev`.
+    fn adamw_step_capturable_dev(
+        &self,
+        _p: &dyn DeviceBuffer,
+        _m: &dyn DeviceBuffer,
+        _v: &dyn DeviceBuffer,
+        _g: &dyn DeviceBuffer,
+        _t: &dyn DeviceBuffer,
+        _lr: f32,
+        _beta1: f32,
+        _beta2: f32,
+        _eps: f32,
+        _weight_decay: f32,
+    ) -> Result<()> {
+        not_resident("adamw_step_capturable_dev")
+    }
+
+    /// Advance a device-resident AdamW timestep `t = [step, bc1, bc2]` by one
+    /// and recompute its bias correction in-place (`bc1 = 1 - beta1^step`,
+    /// `bc2 = 1 - beta2^step`). Runs as a single-thread kernel so it records as
+    /// a graph node and re-executes on every replay, computing the two `powf`s
+    /// once per step rather than per element in the AdamW kernel.
+    fn scalar_increment_dev(&self, _t: &dyn DeviceBuffer, _beta1: f32, _beta2: f32) -> Result<()> {
+        not_resident("scalar_increment_dev")
+    }
+
     // --- i64 index buffers --------------------------------------------------
     // DeviceBuffer stays opaque: i64 device buffers are produced only by
     // `alloc_i64_from_host` and consumed only by `copy_i64_to_host` /

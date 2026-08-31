@@ -129,6 +129,18 @@ correction under replay instead of freezing it (mirrors PyTorch
   on-device `lr` so LR scheduling works under replay (currently lr is baked
   host-const, fixed per captured graph - re-capture to change).
 
+  **G9 LANDED 2026-08 (PR #15):** public `AdamW.capturable()` routes the
+  production optimiser through `adamw_step_capturable_dev` +
+  `scalar_increment_dev`. CUDA-uniform-device guard (CPU/mixed -> silent host
+  fallback), device buffer `[step,bc1,bc2]` is timestep authority (seeded from
+  `self.t` so warm-up-then-capture preserves the counter), `snapshot`/`restore`
+  round-trip through it, and `restore` lands moments on the param device.
+  **Known limitation (Codex P2, deferred):** the device timestep is stored f32,
+  so `scalar_increment` (`step += 1.0f`) stops advancing past 2^24 (~16.7M
+  steps) - the counter and bias correction silently freeze. Fix is an i32 step
+  field in the buffer (mixed int/float layout across kernel + seeding +
+  snapshot); distant enough to defer but must precede any >16M-step run.
+
 ## 3. Performance: CPU [P]
 
 - (M) Memory: host buffer pool LANDED 2026-08 (pool.rs: thread-local

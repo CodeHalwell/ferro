@@ -667,3 +667,250 @@ fn captured_step_advances_params_across_replays() {
         );
     }
 }
+
+/// G9 PROOF: the PUBLIC `AdamW` optimiser, in `.capturable()` mode, produces a
+/// captured graph whose replays advance the bias correction — i.e. production
+/// AdamW is now capturable end-to-end, not just the backend primitive. Without
+/// the device-timestep wiring, `AdamW::update` would bake host bc1/bc2 into the
+/// captured launch and every replay would re-apply step-1's correction forever.
+///
+/// Reference trajectory: a capturable AdamW stepped eagerly. Test trajectory: a
+/// second capturable AdamW captured ONCE then replayed. They must match — and
+/// the params must keep moving each replay (a frozen correction would stall).
+#[test]
+fn captured_adamw_optimiser_advances_across_replays() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::params::Param;
+
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let lr = 0.05f32;
+
+    let x0 = vec![1.0f32, -2.0, 3.0, -0.5];
+    let init_p = vec![0.7f32, 0.4, -0.3, 1.2];
+
+    let build_param = |vals: &[f32]| -> Param {
+        let t = Tensor::from_vec(vals.to_vec(), &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(x0.clone(), &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // Reference: capturable AdamW stepped eagerly (each step executes).
+    const N: usize = 5;
+    let ref_p = build_param(&init_p);
+    let mut ref_opt = AdamW::new(vec![ref_p.clone()], lr).capturable();
+    assert!(ref_opt.is_capturable(), "capturable mode must engage on GPU");
+    let mut ref_traj = Vec::new();
+    for _ in 0..N {
+        ref_p.zero_grad();
+        let loss = ref_p.tensor().mul(&x).unwrap().relu().sum();
+        loss.backward();
+        ref_opt.step();
+        ref_traj.push(
+            ref_p
+                .tensor()
+                .to_device(ferro_core::Device::Cpu)
+                .unwrap()
+                .to_vec(),
+        );
+    }
+
+    // Captured run: one persistent capturable AdamW. Warm up one eager step so
+    // the m/v state buffers exist at stable addresses before capture.
+    let cap_p = build_param(&init_p);
+    let mut cap_opt = AdamW::new(vec![cap_p.clone()], lr).capturable();
+    cap_p.zero_grad();
+    let loss = cap_p.tensor().mul(&x).unwrap().relu().sum();
+    loss.backward();
+    cap_opt.step();
+    let warm = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in warm.iter().zip(&ref_traj[0]) {
+        assert!((a - w).abs() < 1e-5, "warmup step diverged {a} vs {w}");
+    }
+
+    // Capture the SECOND step: recompute grad (same closure), then opt.step().
+    if let Err(e) = b.begin_step_capture() {
+        eprintln!("begin_step_capture unsupported: {e}; skipping");
+        return;
+    }
+    cap_p.zero_grad();
+    let loss = cap_p.tensor().mul(&x).unwrap().relu().sum();
+    loss.backward();
+    cap_opt.step();
+    let step = match b.end_step_capture() {
+        Ok(s) => s,
+        Err(e) => panic!("end_step_capture failed: {e}"),
+    };
+
+    // Capture RECORDS but does not execute: param still at the warmup value.
+    let after_cap = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in after_cap.iter().zip(&ref_traj[0]) {
+        assert!(
+            (a - w).abs() < 1e-5,
+            "post-capture param {a} vs warmup {w} (capture must not execute)"
+        );
+    }
+
+    // Replay steps 1..N. Each must advance the param to the eager reference —
+    // the frozen-bias bug (host bc1/bc2 baked in) would stall it at ref[0].
+    for s in 1..N {
+        step.replay().expect("step replay");
+        let got = cap_p
+            .tensor()
+            .to_device(ferro_core::Device::Cpu)
+            .unwrap()
+            .to_vec();
+        for (a, w) in got.iter().zip(&ref_traj[s]) {
+            assert!(
+                (a - w).abs() < 1e-5,
+                "replay step {s}: param {a} vs eager {w} — FROZEN-BIAS BUG (correction not advancing)"
+            );
+        }
+        let prev = &ref_traj[s - 1];
+        let moved = got.iter().zip(prev).any(|(a, w)| (a - w).abs() > 1e-6);
+        assert!(moved, "replay step {s}: param did not advance vs previous");
+    }
+}
+
+/// G9 P1 regression (Codex re-review): restoring a checkpoint into a FRESHLY
+/// constructed CUDA capturable optimiser must land the moment buffers on the
+/// param's device, not default them to CPU. Previously `check_buf` inferred the
+/// device from the (still-None) slot and fell back to CPU, so the next
+/// capturable step hit CPU moment storage where the device kernel expects
+/// device buffers and panicked at its `unreachable!()`. This is the normal
+/// resume flow (new process -> new optimiser -> load checkpoint).
+#[test]
+fn restore_into_fresh_capturable_optimiser_keeps_moments_on_device() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::optim::OptimizerState;
+    use ferro_core::params::Param;
+
+    let (_g, _b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let mk = || {
+        let t = Tensor::from_vec(vec![0.5f32, -0.3, 0.8, 0.1], &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, -1.0, 0.5], &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // Source optimiser: take a couple of steps so m/v are populated, snapshot.
+    let src_p = mk();
+    let mut src = AdamW::new(vec![src_p.clone()], 0.05);
+    for _ in 0..2 {
+        src_p.zero_grad();
+        src_p.tensor().mul(&x).unwrap().relu().sum().backward();
+        src.step();
+    }
+    let ckpt = src.snapshot();
+
+    // Fresh CUDA optimiser in capturable mode: m/v slots are None. Restore the
+    // checkpoint, then take a capturable step -- must NOT panic on CPU moments.
+    let dst_p = mk();
+    let mut dst = AdamW::new(vec![dst_p.clone()], 0.05).capturable();
+    assert!(dst.is_capturable(), "capturable mode must engage on GPU");
+    dst.restore(&ckpt).expect("restore checkpoint");
+
+    dst_p.zero_grad();
+    dst_p.tensor().mul(&x).unwrap().relu().sum().backward();
+    dst.step(); // panicked here before the fix (CPU moment storage).
+
+    // Timestep advanced from the restored t=2 to t=3, and params stayed on GPU.
+    let t = dst.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(t.to_vec()[0], 3.0, "restored t=2 must advance to t=3");
+    assert_eq!(dst_p.tensor().device(), dev, "params must stay on GPU");
+}
+
+/// warm-up steps must PRESERVE the timestep. The device buffer used to init to
+/// `[0,0,0]`, discarding the accumulated `self.t` and applying step-1 bias
+/// correction to already-matured moment buffers. Here we run 3 eager steps,
+/// flip on capturable mode, and assert `snapshot()` still reports t=3 (proving
+/// the device buffer was seeded from `self.t`, not zeroed) — and that the next
+/// step advances to t=4 rather than resetting to t=1.
+#[test]
+fn capturable_after_eager_warmup_preserves_timestep() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::optim::OptimizerState;
+    use ferro_core::params::Param;
+
+    let (_g, _b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let p = {
+        let t = Tensor::from_vec(vec![0.5f32, -0.3, 0.8, 0.1], &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, -1.0, 0.5], &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // 3 eager (non-capturable) steps: host self.t climbs to 3.
+    let mut opt = AdamW::new(vec![p.clone()], 0.05);
+    for _ in 0..3 {
+        p.zero_grad();
+        p.tensor().mul(&x).unwrap().relu().sum().backward();
+        opt.step();
+    }
+    let t_before = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(t_before.to_vec()[0], 3.0, "eager warm-up should reach t=3");
+
+    // Flip on capture AFTER warm-up. The device buffer must be seeded from t=3.
+    let mut opt = opt.capturable();
+    assert!(opt.is_capturable(), "capturable mode must engage on GPU");
+    let t_seeded = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(
+        t_seeded.to_vec()[0],
+        3.0,
+        "enabling capture must PRESERVE the timestep (device buffer seeded from self.t, not zeroed)"
+    );
+
+    // Next capturable step must advance to t=4, not reset to t=1.
+    p.zero_grad();
+    p.tensor().mul(&x).unwrap().relu().sum().backward();
+    opt.step();
+    let t_after = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(
+        t_after.to_vec()[0],
+        4.0,
+        "first capturable step after warm-up must advance t=3 -> t=4, not reset to 1"
+    );
+}
+
+
