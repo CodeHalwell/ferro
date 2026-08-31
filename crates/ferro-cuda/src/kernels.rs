@@ -446,21 +446,23 @@ pub fn adamw_step_source() -> String {
 }
 
 /// Capturable AdamW step (mirrors PyTorch `capturable=True`): the timestep
-/// counter lives in device memory (`t`, a 1-element f32 buffer holding the
-/// integer step as a float) and bias correction is computed IN-KERNEL from it,
-/// so a captured graph replays with the correct, advancing correction instead
-/// of a frozen host-side bc1/bc2. Numerically identical to `adamw_step_source`
-/// when fed bc1/bc2 = 1 - beta^t for the same t. `t` must already be advanced
-/// for this step (i.e. incremented before this kernel), matching the host path
-/// which does `self.t += 1` before computing bc.
+/// state lives in device memory (`t`, a 3-element buffer holding
+/// `[step, bc1, bc2]`) and the bias-correction terms `bc1`/`bc2` are read
+/// straight from it, so a captured graph replays with the correct, advancing
+/// correction instead of a frozen host-side bc1/bc2. The correction is computed
+/// ONCE per step by `scalar_increment_source` (a single-thread node), never
+/// per element -- the previous version called `__powf` in every thread, which
+/// dominated the step for large parameter vectors. Numerically identical to
+/// `adamw_step_source` when fed the same bc1/bc2. `t` must already be advanced
+/// for this step (incremented before this kernel), matching the host path which
+/// does `self.t += 1` before computing bc.
 pub fn adamw_step_capturable_source() -> String {
     format!(
         r#"extern "C" __global__ void {KERNEL_NAME}(float* p, float* m, float* v, const float* g, const float* t, unsigned int n, float lr, float beta1, float beta2, float eps, float wd) {{
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    float step = t[0];
-    float bc1 = __fsub_rn(1.0f, __powf(beta1, step));
-    float bc2 = __fsub_rn(1.0f, __powf(beta2, step));
+    float bc1 = t[1];
+    float bc2 = t[2];
     float gi = g[i];
     float mi = __fadd_rn(__fmul_rn(m[i], beta1), __fmul_rn(gi, __fsub_rn(1.0f, beta1)));
     float vi = __fadd_rn(__fmul_rn(v[i], beta2), __fmul_rn(__fmul_rn(gi, gi), __fsub_rn(1.0f, beta2)));
@@ -476,13 +478,22 @@ pub fn adamw_step_capturable_source() -> String {
     )
 }
 
-/// Increment a device-resident scalar (`t[0] += 1.0`) with a single thread.
-/// Runs as a kernel so it is recorded as a graph node under stream capture,
-/// letting a captured training step advance its own timestep on every replay.
+/// Advance a device-resident AdamW timestep and recompute its bias correction
+/// with a SINGLE thread. `t` is a 3-element buffer `[step, bc1, bc2]`: this
+/// kernel does `step += 1` then writes `bc1 = 1 - beta1^step`,
+/// `bc2 = 1 - beta2^step`. Running the two `__powf` calls once here (instead of
+/// per element in the AdamW kernel) keeps the optimizer step memory-bound. Runs
+/// as a kernel so it is recorded as a graph node under stream capture, letting a
+/// captured training step advance its own timestep+correction on every replay.
 pub fn scalar_increment_source() -> String {
     format!(
-        r#"extern "C" __global__ void {KERNEL_NAME}(float* t) {{
-    if (blockIdx.x == 0 && threadIdx.x == 0) t[0] = __fadd_rn(t[0], 1.0f);
+        r#"extern "C" __global__ void {KERNEL_NAME}(float* t, float beta1, float beta2) {{
+    if (blockIdx.x == 0 && threadIdx.x == 0) {{
+        float step = __fadd_rn(t[0], 1.0f);
+        t[0] = step;
+        t[1] = __fsub_rn(1.0f, __powf(beta1, step));
+        t[2] = __fsub_rn(1.0f, __powf(beta2, step));
+    }}
 }}
 "#
     )
