@@ -535,3 +535,135 @@ fn captured_chain_graph_replays_correctly() {
         assert!((a - w).abs() < 1e-5, "replay1 {a} vs eager {w}");
     }
 }
+
+/// Regression proof for the frozen-replay bug: a whole training step
+/// (forward + backward + in-place SGD update) captured as ONE CUDA graph must
+/// ADVANCE the parameter on every replay, matching N independent eager steps.
+///
+/// The historical bug retained a `clone()` of each buffer (a fresh dtod copy at
+/// a NEW address) while the ORIGINAL captured address was recycled by the G6
+/// allocator and handed to the next allocation — so replays either aliased
+/// stale buffers or re-ran against a frozen snapshot and the param never moved.
+/// The fix puts the allocator in capture mode (unique addresses, drops diverted
+/// to a non-reusable retained set drained into the CapturedStep), so every
+/// address the graph recorded stays alive and unique for the graph's lifetime.
+///
+/// SGD with momentum==0 and no grad clip is fully on-device (in-place axpy with
+/// a constant-lr scalar) — no host-side per-step state to freeze, so any drift
+/// from eager is a pure dataflow defect, exactly what we want to catch.
+#[test]
+fn captured_step_advances_params_across_replays() {
+    use ferro_core::optim::Sgd;
+    use ferro_core::params::Param;
+
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let lr = 0.1f32;
+
+    let x0 = vec![1.0f32, -2.0, 3.0, -0.5];
+    let init_p = vec![0.7f32, 0.4, -0.3, 1.2];
+
+    let build_param = |vals: &[f32]| -> Param {
+        let t = Tensor::from_vec(vals.to_vec(), &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+
+    let x = Tensor::from_vec(x0.clone(), &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    let eager_step = |p: &Param| {
+        p.zero_grad();
+        let loss = p.tensor().mul(&x).unwrap().relu().sum();
+        loss.backward();
+        let mut opt = Sgd::new(vec![p.clone()], lr);
+        opt.step();
+    };
+
+    const N: usize = 5;
+    let ref_p = build_param(&init_p);
+    let mut ref_traj = Vec::new();
+    for _ in 0..N {
+        eager_step(&ref_p);
+        ref_traj.push(
+            ref_p
+                .tensor()
+                .to_device(ferro_core::Device::Cpu)
+                .unwrap()
+                .to_vec(),
+        );
+    }
+
+    let cap_p = build_param(&init_p);
+    eager_step(&cap_p);
+    let warm = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in warm.iter().zip(&ref_traj[0]) {
+        assert!((a - w).abs() < 1e-5, "warmup step diverged {a} vs {w}");
+    }
+
+    if let Err(e) = b.begin_step_capture() {
+        eprintln!("begin_step_capture unsupported: {e}; skipping");
+        return;
+    }
+    cap_p.zero_grad();
+    let loss = cap_p.tensor().mul(&x).unwrap().relu().sum();
+    loss.backward();
+    let mut opt = Sgd::new(vec![cap_p.clone()], lr);
+    opt.step();
+    let step = match b.end_step_capture() {
+        Ok(s) => s,
+        Err(e) => panic!("end_step_capture failed: {e}"),
+    };
+
+    // Stream capture RECORDS, it does not execute: the param is still at its
+    // warmup value here. Each replay() executes one full step. ref_traj[0] was
+    // the warmup step, so replay #k produces ref_traj[k].
+    let after_cap = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in after_cap.iter().zip(&ref_traj[0]) {
+        assert!(
+            (a - w).abs() < 1e-5,
+            "post-capture param {a} vs warmup {w} (capture must not execute)"
+        );
+    }
+
+    // Replay steps 1..N (trajectory indices 1..N). Each must advance the param
+    // to match the eager reference — the frozen-replay bug froze it at ref[0].
+    for s in 1..N {
+        step.replay().expect("step replay");
+        let got = cap_p
+            .tensor()
+            .to_device(ferro_core::Device::Cpu)
+            .unwrap()
+            .to_vec();
+        for (a, w) in got.iter().zip(&ref_traj[s]) {
+            assert!(
+                (a - w).abs() < 1e-5,
+                "replay step {s}: param {a} vs eager {w} — FROZEN-REPLAY BUG (param not advancing)"
+            );
+        }
+        // Successive replays must actually MOVE the param off the prior value.
+        let prev = &ref_traj[s - 1];
+        let moved = got.iter().zip(prev).any(|(a, w)| (a - w).abs() > 1e-6);
+        assert!(
+            moved,
+            "replay step {s}: param did not change vs previous step"
+        );
+    }
+}

@@ -99,6 +99,44 @@ impl Drop for CudaBuf {
     }
 }
 
+/// A whole training step (forward + backward + optimizer) recorded as one
+/// CUDA graph. `replay()` re-executes every kernel with a single host launch.
+///
+/// Correctness rests on two coupled guarantees:
+///  1. During capture the allocator BYPASSES its freelist, so every
+///     intermediate allocation records a real graph alloc node and every drop
+///     records a matching free node. Balanced alloc/free nodes make the graph
+///     self-contained, so it can be instantiated `AUTO_FREE_ON_LAUNCH` and
+///     safely relaunched — serving a recycled block from the freelist instead
+///     would record a free node with no alloc node and fail replay with
+///     CUDA_ERROR_INVALID_VALUE.
+///  2. Params/grads/optimizer-state live OUTSIDE the capture window (allocated
+///     before `begin_step_capture`), so they are never graph-managed; the
+///     wave-6 in-place kernels mutate them at fixed addresses and they persist
+///     and advance across replays. That is what makes replay a real step.
+///
+/// `_retained` normally ends up empty (intermediates free during capture); it
+/// stays as a safety net for any slice the allocator chooses to pin, and is
+/// dropped with the graph.
+pub struct CapturedStep {
+    _graph: cudarc::driver::safe::CudaGraph,
+    _retained: Vec<CudaSlice<f32>>,
+}
+
+impl CapturedStep {
+    /// Re-execute the entire captured step with one host call.
+    pub fn replay(&self) -> Result<()> {
+        self._graph
+            .launch()
+            .map_err(|e| cuda_err("captured_step_replay", e))
+    }
+
+    /// Number of device buffers the graph pins for its lifetime.
+    pub fn retained_buffers(&self) -> usize {
+        self._retained.len()
+    }
+}
+
 /// A CUDA-graph-captured chain launch. `replay()` re-runs the recorded
 /// launch with one host call, writing into the SAME output buffer every time
 /// (stable-address contract). The graph and the output slice share this
@@ -800,6 +838,82 @@ impl CudaBackend {
         Ok(self.wrap(self.launch_chain(OP, steps, &bufs)?))
     }
 
+    /// Begin capturing a whole training step on this backend's stream. The
+    /// caller runs exactly one full step (forward, backward, optimizer) inside
+    /// the window, then calls `end_step_capture`. Every kernel and scalar
+    /// upload the step uses must have run at least once already (warm up two
+    /// eager steps first) so no lazy nvrtc compile, module load, or cuBLAS
+    /// workspace malloc lands mid-capture and invalidates the graph.
+    ///
+    /// The allocator enters capture mode for the window: freelist bypassed
+    /// (every intermediate gets a fresh, unique address) and drops retained
+    /// rather than recycled (no captured address is reused or freed early).
+    /// That address discipline is what makes replay advance state correctly.
+    pub fn begin_step_capture(self: &Arc<Self>) -> Result<()> {
+        const OP: &str = "begin_step_capture";
+        self.alloc.begin_capture();
+        unsafe { self.ctx.disable_event_tracking() };
+        let pre = self.stream.capture_status().map_err(|e| {
+            unsafe { self.ctx.enable_event_tracking() };
+            self.alloc.end_capture();
+            cuda_err("begin.status", e)
+        })?;
+        if pre != cudarc::driver::sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE {
+            unsafe { self.ctx.enable_event_tracking() };
+            self.alloc.end_capture();
+            return Err(Error::Unsupported {
+                op: OP,
+                msg: format!("stream still capturing: {pre:?}"),
+            });
+        }
+        self.stream
+            .begin_capture(cudarc::driver::sys::CUstreamCaptureMode_enum::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+            .map_err(|e| {
+                unsafe { self.ctx.enable_event_tracking() };
+                self.alloc.end_capture();
+                cuda_err(OP, e)
+            })
+    }
+
+    /// End the step-capture window and instantiate the recorded graph. The
+    /// returned `CapturedStep` owns every buffer allocated during the window
+    /// (the addresses the graph references) and replays the entire step with
+    /// one host launch. Instantiated WITHOUT auto-free-on-launch: buffer
+    /// lifetime is managed here via the retained set, not by the graph.
+    pub fn end_step_capture(self: &Arc<Self>) -> Result<CapturedStep> {
+        const OP: &str = "end_step_capture";
+        // AUTO_FREE_ON_LAUNCH: the captured step allocates its intermediates
+        // inside the window and frees them (recorded as free nodes), so the
+        // graph is self-contained. This flag frees the graph's memory nodes at
+        // the start of each launch and re-allocates on replay, which is the
+        // correct lifecycle for a per-step training graph. Params live OUTSIDE
+        // the capture window (allocated before begin_capture), so they are
+        // never graph-managed and persist/advance across replays.
+        let res = self.stream.end_capture(
+            cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+        );
+        unsafe { self.ctx.enable_event_tracking() };
+        let retained = self.alloc.end_capture();
+        let graph = match res {
+            Ok(Some(g)) => g,
+            Ok(None) => {
+                return Err(Error::Unsupported {
+                    op: OP,
+                    msg: "step capture produced an empty graph".into(),
+                })
+            }
+            Err(e) => return Err(cuda_err(OP, e)),
+        };
+        // Upload the instantiated graph to the stream before first launch,
+        // exactly as capture_chain does; skipping it makes launch() fail with
+        // CUDA_ERROR_INVALID_VALUE on some drivers.
+        graph.upload().map_err(|e| cuda_err(OP, e))?;
+        Ok(CapturedStep {
+            _graph: graph,
+            _retained: retained,
+        })
+    }
+
     /// CUDA-graph capture of a fused chain launch, plus a replay method.
     ///
     /// `capture_chain` allocates the output buffer FIRST (outside capture),
@@ -1475,10 +1589,24 @@ impl Backend for CudaBackend {
 /// `Device::Cuda(ordinal)`. Returns `Err` (never panics) when no CUDA driver,
 /// runtime libraries, or device is present.
 pub fn install(ordinal: u32) -> std::result::Result<(), String> {
-    let backend = CudaBackend::new(ordinal)?;
-    register_backend(Device::Cuda(ordinal), Arc::new(backend));
+    let backend = Arc::new(CudaBackend::new(ordinal)?);
+    // Record the Arc so `cuda_backend()` can hand capture/replay handles to
+    // callers that own the step loop (benchmarks, examples) and need the
+    // CudaBackend surface beyond the `Backend` trait. Ignore a second install.
+    let _ = LAST_BACKEND.set(backend.clone());
+    register_backend(Device::Cuda(ordinal), backend);
     Ok(())
 }
+
+/// The most recently installed CUDA backend, for callers (benchmarks,
+/// examples) that own the training loop and need capture/replay handles
+/// (`begin_step_capture`/`end_step_capture`) not exposed on the `Backend`
+/// trait. `None` before `install` succeeds.
+pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
+    LAST_BACKEND.get().cloned()
+}
+
+static LAST_BACKEND: std::sync::OnceLock<Arc<CudaBackend>> = std::sync::OnceLock::new();
 
 /// Raw parts for zero-copy DLPack export of a `CudaBuf`: its base device
 /// pointer and device ordinal. The caller must keep the buffer alive while
