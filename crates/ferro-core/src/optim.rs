@@ -517,8 +517,14 @@ impl AdamW {
         if self.params.iter().any(|p| p.tensor().device() != dev) {
             return self;
         }
-        // [step, bc1, bc2]; step starts at 0 so the first increment yields t=1.
-        match Tensor::from_vec(vec![0.0f32, 0.0, 0.0], &[3]).and_then(|t| t.to_device(dev)) {
+        // Seed the device timestep from the CURRENT host counter so enabling
+        // capture AFTER eager warm-up steps preserves the timestep (and thus the
+        // bias correction that matches the already-matured moment buffers).
+        // `step` starts at self.t; if that's 0 the first increment yields t=1.
+        let t0 = self.t as f32;
+        let bc1 = 1.0 - self.beta1.powi(self.t as i32);
+        let bc2 = 1.0 - self.beta2.powi(self.t as i32);
+        match Tensor::from_vec(vec![t0, bc1, bc2], &[3]).and_then(|t| t.to_device(dev)) {
             Ok(t) => self.capturable_t = Some(t),
             Err(_) => return self, // allocation failed: stay on host path.
         }

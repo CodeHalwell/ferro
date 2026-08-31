@@ -791,3 +791,68 @@ fn captured_adamw_optimiser_advances_across_replays() {
     }
 }
 
+/// G9 P1 regression (Codex re-review): enabling `.capturable()` AFTER eager
+/// warm-up steps must PRESERVE the timestep. The device buffer used to init to
+/// `[0,0,0]`, discarding the accumulated `self.t` and applying step-1 bias
+/// correction to already-matured moment buffers. Here we run 3 eager steps,
+/// flip on capturable mode, and assert `snapshot()` still reports t=3 (proving
+/// the device buffer was seeded from `self.t`, not zeroed) — and that the next
+/// step advances to t=4 rather than resetting to t=1.
+#[test]
+fn capturable_after_eager_warmup_preserves_timestep() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::optim::OptimizerState;
+    use ferro_core::params::Param;
+
+    let (_g, _b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let p = {
+        let t = Tensor::from_vec(vec![0.5f32, -0.3, 0.8, 0.1], &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, -1.0, 0.5], &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // 3 eager (non-capturable) steps: host self.t climbs to 3.
+    let mut opt = AdamW::new(vec![p.clone()], 0.05);
+    for _ in 0..3 {
+        p.zero_grad();
+        p.tensor().mul(&x).unwrap().relu().sum().backward();
+        opt.step();
+    }
+    let t_before = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(t_before.to_vec()[0], 3.0, "eager warm-up should reach t=3");
+
+    // Flip on capture AFTER warm-up. The device buffer must be seeded from t=3.
+    let mut opt = opt.capturable();
+    assert!(opt.is_capturable(), "capturable mode must engage on GPU");
+    let t_seeded = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(
+        t_seeded.to_vec()[0],
+        3.0,
+        "enabling capture must PRESERVE the timestep (device buffer seeded from self.t, not zeroed)"
+    );
+
+    // Next capturable step must advance to t=4, not reset to t=1.
+    p.zero_grad();
+    p.tensor().mul(&x).unwrap().relu().sum().backward();
+    opt.step();
+    let t_after = opt.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(
+        t_after.to_vec()[0],
+        4.0,
+        "first capturable step after warm-up must advance t=3 -> t=4, not reset to 1"
+    );
+}
+
+
