@@ -791,7 +791,65 @@ fn captured_adamw_optimiser_advances_across_replays() {
     }
 }
 
-/// G9 P1 regression (Codex re-review): enabling `.capturable()` AFTER eager
+/// G9 P1 regression (Codex re-review): restoring a checkpoint into a FRESHLY
+/// constructed CUDA capturable optimiser must land the moment buffers on the
+/// param's device, not default them to CPU. Previously `check_buf` inferred the
+/// device from the (still-None) slot and fell back to CPU, so the next
+/// capturable step hit CPU moment storage where the device kernel expects
+/// device buffers and panicked at its `unreachable!()`. This is the normal
+/// resume flow (new process -> new optimiser -> load checkpoint).
+#[test]
+fn restore_into_fresh_capturable_optimiser_keeps_moments_on_device() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::optim::OptimizerState;
+    use ferro_core::params::Param;
+
+    let (_g, _b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let mk = || {
+        let t = Tensor::from_vec(vec![0.5f32, -0.3, 0.8, 0.1], &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(vec![1.0f32, 2.0, -1.0, 0.5], &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // Source optimiser: take a couple of steps so m/v are populated, snapshot.
+    let src_p = mk();
+    let mut src = AdamW::new(vec![src_p.clone()], 0.05);
+    for _ in 0..2 {
+        src_p.zero_grad();
+        src_p.tensor().mul(&x).unwrap().relu().sum().backward();
+        src.step();
+    }
+    let ckpt = src.snapshot();
+
+    // Fresh CUDA optimiser in capturable mode: m/v slots are None. Restore the
+    // checkpoint, then take a capturable step -- must NOT panic on CPU moments.
+    let dst_p = mk();
+    let mut dst = AdamW::new(vec![dst_p.clone()], 0.05).capturable();
+    assert!(dst.is_capturable(), "capturable mode must engage on GPU");
+    dst.restore(&ckpt).expect("restore checkpoint");
+
+    dst_p.zero_grad();
+    dst_p.tensor().mul(&x).unwrap().relu().sum().backward();
+    dst.step(); // panicked here before the fix (CPU moment storage).
+
+    // Timestep advanced from the restored t=2 to t=3, and params stayed on GPU.
+    let t = dst.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
+    assert_eq!(t.to_vec()[0], 3.0, "restored t=2 must advance to t=3");
+    assert_eq!(dst_p.tensor().device(), dev, "params must stay on GPU");
+}
+
 /// warm-up steps must PRESERVE the timestep. The device buffer used to init to
 /// `[0,0,0]`, discarding the accumulated `self.t` and applying step-1 bias
 /// correction to already-matured moment buffers. Here we run 3 eager steps,

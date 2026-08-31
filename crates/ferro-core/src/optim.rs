@@ -82,6 +82,7 @@ fn check_buf(
     expected_shape: &[usize],
     key: &str,
     tensors: &[(String, Tensor)],
+    dev: Device,
 ) -> Result<()> {
     let t = tensors
         .iter()
@@ -103,8 +104,10 @@ fn check_buf(
             ),
         });
     }
-    // State goes back to wherever the parameters live; restore is a cold path.
-    let dev = slot.as_ref().map(|s| s.device()).unwrap_or(Device::Cpu);
+    // State goes back to the parameter's device. A freshly constructed optimiser
+    // has empty (None) slots, so we cannot infer the device from the slot -- the
+    // caller passes the param's device so restored moments land where the
+    // (capturable) update expects them, not defaulting to CPU.
     let up = t.1.to_device(dev)?;
     *slot = Some(up.reshape(expected_shape)?);
     Ok(())
@@ -255,11 +258,13 @@ impl OptimizerState for Sgd {
             });
         }
         for i in 0..self.velocity.len() {
+            let dev = self.params[i].tensor().device();
             check_buf(
                 &mut self.velocity[i],
                 self.params[i].tensor().shape(),
                 &format!("velocity.{i}"),
                 tensors,
+                dev,
             )?;
         }
         Ok(())
@@ -429,8 +434,9 @@ impl OptimizerState for Adam {
         }
         for i in 0..self.params.len() {
             let shape = self.params[i].tensor().shape().to_vec();
-            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors)?;
-            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors)?;
+            let dev = self.params[i].tensor().device();
+            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors, dev)?;
+            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors, dev)?;
             let ts = tensors
                 .iter()
                 .find(|(n, _)| n == &format!("t.{i}"))
@@ -749,8 +755,9 @@ impl OptimizerState for AdamW {
         }
         for i in 0..self.params.len() {
             let shape = self.params[i].tensor().shape().to_vec();
-            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors)?;
-            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors)?;
+            let dev = self.params[i].tensor().device();
+            check_buf(&mut self.m[i], &shape, &format!("m.{i}"), tensors, dev)?;
+            check_buf(&mut self.v[i], &shape, &format!("v.{i}"), tensors, dev)?;
         }
         Ok(())
     }
