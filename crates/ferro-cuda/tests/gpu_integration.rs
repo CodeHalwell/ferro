@@ -667,3 +667,127 @@ fn captured_step_advances_params_across_replays() {
         );
     }
 }
+
+/// G9 PROOF: the PUBLIC `AdamW` optimiser, in `.capturable()` mode, produces a
+/// captured graph whose replays advance the bias correction — i.e. production
+/// AdamW is now capturable end-to-end, not just the backend primitive. Without
+/// the device-timestep wiring, `AdamW::update` would bake host bc1/bc2 into the
+/// captured launch and every replay would re-apply step-1's correction forever.
+///
+/// Reference trajectory: a capturable AdamW stepped eagerly. Test trajectory: a
+/// second capturable AdamW captured ONCE then replayed. They must match — and
+/// the params must keep moving each replay (a frozen correction would stall).
+#[test]
+fn captured_adamw_optimiser_advances_across_replays() {
+    use ferro_core::optim::AdamW;
+    use ferro_core::params::Param;
+
+    let (_g, b) = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let dev = DEV;
+    let lr = 0.05f32;
+
+    let x0 = vec![1.0f32, -2.0, 3.0, -0.5];
+    let init_p = vec![0.7f32, 0.4, -0.3, 1.2];
+
+    let build_param = |vals: &[f32]| -> Param {
+        let t = Tensor::from_vec(vals.to_vec(), &[4])
+            .unwrap()
+            .to_device(dev)
+            .unwrap()
+            .requires_grad_(true)
+            .unwrap();
+        Param::new(t)
+    };
+    let x = Tensor::from_vec(x0.clone(), &[4])
+        .unwrap()
+        .to_device(dev)
+        .unwrap();
+
+    // Reference: capturable AdamW stepped eagerly (each step executes).
+    const N: usize = 5;
+    let ref_p = build_param(&init_p);
+    let mut ref_opt = AdamW::new(vec![ref_p.clone()], lr).capturable();
+    assert!(ref_opt.is_capturable(), "capturable mode must engage on GPU");
+    let mut ref_traj = Vec::new();
+    for _ in 0..N {
+        ref_p.zero_grad();
+        let loss = ref_p.tensor().mul(&x).unwrap().relu().sum();
+        loss.backward();
+        ref_opt.step();
+        ref_traj.push(
+            ref_p
+                .tensor()
+                .to_device(ferro_core::Device::Cpu)
+                .unwrap()
+                .to_vec(),
+        );
+    }
+
+    // Captured run: one persistent capturable AdamW. Warm up one eager step so
+    // the m/v state buffers exist at stable addresses before capture.
+    let cap_p = build_param(&init_p);
+    let mut cap_opt = AdamW::new(vec![cap_p.clone()], lr).capturable();
+    cap_p.zero_grad();
+    let loss = cap_p.tensor().mul(&x).unwrap().relu().sum();
+    loss.backward();
+    cap_opt.step();
+    let warm = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in warm.iter().zip(&ref_traj[0]) {
+        assert!((a - w).abs() < 1e-5, "warmup step diverged {a} vs {w}");
+    }
+
+    // Capture the SECOND step: recompute grad (same closure), then opt.step().
+    if let Err(e) = b.begin_step_capture() {
+        eprintln!("begin_step_capture unsupported: {e}; skipping");
+        return;
+    }
+    cap_p.zero_grad();
+    let loss = cap_p.tensor().mul(&x).unwrap().relu().sum();
+    loss.backward();
+    cap_opt.step();
+    let step = match b.end_step_capture() {
+        Ok(s) => s,
+        Err(e) => panic!("end_step_capture failed: {e}"),
+    };
+
+    // Capture RECORDS but does not execute: param still at the warmup value.
+    let after_cap = cap_p
+        .tensor()
+        .to_device(ferro_core::Device::Cpu)
+        .unwrap()
+        .to_vec();
+    for (a, w) in after_cap.iter().zip(&ref_traj[0]) {
+        assert!(
+            (a - w).abs() < 1e-5,
+            "post-capture param {a} vs warmup {w} (capture must not execute)"
+        );
+    }
+
+    // Replay steps 1..N. Each must advance the param to the eager reference —
+    // the frozen-bias bug (host bc1/bc2 baked in) would stall it at ref[0].
+    for s in 1..N {
+        step.replay().expect("step replay");
+        let got = cap_p
+            .tensor()
+            .to_device(ferro_core::Device::Cpu)
+            .unwrap()
+            .to_vec();
+        for (a, w) in got.iter().zip(&ref_traj[s]) {
+            assert!(
+                (a - w).abs() < 1e-5,
+                "replay step {s}: param {a} vs eager {w} — FROZEN-BIAS BUG (correction not advancing)"
+            );
+        }
+        let prev = &ref_traj[s - 1];
+        let moved = got.iter().zip(prev).any(|(a, w)| (a - w).abs() > 1e-6);
+        assert!(moved, "replay step {s}: param did not advance vs previous");
+    }
+}
+

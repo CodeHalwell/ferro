@@ -24,7 +24,9 @@
 use crate::device::Device;
 use crate::dispatch::{AdamWStep, BinaryKind, UnaryKind};
 use crate::error::Error;
-use crate::inplace::{raw_adamw_step_, raw_axpy_, raw_sgd_step_};
+use crate::inplace::{
+    raw_adamw_step_, raw_adamw_step_capturable_, raw_axpy_, raw_scalar_increment_, raw_sgd_step_,
+};
 use crate::params::Param;
 use crate::tensor::{raw_binary_k, raw_unary_k, Tensor};
 use crate::Result;
@@ -464,6 +466,11 @@ pub struct AdamW {
     t: u32,
     m: Vec<Option<Tensor>>,
     v: Vec<Option<Tensor>>,
+    /// When set, the step runs the CUDA-graph-capturable path: the timestep
+    /// lives in a device tensor `[step, bc1, bc2]` and bias correction advances
+    /// in-kernel, so a captured step replays correctly (mirrors PyTorch
+    /// `capturable=True`). `None` = the ordinary host-timestep path.
+    capturable_t: Option<Tensor>,
 }
 
 impl AdamW {
@@ -481,7 +488,34 @@ impl AdamW {
             t: 0,
             m,
             v,
+            capturable_t: None,
         }
+    }
+
+    /// Enable the CUDA-graph-capturable step. The timestep is moved onto the
+    /// params' device as a `[step, bc1, bc2]` tensor and bias correction is
+    /// advanced in-kernel, so a step recorded with `begin_step_capture` /
+    /// `end_step_capture` replays with an advancing correction instead of a
+    /// frozen one. Requires device-resident params; `lr` and betas are fixed
+    /// for the life of a captured graph (re-capture to change them). No-op
+    /// semantics on CPU params fall back to the host path automatically.
+    pub fn capturable(mut self) -> AdamW {
+        let dev = self
+            .params
+            .first()
+            .map(|p| p.tensor().device())
+            .unwrap_or(Device::Cpu);
+        // [step, bc1, bc2]; step starts at 0 so the first increment yields t=1.
+        if let Ok(t) = Tensor::from_vec(vec![0.0f32, 0.0, 0.0], &[3]).and_then(|t| t.to_device(dev))
+        {
+            self.capturable_t = Some(t);
+        }
+        self
+    }
+
+    /// True when the capturable device-timestep path is active.
+    pub fn is_capturable(&self) -> bool {
+        self.capturable_t.is_some()
     }
 
     pub fn with_weight_decay(mut self, wd: f32) -> AdamW {
@@ -521,6 +555,9 @@ impl AdamW {
     }
 
     fn update(&mut self) -> Result<()> {
+        if let Some(t_dev) = self.capturable_t.clone() {
+            return self.update_capturable(&t_dev);
+        }
         let scale = clip_scale(&self.params, self.max_grad_norm);
         self.t += 1;
         let bc1 = 1.0 - self.beta1.powi(self.t as i32);
@@ -575,6 +612,51 @@ impl AdamW {
             let denom = raw_unary_k(&bdiv(v, &bc2)?, UnaryKind::Sqrt)?;
             let upd = badd(&bdiv(&m_hat, &badd(&denom, &eps)?)?, &bmul(&cur, &wd)?)?;
             p.set(bsub(&cur, &bmul(&upd, &lr)?)?);
+        }
+        Ok(())
+    }
+
+    /// CUDA-graph-capturable step. The timestep tensor `t_dev = [step, bc1, bc2]`
+    /// is advanced once on-device (recomputing bias correction in-kernel), then
+    /// each param runs the capturable fused step reading `t_dev`. Everything is
+    /// device-side and address-stable, so a step recorded between
+    /// `begin_step_capture`/`end_step_capture` replays with an advancing
+    /// correction. Params/state/grads mutate in place; no host per-step state.
+    fn update_capturable(&mut self, t_dev: &Tensor) -> Result<()> {
+        if self.max_grad_norm.is_some() {
+            return Err(Error::Unsupported {
+                op: "adamw_capturable",
+                msg: "gradient clipping needs a host-side norm each step, which \
+                      cannot be captured; disable max_grad_norm for capturable AdamW"
+                    .to_string(),
+            });
+        }
+        // One device increment per optimiser step: advances `step` and
+        // recomputes bc1/bc2 in the timestep buffer, recorded as a graph node.
+        raw_scalar_increment_(t_dev, self.beta1, self.beta2)?;
+        // Mirror the host counter so snapshot()/load() stay meaningful.
+        self.t += 1;
+        for i in 0..self.params.len() {
+            let Some(g) = self.params[i].grad() else {
+                continue;
+            };
+            let p = &self.params[i];
+            let cur = p.tensor();
+            let m = self.m[i].get_or_insert_with(|| zero_like(&cur));
+            let v = self.v[i].get_or_insert_with(|| zero_like(&cur));
+            raw_adamw_step_capturable_(
+                &cur,
+                m,
+                v,
+                &g,
+                t_dev,
+                self.lr,
+                self.beta1,
+                self.beta2,
+                self.eps,
+                self.weight_decay,
+            )?;
+            p.zero_grad();
         }
         Ok(())
     }

@@ -1510,6 +1510,26 @@ impl Backend for CudaBackend {
         })
     }
 
+    fn adamw_step_capturable_dev(
+        &self,
+        p: &dyn DeviceBuffer,
+        m: &dyn DeviceBuffer,
+        v: &dyn DeviceBuffer,
+        g: &dyn DeviceBuffer,
+        t: &dyn DeviceBuffer,
+        lr: f32,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) -> Result<()> {
+        self.adamw_step_capturable_dev_inner(p, m, v, g, t, lr, beta1, beta2, eps, weight_decay)
+    }
+
+    fn scalar_increment_dev(&self, t: &dyn DeviceBuffer, beta1: f32, beta2: f32) -> Result<()> {
+        self.scalar_increment_dev_inner(t, beta1, beta2)
+    }
+
     fn alloc_i64_from_host(&self, data: &[i64]) -> Result<Box<dyn DeviceBuffer>> {
         Ok(Box::new(CudaBufI64 {
             data: self.htod_i64("alloc_i64_from_host", data)?,
@@ -1597,7 +1617,7 @@ impl CudaBackend {
     /// replays of a given captured graph -- to change the learning rate you must
     /// re-capture. (PyTorch capturable Adam keeps lr on-device to allow LR
     /// scheduling under replay; that is a future extension here, not yet done.)
-    pub(crate) fn adamw_step_capturable_dev(
+    pub(crate) fn adamw_step_capturable_dev_inner(
         &self,
         p: &dyn DeviceBuffer,
         m: &dyn DeviceBuffer,
@@ -1665,7 +1685,7 @@ impl CudaBackend {
     /// `bc2 = 1 - beta2^step`). Runs as a one-thread kernel so it is captured as
     /// a graph node and re-executed on every replay, and computes the two
     /// `powf`s ONCE per step rather than per element in the AdamW kernel.
-    pub(crate) fn scalar_increment_dev(
+    pub(crate) fn scalar_increment_dev_inner(
         &self,
         t: &dyn DeviceBuffer,
         beta1: f32,

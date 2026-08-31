@@ -384,7 +384,91 @@ pub(crate) fn raw_adamw_step_(
     Ok(())
 }
 
-/// The fused steps lock every operand simultaneously, so all storages must
+/// Capturable AdamW step: like `raw_adamw_step_` but reads this step's bias
+/// correction from a device-resident timestep tensor `t = [step, bc1, bc2]`
+/// (advanced by `raw_scalar_increment_`) instead of host-computed `bc1`/`bc2`,
+/// so the step is safe to record in a CUDA graph and replay with an advancing
+/// correction. Device-only: `t` and all four operands must be device-resident.
+pub(crate) fn raw_adamw_step_capturable_(
+    p: &Tensor,
+    m: &Tensor,
+    v: &Tensor,
+    g: &Tensor,
+    t: &Tensor,
+    lr: f32,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+) -> Result<()> {
+    const OP: &str = "adamw_step_capturable";
+    for x in [p, m, v, g] {
+        check_dst(OP, x)?;
+    }
+    check_step_operands(OP, &[p, m, v, g])?;
+    if !is_device(p) || !is_device(t) {
+        return Err(Error::Unsupported {
+            op: OP,
+            msg: "capturable AdamW step is device-only (params and timestep must be resident)"
+                .to_string(),
+        });
+    }
+    let backend = backend_for(p.0.device)?;
+    let (gp, gm, gv, gg, gt) = (
+        p.0.storage.read(),
+        m.0.storage.read(),
+        v.0.storage.read(),
+        g.0.storage.read(),
+        t.0.storage.read(),
+    );
+    let (
+        Storage::Device(bp),
+        Storage::Device(bm),
+        Storage::Device(bv),
+        Storage::Device(bg),
+        Storage::Device(bt),
+    ) = (&*gp, &*gm, &*gv, &*gg, &*gt)
+    else {
+        unreachable!()
+    };
+    backend.adamw_step_capturable_dev(
+        bp.as_ref(),
+        bm.as_ref(),
+        bv.as_ref(),
+        bg.as_ref(),
+        bt.as_ref(),
+        lr,
+        beta1,
+        beta2,
+        eps,
+        weight_decay,
+    )?;
+    p.bump_version();
+    m.bump_version();
+    v.bump_version();
+    Ok(())
+}
+
+/// Advance a device-resident AdamW timestep `t = [step, bc1, bc2]` by one step
+/// (recomputing bias correction in-kernel). Device-only; `t` must be resident.
+pub(crate) fn raw_scalar_increment_(t: &Tensor, beta1: f32, beta2: f32) -> Result<()> {
+    const OP: &str = "scalar_increment";
+    check_dst(OP, t)?;
+    if !is_device(t) {
+        return Err(Error::Unsupported {
+            op: OP,
+            msg: "scalar_increment is device-only".to_string(),
+        });
+    }
+    let backend = backend_for(t.0.device)?;
+    let gt = t.0.storage.read();
+    let Storage::Device(bt) = &*gt else {
+        unreachable!()
+    };
+    backend.scalar_increment_dev(bt.as_ref(), beta1, beta2)?;
+    t.bump_version();
+    Ok(())
+}
 /// be distinct (they are by construction: state buffers are allocated by the
 /// optimizer, gradients by backward) and equally sized.
 fn check_step_operands(op: &'static str, ts: &[&Tensor]) -> Result<()> {
