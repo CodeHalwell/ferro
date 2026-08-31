@@ -713,6 +713,31 @@ fn load_safetensors<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
     Ok(d)
 }
 
+/// Initialise and register the CUDA backend for device `index` (default 0).
+/// Must be called before moving tensors to `cuda`/`cuda:N`. Returns `True` on
+/// success; raises with the driver/runtime error string when no usable CUDA
+/// device is present (never panics). Idempotent - a second call is a no-op.
+#[pyfunction]
+#[pyo3(signature = (index=0))]
+fn cuda_init(index: u32) -> PyResult<bool> {
+    ferro_cuda::install(index).map_err(PyValueError::new_err)?;
+    Ok(true)
+}
+
+/// Whether a CUDA driver + device are visible to ferro (does not register).
+#[pyfunction]
+fn cuda_is_available() -> bool {
+    ferro_cuda::is_available()
+}
+
+/// Block until all queued CUDA work on ferro's stream completes. Pure stream
+/// fence (no device->host copy) - use this to bracket GPU benchmark timing so
+/// it measures kernel completion, not a PCIe readback.
+#[pyfunction]
+fn cuda_synchronize() -> PyResult<()> {
+    ferro_cuda::device_synchronize().map_err(PyValueError::new_err)
+}
+
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
@@ -724,5 +749,8 @@ fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(where_, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_init, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_is_available, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_synchronize, m)?)?;
     Ok(())
 }

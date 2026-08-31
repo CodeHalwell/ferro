@@ -561,6 +561,15 @@ impl CudaBackend {
         self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
     }
 
+    /// Block until all work on this backend's stream retires. Pure stream
+    /// fence, no device->host copy - the honest primitive for benchmark timing
+    /// (measures kernel completion without a PCIe readback).
+    pub fn synchronize(&self) -> std::result::Result<(), String> {
+        self.stream
+            .synchronize()
+            .map_err(|e| format!("cuda synchronize failed: {e}"))
+    }
+
     fn htod_i64(&self, op: &'static str, data: &[i64]) -> Result<CudaSlice<i64>> {
         self.stream.clone_htod(data).map_err(|e| cuda_err(op, e))
     }
@@ -1731,6 +1740,19 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
 /// trait. `None` before `install` succeeds.
 pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
     LAST_BACKEND.get().cloned()
+}
+
+/// Block the calling thread until all work submitted on the last-installed
+/// CUDA backend's stream has completed. This is a pure stream fence (no
+/// device->host copy), the honest primitive for GPU benchmark timing: it
+/// measures kernel completion without charging a PCIe readback. Returns `Err`
+/// if no backend is installed or the sync fails; `Ok(())` is a no-op when
+/// there is nothing in flight.
+pub fn device_synchronize() -> std::result::Result<(), String> {
+    let b = LAST_BACKEND
+        .get()
+        .ok_or_else(|| "no CUDA backend installed; call install() first".to_string())?;
+    b.synchronize()
 }
 
 static LAST_BACKEND: std::sync::OnceLock<Arc<CudaBackend>> = std::sync::OnceLock::new();
