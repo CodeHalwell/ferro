@@ -240,7 +240,20 @@ a good substrate for an IR.
 
 ## 9. Differentiators: where ferro can be genuinely best [D]
 
-- Embeddability: no Python, no runtime, one static binary. Target: inference
+- Host-side overhead (MEASURED, see docs/HOST_OVERHEAD.md): ferro's leading
+  structural edge. On tiny CPU tensors (kernel ~free, so wall time = host
+  orchestration) ferro is a repeatable ~3x faster per-op dispatch and >=2.4x
+  faster on a depth-8 autograd step than eager torch 2.6. Cause: no GIL,
+  monomorphised static dispatch, allocation-deterministic core -- the eager
+  overhead torch.compile exists to remove, which ferro never pays. This is the
+  thesis: ferro's edge is everything OUTSIDE the kernel (dispatch, autograd
+  graph build/traverse, optimiser-step orchestration, capture/replay), where a
+  memory-safe Rust core beats torch's C++/Python eager path. It does NOT extend
+  to device throughput (matmul/elementwise read parity, GPU_BASELINE_3090.md);
+  it is a fraction-of-wall-time win, largest for small-tensor / long-graph /
+  high-step-count training and inference loops. Compound it with fusion (5) to
+  stop the device side handing parity back.
+- Embeddability: no Python, no runtime, one static binary.
   library measured in single-digit MB that links into anything (games,
   robotics, safety-critical). Torch cannot play here.
 - wasm/edge: the wgpu backend + wasm32 target = training and inference in the
