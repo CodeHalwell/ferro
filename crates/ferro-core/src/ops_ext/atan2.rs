@@ -5,7 +5,7 @@ use crate::tensor::{raw_binary, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn atan2(&self, other: &Tensor) -> crate::Result<Tensor> {
-        let out = raw_binary("atan2", self, other, |a, b| a.atan2(b))?;
+        let out = raw_binary("atan2", self, other, |a, b| a.atan2(b))?.to_device(self.device())?;
         let (x, y) = (self.detach_copy(), other.detach_copy());
         let (sx, sy) = (self.shape().to_vec(), other.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {

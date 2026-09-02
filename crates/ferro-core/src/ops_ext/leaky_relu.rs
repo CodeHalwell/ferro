@@ -15,7 +15,7 @@ impl Tensor {
             } else {
                 negative_slope * v
             }
-        })?;
+        })?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("leaky_relu_bw", g, &x, move |gg, xx| {

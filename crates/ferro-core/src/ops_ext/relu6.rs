@@ -7,7 +7,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn relu6(&self) -> Result<Tensor> {
-        let out = raw_binary("relu6", self, self, |v, _| v.max(0.0).min(6.0))?;
+        let out = raw_binary("relu6", self, self, |v, _| v.max(0.0).min(6.0))?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("relu6_bw", g, &x, |gg, xx| {

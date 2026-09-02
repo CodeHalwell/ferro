@@ -8,7 +8,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn hardtanh(&self, min_val: f32, max_val: f32) -> Result<Tensor> {
-        let out = raw_binary("hardtanh", self, self, move |v, _| v.max(min_val).min(max_val))?;
+        let out = raw_binary("hardtanh", self, self, move |v, _| v.max(min_val).min(max_val))?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("hardtanh_bw", g, &x, move |gg, xx| {

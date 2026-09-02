@@ -7,7 +7,7 @@ use crate::tensor::{raw_binary, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn lerp(&self, end: &Tensor, weight: f32) -> Result<Tensor> {
-        let out = raw_binary("lerp", self, end, move |a, b| a + weight * (b - a))?;
+        let out = raw_binary("lerp", self, end, move |a, b| a + weight * (b - a))?.to_device(self.device())?;
         let (sx, sy) = (self.shape().to_vec(), end.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), end.clone()], move |g| {
             let ga = raw_binary("lerp_bwa", g, g, move |gg, _| gg * (1.0 - weight)).unwrap();

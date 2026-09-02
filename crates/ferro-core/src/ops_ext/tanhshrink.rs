@@ -8,7 +8,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn tanhshrink(&self) -> Result<Tensor> {
-        let out = raw_binary("tanhshrink", self, self, |v, _| v - v.tanh())?;
+        let out = raw_binary("tanhshrink", self, self, |v, _| v - v.tanh())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("tanhshrink_bw", g, &x, |gg, xx| gg * xx.tanh() * xx.tanh()).unwrap()]

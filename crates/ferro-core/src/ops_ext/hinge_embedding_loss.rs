@@ -17,7 +17,7 @@ impl Tensor {
             } else {
                 (margin - x).max(0.0)
             }
-        })?;
+        })?.to_device(self.device())?;
         let (x, t) = (self.detach_copy(), target.detach_copy());
         let (sx, st) = (self.shape().to_vec(), target.shape().to_vec());
         let elem = out.record_fn(vec![self.clone(), target.clone()], move |g| {

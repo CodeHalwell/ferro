@@ -20,7 +20,7 @@ impl Tensor {
             } else {
                 alpha * (v / alpha).exp_m1()
             }
-        })?;
+        })?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("celu_bw", g, &x, move |gg, xx| {

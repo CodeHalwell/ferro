@@ -17,7 +17,7 @@ impl Tensor {
             } else {
                 ad - 0.5 * beta
             }
-        })?;
+        })?.to_device(self.device())?;
         let (x, y) = (self.detach_copy(), target.detach_copy());
         let (sx, sy) = (self.shape().to_vec(), target.shape().to_vec());
         let elem = out.record_fn(vec![self.clone(), target.clone()], move |g| {

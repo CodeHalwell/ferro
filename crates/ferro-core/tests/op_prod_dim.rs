@@ -28,3 +28,31 @@ fn prod_dim_grad() {
     let b = Tensor::from_vec(vec![1.0, -2.0, 3.0, -0.5, 2.0, -1.5], &[2, 3]).unwrap();
     grad_check(&[b], |t| t[0].prod_dim(0, true).unwrap().sum());
 }
+
+#[test]
+fn prod_dim_single_zero_gradient() {
+    // prod/x_i is 0/0 (NaN) at the zero element itself. The correct
+    // gradient there is the product of the OTHER elements in the slice;
+    // every other (nonzero) element's gradient is 0, since removing it
+    // still leaves the zero factor behind.
+    let a = Tensor::from_vec(vec![2.0, 0.0, 3.0], &[3])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    a.prod_dim(0, false).unwrap().backward();
+    let g = a.grad().unwrap().to_vec();
+    assert!((g[0] - 0.0).abs() < 1e-6);
+    assert!((g[1] - 6.0).abs() < 1e-6); // product of the other elements: 2 * 3
+    assert!((g[2] - 0.0).abs() < 1e-6);
+}
+
+#[test]
+fn prod_dim_two_zeros_gradient_is_all_zero() {
+    let a = Tensor::from_vec(vec![2.0, 0.0, 0.0, 3.0], &[4])
+        .unwrap()
+        .requires_grad_(true)
+        .unwrap();
+    a.prod_dim(0, false).unwrap().backward();
+    let g = a.grad().unwrap().to_vec();
+    assert_eq!(g, vec![0.0, 0.0, 0.0, 0.0]);
+}

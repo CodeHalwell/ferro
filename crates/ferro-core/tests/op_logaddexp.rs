@@ -38,6 +38,19 @@ fn logaddexp_large_magnitude() {
 }
 
 #[test]
+fn logaddexp_equal_infinities() {
+    // The stable m + ln(exp(a-m) + exp(b-m)) form computes inf - inf = NaN
+    // when both operands (and so m) are the same infinity; the op must
+    // special-case this and return that infinity directly.
+    let a = Tensor::from_vec(vec![f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY], &[3]).unwrap();
+    let b = Tensor::from_vec(vec![f32::INFINITY, f32::NEG_INFINITY, 3.0], &[3]).unwrap();
+    let got = a.logaddexp(&b).unwrap().to_vec();
+    assert_eq!(got[0], f32::INFINITY);
+    assert_eq!(got[1], f32::NEG_INFINITY);
+    assert_eq!(got[2], f32::INFINITY);
+}
+
+#[test]
 fn logaddexp_grad() {
     let a = Tensor::from_vec(vec![0.3, -0.7, 1.2, 2.5], &[2, 2]).unwrap();
     let b = Tensor::from_vec(vec![-0.4, 0.9, -1.1, 1.8], &[2, 2]).unwrap();

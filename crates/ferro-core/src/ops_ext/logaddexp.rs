@@ -1,5 +1,8 @@
 //! `logaddexp`: y = ln(exp(a) + exp(b)), computed stably as
-//! m + ln(exp(a-m) + exp(b-m)) with m = max(a, b). Backward:
+//! m + ln(exp(a-m) + exp(b-m)) with m = max(a, b). When m is infinite (both
+//! operands equal infinities, or one is a dominating +-inf), that stable
+//! form computes inf - inf = NaN, so the infinite case is returned directly
+//! instead: logaddexp saturates to +-inf there, which m already is. Backward:
 //! da = g * sigmoid(a-b), db = g * sigmoid(b-a) = g * (1 - sigmoid(a-b)).
 
 use crate::tensor::{raw_binary, unbroadcast, Tensor};
@@ -9,8 +12,13 @@ impl Tensor {
     pub fn logaddexp(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_binary("logaddexp", self, other, |a, b| {
             let m = a.max(b);
-            m + ((a - m).exp() + (b - m).exp()).ln()
-        })?;
+            if m.is_infinite() {
+                m
+            } else {
+                m + ((a - m).exp() + (b - m).exp()).ln()
+            }
+        })?
+        .to_device(self.device())?;
         let (x, y) = (self.detach_copy(), other.detach_copy());
         let (sx, sy) = (self.shape().to_vec(), other.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {

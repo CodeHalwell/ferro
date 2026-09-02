@@ -19,7 +19,8 @@ impl Tensor {
             } else {
                 (1.0 + v.exp()).ln()
             }
-        })?;
+        })?
+        .to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("softplus_bw", g, &x, |gg, xx| gg * (1.0 / (1.0 + (-xx).exp()))).unwrap()]

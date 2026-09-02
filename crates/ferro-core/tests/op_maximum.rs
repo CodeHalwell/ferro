@@ -24,3 +24,14 @@ fn maximum_grad_broadcast() {
     let b = Tensor::from_vec(vec![4.0, -6.0, 3.5], &[3]).unwrap();
     grad_check(&[a, b], |t| t[0].maximum(&t[1]).unwrap().sum());
 }
+
+#[test]
+fn maximum_propagates_nan() {
+    // f32::max silently discards a NaN operand and returns the other one;
+    // torch.maximum (and this op) must propagate NaN instead.
+    let a = Tensor::from_vec(vec![f32::NAN, 1.0], &[2]).unwrap();
+    let b = Tensor::from_vec(vec![2.0, f32::NAN], &[2]).unwrap();
+    let got = a.maximum(&b).unwrap().to_vec();
+    assert!(got[0].is_nan());
+    assert!(got[1].is_nan());
+}

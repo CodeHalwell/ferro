@@ -4,7 +4,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn acos(&self) -> Result<Tensor> {
-        let out = raw_binary("acos", self, self, |v, _| v.acos())?;
+        let out = raw_binary("acos", self, self, |v, _| v.acos())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("acos_bw", g, &x, |gg, xx| gg * -1.0 / (1.0 - xx * xx).sqrt()).unwrap()]

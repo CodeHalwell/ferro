@@ -6,7 +6,7 @@ use crate::Result;
 
 impl Tensor {
     pub fn hypot(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("hypot", self, other, |a, b| a.hypot(b))?;
+        let out = raw_binary("hypot", self, other, |a, b| a.hypot(b))?.to_device(self.device())?;
         let (x, y) = (self.detach_copy(), other.detach_copy());
         let (sx, sy) = (self.shape().to_vec(), other.shape().to_vec());
         let yo = out.detach_copy();

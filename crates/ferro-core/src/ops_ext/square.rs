@@ -8,7 +8,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn square(&self) -> Result<Tensor> {
-        let out = raw_binary("square", self, self, |v, _| v * v)?;
+        let out = raw_binary("square", self, self, |v, _| v * v)?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("square_bw", g, &x, |gg, xx| gg * 2.0 * xx).unwrap()]

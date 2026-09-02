@@ -7,7 +7,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn cosh(&self) -> Result<Tensor> {
-        let out = raw_binary("cosh", self, self, |v, _| v.cosh())?;
+        let out = raw_binary("cosh", self, self, |v, _| v.cosh())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("cosh_bw", g, &x, |gg, xx| gg * xx.sinh()).unwrap()]

@@ -16,7 +16,7 @@ impl Tensor {
             } else {
                 v * (v + 3.0) / 6.0
             }
-        })?;
+        })?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("hardswish_bw", g, &x, |gg, xx| {

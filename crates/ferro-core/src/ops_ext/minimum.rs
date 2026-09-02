@@ -8,7 +8,7 @@ use crate::tensor::{raw_binary, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn minimum(&self, other: &Tensor) -> Result<Tensor> {
-        let out = raw_binary("minimum", self, other, |a, b| a.min(b))?;
+        let out = raw_binary("minimum", self, other, |a, b| a.min(b))?.to_device(self.device())?;
         let (x, y) = (self.detach_copy(), other.detach_copy());
         let (sx, sy) = (self.shape().to_vec(), other.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {

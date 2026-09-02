@@ -11,14 +11,14 @@ const RAD2DEG: f32 = 180.0 / std::f32::consts::PI;
 
 impl Tensor {
     pub fn deg2rad(&self) -> Result<Tensor> {
-        let out = raw_binary("deg2rad", self, self, |v, _| v * DEG2RAD)?;
+        let out = raw_binary("deg2rad", self, self, |v, _| v * DEG2RAD)?.to_device(self.device())?;
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("deg2rad_bw", g, g, |gg, _| gg * DEG2RAD).unwrap()]
         }))
     }
 
     pub fn rad2deg(&self) -> Result<Tensor> {
-        let out = raw_binary("rad2deg", self, self, |v, _| v * RAD2DEG)?;
+        let out = raw_binary("rad2deg", self, self, |v, _| v * RAD2DEG)?.to_device(self.device())?;
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("rad2deg_bw", g, g, |gg, _| gg * RAD2DEG).unwrap()]
         }))

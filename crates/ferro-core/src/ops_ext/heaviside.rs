@@ -17,7 +17,7 @@ impl Tensor {
             } else {
                 v
             }
-        })?;
+        })?.to_device(self.device())?;
         let (sx, sv) = (self.shape().to_vec(), values.shape().to_vec());
         Ok(out.record_fn(vec![self.clone(), values.clone()], move |g| {
             let z = raw_binary("heaviside_bw", g, g, |_, _| 0.0).unwrap();

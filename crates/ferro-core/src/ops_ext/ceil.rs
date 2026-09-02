@@ -8,7 +8,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn ceil(&self) -> Result<Tensor> {
-        let out = raw_binary("ceil", self, self, |v, _| v.ceil())?;
+        let out = raw_binary("ceil", self, self, |v, _| v.ceil())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("ceil_bw", g, &x, |_, _| 0.0).unwrap()]

@@ -16,7 +16,7 @@ impl Tensor {
             } else {
                 0.0
             }
-        })?;
+        })?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("sign_bw", g, &x, |_, _| 0.0).unwrap()]

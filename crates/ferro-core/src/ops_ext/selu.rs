@@ -18,7 +18,7 @@ impl Tensor {
             } else {
                 SCALE * ALPHA * v.exp_m1()
             }
-        })?;
+        })?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("selu_bw", g, &x, |gg, xx| {

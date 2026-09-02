@@ -10,7 +10,7 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn erf(&self) -> Result<Tensor> {
-        let out = raw_binary("erf", self, self, |v, _| erf_f32(v))?;
+        let out = raw_binary("erf", self, self, |v, _| erf_f32(v))?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("erf_bw", g, &x, |gg, xx| {
