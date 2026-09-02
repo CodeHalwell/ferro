@@ -385,6 +385,31 @@ impl PyTensor {
         PyTensor::wrap(self.inner.relu())
     }
 
+    /// Evaluate the pointwise expression that produced this tensor as fused
+    /// kernels: capture the op graph rooted here, run the fusion planner, and
+    /// execute each detected pointwise chain in ONE launch (via the backend's
+    /// `chain_dev`) instead of one launch per op. Returns a NEW detached
+    /// tensor with the same values as `self` but computed with fewer launches
+    /// and no global-memory round-trips for fused intermediates.
+    ///
+    /// Detached: the result carries no autograd graph. Use on an inference /
+    /// forward-only expression like `(x.relu() * y + z).fuse()`. On a chain
+    /// with no fusible run this is a correct no-op copy.
+    fn fuse(&self) -> PyResult<PyTensor> {
+        let g = ferro_core::graph::Graph::from_root(&self.inner);
+        g.eval_fused().map(PyTensor::wrap).map_err(map_err)
+    }
+
+    /// (launches_before, launches_after) the fusion planner would issue for the
+    /// pointwise graph rooted at this tensor. A structural proof hook: lets a
+    /// caller assert fusion actually collapsed launches, not just that numbers
+    /// came out equal.
+    fn fusion_launches(&self) -> (usize, usize) {
+        let g = ferro_core::graph::Graph::from_root(&self.inner);
+        let p = g.plan_fusion();
+        (p.launches_before, p.launches_after)
+    }
+
     fn sigmoid(&self) -> PyTensor {
         PyTensor::wrap(self.inner.sigmoid())
     }

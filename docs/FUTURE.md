@@ -191,6 +191,18 @@ a good substrate for an IR.
 - (XL) Fusion compiler: elementwise/reduction fusion into generated kernels
   (nvrtc on GPU, cranelift or generated Rust on CPU). This is the
   torch.compile/Inductor analogue and the largest single win available.
+  STATUS: the pointwise-chain engine EXISTS and is measured — `plan_fusion` →
+  `FusedChain::resolve` → `chain_dev` runs `relu(x)*y+z` as one nvrtc kernel at
+  a proven **2.1× over the unfused 3-kernel path** on the 3090 (docs/FUSION_3090.md,
+  `bench_chain`). It is now reachable from Python via `Tensor.fuse()` /
+  `Tensor.fusion_launches()` (collapses launches 3→1, numerically exact).
+  REMAINING (the actual next task): `.fuse()` re-plans on every call so it is
+  currently ~0.68× (slower than eager) despite the 2× kernel — needs a
+  **compile-once fused callable** (plan/resolve once, replay the chain, ideally
+  over the existing `capture_chain`/`replay` CUDA-graph seam) to expose the
+  kernel win at the Python level. Two planner bugs were fixed getting here:
+  same-shape elementwise mislabelled as MatMul, and a `run_host` operand
+  off-by-one (see docs/FUSION_3090.md).
 - (L) Whole-step compilation: capture forward+backward+optimizer as one
   graph; combined with CUDA graphs this can beat eager torch meaningfully.
 
