@@ -1,0 +1,47 @@
+{
+  "torch": "2.6.0+cu124",
+  "dispatch": [
+    {
+      "op": "relu(x)",
+      "torch_ns": 1103.23333380317,
+      "ferro_ns": 274.61666589564027,
+      "torch_ops_per_s": 921772.2607382177,
+      "ferro_ops_per_s": 3663898.3912340524,
+      "ratio_ferro_over_torch": 3.9748412349702886
+    },
+    {
+      "op": "x + y",
+      "torch_ns": 1134.2333345965017,
+      "ferro_ns": 377.1833326027263,
+      "torch_ops_per_s": 894454.3827199261,
+      "ferro_ops_per_s": 2674273.48912029,
+      "ratio_ferro_over_torch": 2.9898377611926414
+    },
+    {
+      "op": "x * y",
+      "torch_ns": 1178.0833337979857,
+      "ferro_ns": 324.9999996720968,
+      "torch_ops_per_s": 931966.4496846815,
+      "ferro_ops_per_s": 3087372.647929889,
+      "ratio_ferro_over_torch": 3.312750849533758
+    },
+    {
+      "op": "relu(x)*y+x",
+      "torch_ns": 6940.566666647404,
+      "ferro_ns": 1026.2499999953434,
+      "torch_ops_per_s": 329489.29143018485,
+      "ferro_ops_per_s": 1093693.0379051212,
+      "ratio_ferro_over_torch": 3.3193583717328874
+    }
+  ],
+  "autograd": [
+    {
+      "depth": 8,
+      "torch_us": 238.77499998585944,
+      "ferro_us": 58.58633332536556,
+      "torch_steps_per_s": 7188.004657699311,
+      "ferro_steps_per_s": 17404.218788418675,
+      "ratio_ferro_over_torch": 2.4212865207003498
+    }
+  ]
+}

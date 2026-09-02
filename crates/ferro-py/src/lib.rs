@@ -385,6 +385,31 @@ impl PyTensor {
         PyTensor::wrap(self.inner.relu())
     }
 
+    /// Evaluate the pointwise expression that produced this tensor as fused
+    /// kernels: capture the op graph rooted here, run the fusion planner, and
+    /// execute each detected pointwise chain in ONE launch (via the backend's
+    /// `chain_dev`) instead of one launch per op. Returns a NEW detached
+    /// tensor with the same values as `self` but computed with fewer launches
+    /// and no global-memory round-trips for fused intermediates.
+    ///
+    /// Detached: the result carries no autograd graph. Use on an inference /
+    /// forward-only expression like `(x.relu() * y + z).fuse()`. On a chain
+    /// with no fusible run this is a correct no-op copy.
+    fn fuse(&self) -> PyResult<PyTensor> {
+        let g = ferro_core::graph::Graph::from_root(&self.inner);
+        g.eval_fused().map(PyTensor::wrap).map_err(map_err)
+    }
+
+    /// (launches_before, launches_after) the fusion planner would issue for the
+    /// pointwise graph rooted at this tensor. A structural proof hook: lets a
+    /// caller assert fusion actually collapsed launches, not just that numbers
+    /// came out equal.
+    fn fusion_launches(&self) -> (usize, usize) {
+        let g = ferro_core::graph::Graph::from_root(&self.inner);
+        let p = g.plan_fusion();
+        (p.launches_before, p.launches_after)
+    }
+
     fn sigmoid(&self) -> PyTensor {
         PyTensor::wrap(self.inner.sigmoid())
     }
@@ -713,6 +738,31 @@ fn load_safetensors<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
     Ok(d)
 }
 
+/// Initialise and register the CUDA backend for device `index` (default 0).
+/// Must be called before moving tensors to `cuda`/`cuda:N`. Returns `True` on
+/// success; raises with the driver/runtime error string when no usable CUDA
+/// device is present (never panics). Idempotent - a second call is a no-op.
+#[pyfunction]
+#[pyo3(signature = (index=0))]
+fn cuda_init(index: u32) -> PyResult<bool> {
+    ferro_cuda::install(index).map_err(PyValueError::new_err)?;
+    Ok(true)
+}
+
+/// Whether a CUDA driver + device are visible to ferro (does not register).
+#[pyfunction]
+fn cuda_is_available() -> bool {
+    ferro_cuda::is_available()
+}
+
+/// Block until all queued CUDA work on ferro's stream completes. Pure stream
+/// fence (no device->host copy) - use this to bracket GPU benchmark timing so
+/// it measures kernel completion, not a PCIe readback.
+#[pyfunction]
+fn cuda_synchronize() -> PyResult<()> {
+    ferro_cuda::device_synchronize().map_err(PyValueError::new_err)
+}
+
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
@@ -724,5 +774,8 @@ fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(where_, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_init, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_is_available, m)?)?;
+    m.add_function(wrap_pyfunction!(cuda_synchronize, m)?)?;
     Ok(())
 }

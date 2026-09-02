@@ -191,6 +191,18 @@ a good substrate for an IR.
 - (XL) Fusion compiler: elementwise/reduction fusion into generated kernels
   (nvrtc on GPU, cranelift or generated Rust on CPU). This is the
   torch.compile/Inductor analogue and the largest single win available.
+  STATUS: the pointwise-chain engine EXISTS and is measured — `plan_fusion` →
+  `FusedChain::resolve` → `chain_dev` runs `relu(x)*y+z` as one nvrtc kernel at
+  a proven **2.1× over the unfused 3-kernel path** on the 3090 (docs/FUSION_3090.md,
+  `bench_chain`). It is now reachable from Python via `Tensor.fuse()` /
+  `Tensor.fusion_launches()` (collapses launches 3→1, numerically exact).
+  REMAINING (the actual next task): `.fuse()` re-plans on every call so it is
+  currently ~0.68× (slower than eager) despite the 2× kernel — needs a
+  **compile-once fused callable** (plan/resolve once, replay the chain, ideally
+  over the existing `capture_chain`/`replay` CUDA-graph seam) to expose the
+  kernel win at the Python level. Two planner bugs were fixed getting here:
+  same-shape elementwise mislabelled as MatMul, and a `run_host` operand
+  off-by-one (see docs/FUSION_3090.md).
 - (L) Whole-step compilation: capture forward+backward+optimizer as one
   graph; combined with CUDA graphs this can beat eager torch meaningfully.
 
@@ -240,7 +252,20 @@ a good substrate for an IR.
 
 ## 9. Differentiators: where ferro can be genuinely best [D]
 
-- Embeddability: no Python, no runtime, one static binary. Target: inference
+- Host-side overhead (MEASURED, see docs/HOST_OVERHEAD.md): ferro's leading
+  structural edge. On tiny CPU tensors (kernel ~free, so wall time = host
+  orchestration) ferro is a repeatable ~3x faster per-op dispatch and >=2.4x
+  faster on a depth-8 autograd step than eager torch 2.6. Cause: no GIL,
+  monomorphised static dispatch, allocation-deterministic core -- the eager
+  overhead torch.compile exists to remove, which ferro never pays. This is the
+  thesis: ferro's edge is everything OUTSIDE the kernel (dispatch, autograd
+  graph build/traverse, optimiser-step orchestration, capture/replay), where a
+  memory-safe Rust core beats torch's C++/Python eager path. It does NOT extend
+  to device throughput (matmul/elementwise read parity, GPU_BASELINE_3090.md);
+  it is a fraction-of-wall-time win, largest for small-tensor / long-graph /
+  high-step-count training and inference loops. Compound it with fusion (5) to
+  stop the device side handing parity back.
+- Embeddability: no Python, no runtime, one static binary.
   library measured in single-digit MB that links into anything (games,
   robotics, safety-critical). Torch cannot play here.
 - wasm/edge: the wgpu backend + wasm32 target = training and inference in the

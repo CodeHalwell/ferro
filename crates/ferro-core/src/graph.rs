@@ -159,8 +159,20 @@ impl Graph {
                     .map(|op| op.inputs().to_vec())
                     .unwrap_or_default();
             let refs: Vec<&Tensor> = owned.iter().collect();
-            let kind = classify(&t, &refs);
+            let mut kind = classify(&t, &refs);
             let tag = t.0.op.as_ref().and_then(|op| op.tag);
+            // `classify` guesses kind from shapes alone, so a same-shape
+            // elementwise binary (e.g. 512x512 * 512x512) can satisfy the
+            // matmul shape contract and be mislabelled MatMul -- which is not
+            // fusible, silently breaking a pointwise chain. The op TAG is
+            // ground truth: matmul records untagged (`record_fn`), every
+            // pointwise op records `record_fn_tagged`. Reconcile: a Binary tag
+            // forces Binary, a Unary tag forces Unary.
+            match tag {
+                Some(OpTag::Binary(_)) => kind = NodeKind::Binary,
+                Some(OpTag::Unary(_)) => kind = NodeKind::Unary,
+                None => {}
+            }
             tensors.insert(t.id(), t.clone());
             let node = GraphNode {
                 id: t.id(),
@@ -254,6 +266,102 @@ impl Graph {
             chains,
             launches_before: non_leaf,
             launches_after: non_leaf - fused_away,
+        }
+    }
+
+    /// Evaluate this captured graph through the fusion plan, sourcing every
+    /// leaf value from the tensors captured at `from_root` time (no re-run of
+    /// the original tape). Pointwise chains the planner found execute as ONE
+    /// fused `chain_dev` launch each; every other node runs its single raw
+    /// kernel. Returns a detached tensor equal to the eager root but produced
+    /// with `launches_after` launches instead of one-per-op.
+    ///
+    /// This is the eager-fusion seam: a caller that just built `y = relu(x)*a+b`
+    /// can hand the root's graph here and get the fused result, without the
+    /// `Replay::capture(build)` closure dance (whose leaves must be re-supplied).
+    pub fn eval_fused(&self) -> Result<Tensor> {
+        let mut values: HashMap<usize, Tensor> = HashMap::new();
+        // Seed leaves from the captured tensors: a leaf is any node the walk
+        // recorded with no op (its value is an input, already realised).
+        for (&id, node) in &self.nodes {
+            if node.kind == NodeKind::Leaf {
+                let t = self.tensors.get(&id).ok_or_else(|| Error::Unsupported {
+                    op: "eval_fused",
+                    msg: format!("leaf {id} has no captured tensor"),
+                })?;
+                values.insert(id, t.clone());
+            }
+        }
+        let plan = self.plan_fusion();
+        let mut chain_of: HashMap<usize, usize> = HashMap::new();
+        for (ci, c) in plan.chains.iter().enumerate() {
+            for &n in &c.nodes {
+                chain_of.insert(n, ci);
+            }
+        }
+        let mut done_chains = vec![false; plan.chains.len()];
+        // `order` is roots-first; evaluate producers before consumers.
+        for &id in self.order.iter().rev() {
+            if values.contains_key(&id) {
+                continue;
+            }
+            match self.nodes[&id].kind {
+                NodeKind::Leaf => {
+                    return Err(Error::Unsupported {
+                        op: "eval_fused",
+                        msg: format!("leaf {id} was not seeded"),
+                    })
+                }
+                NodeKind::Reduce | NodeKind::MatMul | NodeKind::Other => {
+                    let out = self.eval_raw_node(id, &values)?;
+                    values.insert(id, out);
+                }
+                NodeKind::Unary | NodeKind::Binary => match chain_of.get(&id) {
+                    Some(&ci) if !done_chains[ci] => {
+                        done_chains[ci] = true;
+                        let chain = &plan.chains[ci];
+                        let exec = chain.resolve(self)?;
+                        let out = chain.run(&exec)?;
+                        values.insert(*chain.nodes.last().expect("non-empty chain"), out);
+                    }
+                    Some(_) => {}
+                    None => {
+                        let out = self.eval_raw_node(id, &values)?;
+                        values.insert(id, out);
+                    }
+                },
+            }
+        }
+        let root = *self.order.first().ok_or_else(|| Error::Unsupported {
+            op: "eval_fused",
+            msg: "empty graph".into(),
+        })?;
+        values.get(&root).cloned().ok_or_else(|| Error::Unsupported {
+            op: "eval_fused",
+            msg: "root not evaluated".into(),
+        })
+    }
+
+    /// Evaluate one tagged Unary/Binary node from already-computed inputs.
+    fn eval_raw_node(&self, id: usize, values: &HashMap<usize, Tensor>) -> Result<Tensor> {
+        let node = &self.nodes[&id];
+        let tag = node.tag.ok_or_else(|| Error::Unsupported {
+            op: "eval_fused",
+            msg: format!("node {id} has no kernel tag and cannot be replayed"),
+        })?;
+        let ins: Vec<Tensor> = node
+            .inputs
+            .iter()
+            .map(|i| {
+                values.get(i).cloned().ok_or_else(|| Error::Unsupported {
+                    op: "eval_fused",
+                    msg: format!("input {i} of node {id} not yet evaluated"),
+                })
+            })
+            .collect::<Result<_>>()?;
+        match tag {
+            OpTag::Unary(kind) => raw_unary_k(&ins[0], kind),
+            OpTag::Binary(kind) => raw_binary_k("eval_fused", &ins[0], &ins[1], kind),
         }
     }
 }
@@ -434,8 +542,12 @@ impl FusedChain {
     fn run_host(&self, chain: &ExecutableChain) -> Result<Tensor> {
         let mut cur = chain.operands[0].clone();
         let mut slot_values: HashMap<usize, Tensor> = HashMap::new();
-        for (slot, t) in chain.operands.iter().enumerate().skip(1) {
-            slot_values.insert(slot + 1, t.clone());
+        // `resolve` sets each binary step's `other` to the operand's index in
+        // `chain.operands` (operands[0] is the seed; operands[k] is referenced
+        // as other==k). So map operand index -> tensor directly; the earlier
+        // `slot+1` shifted every key by one and missed on lookup.
+        for (idx, t) in chain.operands.iter().enumerate().skip(1) {
+            slot_values.insert(idx, t.clone());
         }
         for step in &chain.steps {
             cur = match step {

@@ -33,9 +33,13 @@ use ferro_core::{
     register_backend, Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
 };
 
-/// Cheap detection: is the CUDA driver library (libcuda) loadable? True does
-/// not guarantee a usable device (the driver can be present with zero GPUs);
-/// [`install`] performs the real device init and reports failures as `Err`.
+/// Cheap detection: is the CUDA driver library (libcuda) loadable? This is a
+/// DRIVER-LIBRARY PRESENCE check only. True does NOT guarantee a usable device:
+/// the driver can be present with zero visible GPUs, or without NVRTC/cuBLAS
+/// runtime libraries that [`install`] additionally requires. Treat a `true`
+/// here as "worth attempting init"; only [`install`] returning `Ok` proves a
+/// usable backend. Callers wanting a hard guard should call [`install`] and
+/// handle its `Err`.
 pub fn is_available() -> bool {
     unsafe { cudarc::driver::sys::is_culib_present() }
 }
@@ -559,6 +563,15 @@ impl CudaBackend {
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
         self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
+    }
+
+    /// Block until all work on this backend's stream retires. Pure stream
+    /// fence, no device->host copy - the honest primitive for benchmark timing
+    /// (measures kernel completion without a PCIe readback).
+    pub fn synchronize(&self) -> std::result::Result<(), String> {
+        self.stream
+            .synchronize()
+            .map_err(|e| format!("cuda synchronize failed: {e}"))
     }
 
     fn htod_i64(&self, op: &'static str, data: &[i64]) -> Result<CudaSlice<i64>> {
@@ -1720,7 +1733,7 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
     // Record the Arc so `cuda_backend()` can hand capture/replay handles to
     // callers that own the step loop (benchmarks, examples) and need the
     // CudaBackend surface beyond the `Backend` trait. Ignore a second install.
-    let _ = LAST_BACKEND.set(backend.clone());
+    *LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend.clone());
     register_backend(Device::Cuda(ordinal), backend);
     Ok(())
 }
@@ -1730,10 +1743,28 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
 /// (`begin_step_capture`/`end_step_capture`) not exposed on the `Backend`
 /// trait. `None` before `install` succeeds.
 pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
-    LAST_BACKEND.get().cloned()
+    LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-static LAST_BACKEND: std::sync::OnceLock<Arc<CudaBackend>> = std::sync::OnceLock::new();
+/// Block the calling thread until all work submitted on the last-installed
+/// CUDA backend's stream has completed. This is a pure stream fence (no
+/// device->host copy), the honest primitive for GPU benchmark timing: it
+/// measures kernel completion without charging a PCIe readback. Returns `Err`
+/// if no backend is installed or the sync fails; `Ok(())` is a no-op when
+/// there is nothing in flight.
+pub fn device_synchronize() -> std::result::Result<(), String> {
+    let b = LAST_BACKEND
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or_else(|| "no CUDA backend installed; call install() first".to_string())?;
+    b.synchronize()
+}
+
+// Mutex, not OnceLock: `install` must replace this on every call so it always
+// points at the currently registered backend/stream. A stale entry would make
+// `device_synchronize` fence the wrong stream (Codex PR#16 P1).
+static LAST_BACKEND: Mutex<Option<Arc<CudaBackend>>> = Mutex::new(None);
 
 /// Raw parts for zero-copy DLPack export of a `CudaBuf`: its base device
 /// pointer and device ordinal. The caller must keep the buffer alive while
