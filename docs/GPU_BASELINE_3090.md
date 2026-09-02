@@ -6,56 +6,67 @@ ferro-py.
 
 - **Hardware:** NVIDIA GeForce RTX 3090 (FP32 peak ~35.6 TFLOP/s, HBM ~936 GB/s)
 - **torch:** 2.6.0+cu124 · **ferro:** ferro-py (release) · driver CUDA 13.1
-- **Harness:** `bench/gpu_vs_torch.py` — warmup discarded, median reported,
-  **min drives the throughput number**. Both sides timed with a pure stream
+- **Harness:** `bench/gpu_vs_torch.py` — warmup discarded, **MEDIAN** is the
+  headline statistic (min captured as `ratio_best` but never headlined: a lucky
+  min can hide a real median regression). Both sides timed with a pure stream
   fence (`torch.cuda.synchronize()` / `ferro.cuda_synchronize()`), NOT a
   device→host copy. Run `python bench/gpu_vs_torch.py --json out.json`.
 
-## matmul (GFLOP/s, higher better)
+## matmul (GFLOP/s, higher better, median)
 
 | shape              | torch  | ferro  | ferro/torch |
 |--------------------|--------|--------|-------------|
-| 512×512 @ 512×512   |  ~6.2k |  ~7–9k | ~1.2–1.4×*  |
-| 1024³              | ~16.5k | ~17.1k | 1.04×       |
-| 2048³              | ~23.1k | ~23.4k | 1.01×       |
-| 4096³              | ~25.3k | ~25.3k | 1.00×       |
-| 2048×8192 @ 8192×2048 | ~25.7k | ~27k | ~1.05×      |
+| 512×512 @ 512×512   |  ~5.8k |  ~8.7k | ~1.5×       |
+| 1024³              | ~14.7k | ~17.2k | ~1.18×      |
+| 2048³              | ~22.3k | ~22.4k | 1.00×       |
+| 4096³              | ~25.1k | ~25.3k | 1.00×       |
+| 2048×8192 @ 8192×2048 | ~25.4k | ~25.5k | 1.00×    |
 
-\* The 512³ ratio swings 1.19×→1.36× run-to-run: at sub-millisecond timings
-this is launch-overhead noise, **not a real ferro advantage** — do not quote it
-as a win. The load-bearing numbers are the large shapes: **1.00–1.04× parity**.
-Both dispatch matmul to cuBLAS, so parity is the expected and correct result.
+Big compute-bound shapes are **exact parity** — both dispatch to cuBLAS, so
+parity is the expected and correct result. The small-shape edge (512³ ~1.5×,
+1024³ ~1.18×) is real on median and repeatable: it is ferro's lower host
+dispatch overhead showing through while the kernel is still small enough for
+per-call cost to matter (see HOST_OVERHEAD.md for the isolated measurement).
+It shrinks to nothing as the kernel grows, exactly as that model predicts.
 
-## elementwise relu(x)*y+z (GB/s, higher better)
+## elementwise relu(x)*y+z (effective GB/s, higher better, median)
+
+Effective bandwidth on the **real unfused traffic** (32n bytes: relu 2 passes,
+each binary op 3 passes = 8 array-passes × 4 B), so it is comparable to the
+936 GB/s HBM peak.
 
 | n        | torch | ferro | ferro/torch |
 |----------|-------|-------|-------------|
-| 2²⁰      | ~310  | ~316  | 1.02×       |
-| 2²²      | ~386  | ~394  | 1.02×       |
-| 2²⁴      | ~420  | ~418  | 0.99×       |
-| 2²⁶      | ~431  | ~426  | 0.99×       |
+| 2²⁰      | ~634  | ~556  | 0.88×       |
+| 2²²      | ~702  | ~739  | 1.05×       |
+| 2²⁴      | ~815  | ~838  | 1.03×       |
+| 2²⁶      | ~859  | ~843  | 0.98×       |
 
-Both saturate ~420–430 GB/s ≈ **46% of the 3090's 936 GB/s HBM peak**. That is
-the legitimate ceiling for an *unfused* 3-read/1-write chain issued as separate
-kernels (each op re-reads/re-writes global memory). ferro and torch sit on the
-same ceiling because neither fuses this chain by default.
+At large n both saturate **~840–860 GB/s ≈ 90% of the 3090's 936 GB/s HBM
+peak** — the legitimate ceiling for this unfused 3-kernel chain, hit by both.
+At the smallest size (2²⁰) ferro trails (0.88×): the chain is launch-bound
+there and torch's kernels edge it; not hidden. Mid sizes are within noise.
 
 ## Honest takeaways
 
-1. **matmul: at parity with torch** on compute-bound shapes — both ride cuBLAS,
-   so there was never headroom to "beat" torch here without a custom kernel.
-2. **elementwise: at parity, and both leave ~2× on the table** vs HBM peak
-   purely from lack of fusion. This is where ferro's record_fn fusion seam
-   (FUTURE.md §5, FUSION_SEAM.md) can win outright: fusing relu*y+z into one
-   kernel would move 4×n bytes → cut to the single-pass minimum and roughly
-   double effective bandwidth. That is the first real differentiation target.
-3. No fabricated deltas: sub-ms shapes are disclosed as noise, not results.
+1. **matmul: parity on big shapes, small edge on small shapes.** No headroom to
+   beat cuBLAS on compute-bound work, and none claimed. The small-shape win is
+   host-overhead, not kernel speed.
+2. **elementwise: parity, both at ~90% HBM peak.** The remaining gap to peak is
+   the unfused chain re-reading/re-writing DRAM three times. Fusing relu*y+z
+   into one kernel cuts 32n → 16n traffic and is the first real differentiation
+   target (FUTURE.md §5).
+3. No fabricated deltas: median is headlined, the one sub-1× row is shown, and
+   the small-shape matmul edge is attributed to host overhead, not magic.
 
-## Method note (why the first run was wrong)
+## Method notes (two corrections made under review, Codex PR #16)
 
-An earlier draft synced ferro by pulling the whole result to host (`.cpu()`),
-which charged ferro a full PCIe readback torch never paid — producing a bogus
-flat ~12 GB/s and a fake 0.04× "loss". Fixed by adding a real stream-fence
-primitive (`CudaBackend::synchronize` → `ferro.cuda_synchronize()`) so timing
-measures kernel completion on both sides. Lesson: benchmark syncs must fence,
-not transfer.
+- **Report median, not min.** An earlier draft headlined the fastest sample,
+  which on one 2²⁶ run hid a ~2× median slowdown behind a 0.99× min. The
+  harness now headlines the median (the statistic it claims to report).
+- **Effective bandwidth on real traffic.** An earlier draft used the fused-ideal
+  16n-byte numerator against the HBM peak, understating utilisation as ~46%.
+  The unfused chain actually moves 32n bytes → ~90% of peak. Fixed.
+- **Sync must fence, not transfer.** The very first draft synced ferro via
+  `.cpu()` (full PCIe readback), producing a bogus flat ~12 GB/s. Fixed with a
+  real stream fence (`ferro.cuda_synchronize()`).

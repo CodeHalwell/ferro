@@ -4,77 +4,96 @@
   "matmul": [
     {
       "shape": "512x512 @ 512x512",
-      "torch_gflops": 5810.290935514719,
-      "ferro_gflops": 6900.653479556825,
-      "torch_ms": 0.04689994966611266,
-      "ferro_ms": 0.05150001379661262,
-      "ratio_ferro_over_torch": 1.1876605760612422
+      "torch_gflops": 5841.903204812916,
+      "ferro_gflops": 8715.436403272079,
+      "torch_gflops_best": 5912.675704360688,
+      "ferro_gflops_best": 8859.25659096607,
+      "torch_ms": 0.04595000064000487,
+      "ferro_ms": 0.030800001695752144,
+      "ratio_ferro_over_torch": 1.4918830555240579,
+      "ratio_best": 1.498349822303333
     },
     {
       "shape": "1024x1024 @ 1024x1024",
-      "torch_gflops": 16049.955995094157,
-      "ferro_gflops": 16922.648080921554,
-      "torch_ms": 0.1467999827582389,
-      "ferro_ms": 0.12729997979477048,
-      "ratio_ferro_over_torch": 1.0543734877587294
+      "torch_gflops": 14653.590687893671,
+      "ferro_gflops": 17248.864347478273,
+      "torch_gflops_best": 16634.264245143557,
+      "ferro_gflops_best": 18183.604585846617,
+      "torch_ms": 0.1465499954065308,
+      "ferro_ms": 0.12450000212993473,
+      "ratio_ferro_over_torch": 1.1771083767017412,
+      "ratio_best": 1.0931415010528884
     },
     {
       "shape": "2048x2048 @ 2048x2048",
-      "torch_gflops": 22739.734489804094,
-      "ferro_gflops": 23364.43482518092,
-      "torch_ms": 0.7642999989911914,
-      "ferro_ms": 0.7365000201389194,
-      "ratio_ferro_over_torch": 1.0274717515130587
+      "torch_gflops": 22330.368912331218,
+      "ferro_gflops": 22413.397465495138,
+      "torch_gflops_best": 23131.63992534128,
+      "ferro_gflops_best": 23647.445467221864,
+      "torch_ms": 0.7693499937886372,
+      "ferro_ms": 0.7665000011911616,
+      "ratio_ferro_over_torch": 1.0037181899452663,
+      "ratio_best": 1.0222987018449785
     },
     {
       "shape": "4096x4096 @ 4096x4096",
-      "torch_gflops": 25220.933252236926,
-      "ferro_gflops": 25291.013309707898,
-      "torch_ms": 5.496549973031506,
-      "ferro_ms": 5.473900004290044,
-      "ratio_ferro_over_torch": 1.0027786464826696
+      "torch_gflops": 25141.80857646154,
+      "ferro_gflops": 25257.78117161077,
+      "torch_gflops_best": 25501.71703970413,
+      "ferro_gflops_best": 25353.998238815828,
+      "torch_ms": 5.466549991979264,
+      "ferro_ms": 5.441450004582293,
+      "ratio_ferro_over_torch": 1.0046127387692312,
+      "ratio_best": 0.9942074958851472
     },
     {
       "shape": "2048x8192 @ 8192x2048",
-      "torch_gflops": 25534.8828250158,
-      "ferro_gflops": 28435.253237583725,
-      "torch_ms": 2.7150000096298754,
-      "ferro_ms": 2.711350010940805,
-      "ratio_ferro_over_torch": 1.11358463762859
+      "torch_gflops": 25384.90514782102,
+      "ferro_gflops": 25461.55980054236,
+      "torch_gflops_best": 25766.58301708687,
+      "ferro_gflops_best": 27481.19513175323,
+      "torch_ms": 2.707100000407081,
+      "ferro_ms": 2.698949996556621,
+      "ratio_ferro_over_torch": 1.0030196942740168,
+      "ratio_best": 1.0665440238439583
     }
   ],
   "elementwise": [
     {
       "n": 1048576,
-      "torch_gbps": 310.11487259593423,
-      "ferro_gbps": 315.95512216671915,
-      "torch_ms": 0.07319997530430555,
-      "ferro_ms": 0.05355000030249357,
-      "ratio_ferro_over_torch": 1.0188325362208428
+      "torch_gbps": 634.2993373826615,
+      "ferro_gbps": 555.5368726477985,
+      "torch_ms": 0.05289999535307288,
+      "ferro_ms": 0.06040000880602747,
+      "ratio_ferro_over_torch": 0.8758276099422332,
+      "ratio_best": 0.866779057511966
     },
     {
       "n": 4194304,
-      "torch_gbps": 385.6830281246122,
-      "ferro_gbps": 393.8313223477248,
-      "torch_ms": 0.17519999528303742,
-      "ferro_ms": 0.17139996634796262,
-      "ratio_ferro_over_torch": 1.021126919332525
+      "torch_gbps": 702.3428992330338,
+      "ferro_gbps": 739.4915863158266,
+      "torch_ms": 0.19109999993816018,
+      "ferro_ms": 0.18150000687455758,
+      "ratio_ferro_over_torch": 1.0528925217630298,
+      "ratio_best": 1.0194013177227736
     },
     {
       "n": 16777216,
-      "torch_gbps": 420.4157292523783,
-      "ferro_gbps": 417.92846868697796,
-      "torch_ms": 0.6510500388685614,
-      "ferro_ms": 0.6484499899670482,
-      "ratio_ferro_over_torch": 0.9940838070691994
+      "torch_gbps": 815.2937057634844,
+      "ferro_gbps": 838.4677673582406,
+      "torch_ms": 0.6585000082850456,
+      "ferro_ms": 0.6403000006685033,
+      "ratio_ferro_over_torch": 1.0284241880330167,
+      "ratio_best": 0.9992174217199079
     },
     {
       "n": 67108864,
-      "torch_gbps": 431.27357983568857,
-      "ferro_gbps": 425.8852149129343,
-      "torch_ms": 2.4978499859571457,
-      "ferro_ms": 4.800900002010167,
-      "ratio_ferro_over_torch": 0.9875059239084223
+      "torch_gbps": 858.9247463969302,
+      "ferro_gbps": 842.5800025023585,
+      "torch_ms": 2.5001999965752475,
+      "ferro_ms": 2.5486999948043376,
+      "ratio_ferro_over_torch": 0.9809706915965158,
+      "ratio_best": 0.987223237102476
     }
   ]
 }

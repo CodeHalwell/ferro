@@ -3,15 +3,19 @@
 
 Honest-number rules (Daniel's "proof, not vibes"):
   * Every timed region is bracketed by a real device sync. For torch that is
-    torch.cuda.synchronize(); for ferro we force completion by pulling one
-    element to host (.cpu()), which blocks on the stream.
+    torch.cuda.synchronize(); for ferro we fence the stream via
+    ferro.cuda_synchronize() -- a pure stream fence, NOT a device->host copy
+    (a readback would charge ferro PCIe traffic torch never pays).
   * Warmup iterations (kernel compile / cuBLAS handle / allocator warmup) are
-    discarded. We report the MEDIAN of timed iters, plus min, to expose noise.
+    discarded. We report the MEDIAN of timed iters as the headline statistic
+    (min is also captured as ratio_best for reference, but never headlined --
+    a lucky min can hide a real median regression).
   * We never quote a delta smaller than run-to-run noise: the summary prints
-    ferro/torch ratio AND each side's min/median so a reader can judge.
-  * matmul is scored in GFLOP/s (2*M*N*K), elementwise in GB/s (bytes moved),
-    so numbers are comparable across shapes and to the 3090's spec peaks
-    (FP32 ~35.6 TFLOP/s, HBM ~936 GB/s).
+    ferro/torch MEDIAN ratio AND each side's throughput so a reader can judge.
+  * matmul is scored in GFLOP/s (2*M*N*K), elementwise in EFFECTIVE GB/s on the
+    real unfused 32n-byte traffic (not the fused-ideal 16n), so numbers are
+    comparable across shapes and to the 3090's spec peaks (FP32 ~35.6 TFLOP/s,
+    HBM ~936 GB/s).
 
 Usage:
   python bench/gpu_vs_torch.py                 # full suite
@@ -74,25 +78,33 @@ def bench_matmul(sizes, warmup, iters):
         med_f, min_f = time_loop(ferro_fn, sync_ferro, warmup, iters)
         rows.append({
             "shape": f"{m}x{k} @ {k}x{n}",
-            "torch_gflops": flops / min_t / 1e9,
-            "ferro_gflops": flops / min_f / 1e9,
+            "torch_gflops": flops / med_t / 1e9,
+            "ferro_gflops": flops / med_f / 1e9,
+            "torch_gflops_best": flops / min_t / 1e9,
+            "ferro_gflops_best": flops / min_f / 1e9,
             "torch_ms": med_t * 1e3,
             "ferro_ms": med_f * 1e3,
-            "ratio_ferro_over_torch": min_t / min_f,
+            "ratio_ferro_over_torch": med_t / med_f,
+            "ratio_best": min_t / min_f,
         })
     return rows
 
 
 def bench_elementwise(sizes, warmup, iters):
-    """Chain: relu -> *y -> +z (gelu variant matches bench_chain.rs idiom).
+    """Chain: relu -> *y -> +z, run UNFUSED (three separate kernels).
 
-    Bytes moved (fused ideal): 3 reads + 1 write = 4 * n * 4 bytes. We use the
-    same accounting for both sides so the ratio is apples-to-apples even if
-    neither actually fuses.
+    Physical DRAM traffic for the unfused chain = 32*n bytes:
+      relu(x):      read x, write t1        = 2 arrays
+      t1 * y:       read t1, read y, write  = 3 arrays
+      t2 + z:       read t2, read z, write  = 3 arrays
+    Total 8 array-passes * n * 4 bytes = 32n. We report EFFECTIVE bandwidth on
+    this real traffic so it is comparable to the 936 GB/s HBM peak (Codex P2:
+    do NOT use the 16n fused-ideal numerator against a hardware peak). Same
+    accounting both sides, so the ratio stays apples-to-apples.
     """
     rows = []
     for n in sizes:
-        bytes_moved = 4.0 * n * 4.0
+        bytes_moved = 32.0 * n
         a = torch.randn(n, device="cuda", dtype=torch.float32)
         b = torch.randn(n, device="cuda", dtype=torch.float32)
         c = torch.randn(n, device="cuda", dtype=torch.float32)
@@ -109,11 +121,12 @@ def bench_elementwise(sizes, warmup, iters):
         med_f, min_f = time_loop(ferro_fn, sync_ferro, warmup, iters)
         rows.append({
             "n": n,
-            "torch_gbps": bytes_moved / min_t / 1e9,
-            "ferro_gbps": bytes_moved / min_f / 1e9,
+            "torch_gbps": bytes_moved / med_t / 1e9,
+            "ferro_gbps": bytes_moved / med_f / 1e9,
             "torch_ms": med_t * 1e3,
             "ferro_ms": med_f * 1e3,
-            "ratio_ferro_over_torch": min_t / min_f,
+            "ratio_ferro_over_torch": med_t / med_f,
+            "ratio_best": min_t / min_f,
         })
     return rows
 
@@ -135,7 +148,7 @@ def main():
     dev = torch.cuda.get_device_name(0)
     print(f"# device: {dev}")
     print(f"# torch: {torch.__version__}  ferro-py loaded")
-    print(f"# warmup={args.warmup} iters={args.iters} (median reported, min drives throughput)\n")
+    print(f"# warmup={args.warmup} iters={args.iters} (MEDIAN reported; ratio = median torch/ferro)\n")
 
     matmul_sizes = [
         (512, 512, 512),
