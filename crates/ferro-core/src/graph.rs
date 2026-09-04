@@ -489,6 +489,15 @@ impl FusedChain {
     /// sequential per-op fallback that computes exactly the same math through
     /// the ordinary raw kernels. Returns a detached tensor.
     pub fn run(&self, chain: &ExecutableChain) -> Result<Tensor> {
+        run_chain(chain)
+    }
+}
+
+/// Execute a resolved chain on its seed's device: one fused backend launch
+/// when every operand is device-resident and the backend implements
+/// `chain_dev`, else the sequential host fallback. Free-standing so a
+/// precompiled [`CompiledChain`] handle can replay without re-walking a tape.
+pub fn run_chain(chain: &ExecutableChain) -> Result<Tensor> {
         let seed = &chain.operands[0];
         let all_resident = chain.operands.iter().all(|t| t.device_resident_whole());
         if all_resident {
@@ -536,10 +545,13 @@ impl FusedChain {
                 return Ok(device_leaf(out, &chain.out_shape, seed.device()));
             }
         }
-        self.run_host(chain)
+        run_chain_host(chain)
     }
 
-    fn run_host(&self, chain: &ExecutableChain) -> Result<Tensor> {
+/// Sequential per-op fallback for a resolved chain: same math as the fused
+/// kernel through ordinary raw kernels. Used when operands are not all
+/// device-resident or the backend lacks `chain_dev`.
+pub fn run_chain_host(chain: &ExecutableChain) -> Result<Tensor> {
         let mut cur = chain.operands[0].clone();
         let mut slot_values: HashMap<usize, Tensor> = HashMap::new();
         // `resolve` sets each binary step's `other` to the operand's index in
@@ -561,6 +573,58 @@ impl FusedChain {
             };
         }
         Ok(cur)
+}
+
+/// A precompiled fused chain: resolve the fusion plan ONCE from a tape, then
+/// replay the single fused kernel many times without re-walking the tape or
+/// re-planning. This is what turns the fused-kernel throughput win into a
+/// Python-visible speedup - the eager `.fuse()` path re-plans every call, and
+/// that host cost swamps the DRAM saving on a memory-bound chain.
+///
+/// The captured operands are immutable (ferro tensors never mutate storage
+/// identity), so replay does identical device traffic each call; it is a
+/// faithful timing of one fused launch vs the equivalent eager launches.
+pub struct CompiledChain {
+    exec: ExecutableChain,
+}
+
+impl CompiledChain {
+    /// Build a handle from a graph root: walk the tape once, plan fusion, and
+    /// resolve the single chain that produces the root. Errors if the root's
+    /// producing region is not a single fusible pointwise chain (e.g. it
+    /// contains a matmul/reduce, or nothing fusible).
+    pub fn compile(root: &Tensor) -> Result<CompiledChain> {
+        let g = Graph::from_root(root);
+        let plan = g.plan_fusion();
+        let root_id = *g.order.first().ok_or_else(|| Error::Unsupported {
+            op: "compile_chain",
+            msg: "empty graph".into(),
+        })?;
+        let chain = plan
+            .chains
+            .iter()
+            .find(|c| c.nodes.last() == Some(&root_id))
+            .ok_or_else(|| Error::Unsupported {
+                op: "compile_chain",
+                msg: "root is not produced by a single fusible pointwise chain".into(),
+            })?;
+        let exec = chain.resolve(&g)?;
+        Ok(CompiledChain { exec })
+    }
+
+    /// Replay the fused chain: one backend `chain_dev` launch when resident.
+    pub fn replay(&self) -> Result<Tensor> {
+        run_chain(&self.exec)
+    }
+
+    /// Number of operands (seed + distinct second operands) captured.
+    pub fn num_operands(&self) -> usize {
+        self.exec.operands.len()
+    }
+
+    /// Number of fused steps (chain length after the seed).
+    pub fn num_steps(&self) -> usize {
+        self.exec.steps.len()
     }
 }
 
