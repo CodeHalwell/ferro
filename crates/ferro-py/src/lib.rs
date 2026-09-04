@@ -51,6 +51,36 @@ struct PyTensor {
     inner: CoreTensor,
 }
 
+/// A precompiled fused pointwise chain (see `Tensor.compile_fused`). Holds a
+/// resolved fusion plan; `replay()` re-runs the single fused kernel with no
+/// tape walk or re-planning, so the fused-kernel throughput win is not eaten
+/// by per-call host overhead.
+#[pyclass(name = "FusedChain")]
+struct PyCompiledChain {
+    inner: ferro_core::graph::CompiledChain,
+}
+
+#[pymethods]
+impl PyCompiledChain {
+    /// Re-run the fused chain: one backend `chain_dev` launch when the
+    /// operands are device-resident. Returns a new detached tensor.
+    fn replay(&self) -> PyResult<PyTensor> {
+        self.inner.replay().map(PyTensor::wrap).map_err(map_err)
+    }
+
+    /// Number of operands captured (seed + distinct second operands).
+    #[getter]
+    fn num_operands(&self) -> usize {
+        self.inner.num_operands()
+    }
+
+    /// Number of fused steps after the seed.
+    #[getter]
+    fn num_steps(&self) -> usize {
+        self.inner.num_steps()
+    }
+}
+
 impl PyTensor {
     fn wrap(inner: CoreTensor) -> PyTensor {
         PyTensor { inner }
@@ -408,6 +438,21 @@ impl PyTensor {
         let g = ferro_core::graph::Graph::from_root(&self.inner);
         let p = g.plan_fusion();
         (p.launches_before, p.launches_after)
+    }
+
+    /// Compile the pointwise expression that produced this tensor into a
+    /// reusable fused handle: the fusion plan is resolved ONCE here, and the
+    /// returned `FusedChain.replay()` re-runs the single fused kernel with no
+    /// tape walk or re-planning. This is what turns the fused-kernel
+    /// throughput win into a real speedup - eager `.fuse()` re-plans every
+    /// call, and that host cost swamps the DRAM saving on a memory-bound chain.
+    ///
+    /// The captured operands are the immutable leaf tensors of this
+    /// expression; replay recomputes over their current storage each call.
+    fn compile_fused(&self) -> PyResult<PyCompiledChain> {
+        ferro_core::graph::CompiledChain::compile(&self.inner)
+            .map(|c| PyCompiledChain { inner: c })
+            .map_err(map_err)
     }
 
     fn sigmoid(&self) -> PyTensor {
@@ -768,6 +813,7 @@ fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
     ferro_fastcpu::install();
     m.add_class::<PyTensor>()?;
+    m.add_class::<PyCompiledChain>()?;
     m.add_class::<Generator>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;

@@ -57,37 +57,66 @@ before timing.
    (launch overhead saved on top of traffic saved), settling to the pure-traffic
    2.09× floor.
 
-## The gap: eager Python fusion exists but is not yet a speed win
+## Python fusion: eager `.fuse()` vs compiled `.compile_fused()`
 
-ferro-py now exposes `Tensor.fuse()` (and `Tensor.fusion_launches()`): it
-captures the pointwise graph rooted at the tensor, runs the planner, and
-executes each chain as one fused `chain_dev` launch. **Correctness and the
-structural win are proven** — `(x.relu()*y+z).fuse()` collapses launches 3→1
-and matches eager to f32 tolerance (CPU bit-exact, GPU ~1 ULP).
+ferro-py exposes two entry points:
 
-**But `.fuse()` is currently SLOWER than eager** (measured, `bench/eager_fusion.py`):
+- `Tensor.fuse()` — one-shot: capture graph, plan, run one fused `chain_dev`
+  launch. Correct (launches 3→1, CPU bit-exact, GPU ~1 ULP) but **re-plans every
+  call**, so on a memory-bound chain the host cost swamps the traffic saving.
+- `Tensor.compile_fused()` — returns a `FusedChain` handle: **plan/resolve ONCE**,
+  then `handle.replay()` re-runs the single fused kernel with no tape walk and
+  no re-planning. This is the one that banks the win.
 
-| n     | ferro eager (µs) | ferro `.fuse()` (µs) | speedup | fused GB/s |
-|-------|------------------|----------------------|---------|------------|
-| 2²⁰   | 55.8             | 78.0                 | 0.72×   | 215        |
-| 2²²   | 174.5            | 253.0                | 0.69×   | 265        |
-| 2²⁴   | 652.1            | 953.3                | 0.68×   | 282        |
-| 2²⁶   | 2561.5           | 3741.9               | 0.68×   | 287        |
+### `.fuse()` alone is a loss (bench/eager_fusion.py) — plans every call
 
-Why: the eager path already runs its 3 kernels at ~838 GB/s (HBM-bound). The
-`.fuse()` wrapper re-captures the graph (`from_root`), re-runs `plan_fusion`,
-re-resolves the chain, and re-allocates the output **on every call** — so the
-fused kernel effectively runs at ~287 GB/s, 3× below its ceiling, and the
-per-call planning overhead swamps the 2× traffic saving. The Rust `bench_chain`
-gets the real 2.1× because it resolves the chain ONCE and replays `chain_dev`
-in the loop.
+| n     | ferro eager (µs) | ferro `.fuse()` (µs) | speedup |
+|-------|------------------|----------------------|---------|
+| 2²⁰   | 55.8             | 78.0                 | 0.72×   |
+| 2²²   | 174.5            | 253.0                | 0.69×   |
+| 2²⁴   | 652.1            | 953.3                | 0.68×   |
+| 2²⁶   | 2561.5           | 3741.9               | 0.68×   |
 
-**Next step (FUTURE.md §5): a compile-once fused callable.** Plan/resolve once,
-return a handle that replays the fused chain (ideally over a CUDA graph, which
-`capture_chain`/`replay` already implement at the Rust level) so repeated
-forwards pay the planning cost zero times. That is what turns the proven 2.1×
-kernel win into a Python-visible speedup. The engine, the kernel, and the
-correctness are done; only the caching wrapper remains.
+The per-call planning overhead (re-`from_root` + re-`plan_fusion` + re-`resolve`
++ re-alloc) is the whole loss; the fused kernel underneath is fine.
+
+### `.compile_fused()` banks it (bench/compiled_fusion.py, 100 iters/30 warmup)
+
+Plan once, `replay()` in the timed loop. Each iteration ends in a device sync;
+a correctness anchor asserts replay == eager before timing.
+
+| n     | eager ferro (µs) | compiled replay (µs) | **fused/eager** | torch eager (µs) | **fused/torch** | max\|Δ\| |
+|-------|------------------|----------------------|-----------------|------------------|-----------------|---------|
+| 2²⁰   | 55.4             | 28.5                 | **1.94×**       | 51.6             | **1.81×**       | 9.5e-7  |
+| 2²²   | 174.7            | 85.3                 | **2.05×**       | 175.5            | **2.06×**       | 9.5e-7  |
+| 2²⁴   | 671.0            | 322.4                | **2.08×**       | 662.1            | **2.05×**       | 9.5e-7  |
+| 2²⁶   | 2541.3           | 1226.6               | **2.07×**       | 2504.1           | **2.04×**       | 9.5e-7  |
+
+**This lands on the Rust `bench_chain` silicon numbers (2.07–2.09× at large n),
+independently validating the whole path from Python.** And because torch eager
+runs the same unfused 3-launch chain, the compiled handle beats **torch** by
+~2.04–2.06× at the same time — the fusion algorithm win, now reachable from
+Python without a JIT warmup dance.
+
+## Honest reading of the compiled result
+
+1. **~2.05× is the algorithm win, not a language win.** It comes from moving
+   half the bytes (32n → 16n), available to any framework that fuses. torch
+   reaches the same class of win via `torch.compile`/nvFuser after a trace/warmup;
+   ferro's angle is that the fusion seam is compile-in-from-record (`record_fn`)
+   and the compiled handle is a plain object, no JIT guard machinery.
+2. **The 2²⁰ case is 1.94×, not higher** — at the smallest size the launch and
+   host residue is still a visible fraction, so it sits *below* the large-n
+   floor rather than exploding above it. No inflated headline; the range is a
+   tight 1.94–2.08×.
+3. **`ratio_best` (min/min) tracks the median** (1.93–2.12×), so the headline is
+   not resting on one lucky iteration.
+4. **What this handle is NOT yet:** it recomputes over the operands' *current*
+   storage each replay (correct for repeated forwards with changing leaf
+   values), but it does not yet capture a CUDA graph of the launch — the
+   `capture_chain`/`replay` seam in ferro-cuda would shave the residual launch
+   overhead further at small n. Left as future work; the memory-bound win is
+   already banked without it.
 
 ### Bugs fixed while wiring this up
 
