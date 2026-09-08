@@ -40,6 +40,52 @@ fn close(a: &[f32], b: &[f32], tol: f32) {
     }
 }
 
+
+#[test]
+fn compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs() {
+    let (_guard, _) = match setup() { Some(s) => s, None => return };
+    use ferro_core::graph::{CompiledChain, Graph};
+    use ferro_core::{Param, optim::Sgd};
+    let param = |v: Vec<f32>, shape: &[usize]| {
+        Param::new(Tensor::from_vec(v, shape).unwrap().to_device(DEV).unwrap())
+    };
+    let px = param(vec![-2., 3., 4., 5., -6., 7.], &[2, 3]);
+    let py = param(vec![2., 4., 8.], &[3]);
+    let pz = param(vec![1., 2., 3.], &[3]);
+    let (x, y, z) = (px.tensor(), py.tensor(), pz.tensor());
+    let build = || x.relu().sub(&y).unwrap().div(&z).unwrap();
+    let root = build();
+    let h = CompiledChain::compile(&root).unwrap();
+    assert_eq!(h.num_steps(), 3);
+    let initial = h.replay().unwrap();
+    assert_eq!(initial.device(), DEV);
+    assert_eq!(initial.shape(), &[2, 3]);
+    close(&initial.to_vec(), &root.to_vec(), 1e-6);
+    let mut opt = Sgd::new(vec![px, py, pz], 0.125);
+    for _ in 0..3 {
+        x.sum().add(&y.sum()).unwrap().add(&z.sum()).unwrap().backward();
+        opt.step();
+        let got = h.replay().unwrap();
+        assert_eq!(got.device(), DEV);
+        close(&got.to_vec(), &build().to_vec(), 1e-6);
+    }
+    assert_ne!(h.replay().unwrap().to_vec(), initial.to_vec());
+    for root in [x.mul(&x).unwrap().sub(&x).unwrap(), x.mul(&y).unwrap().add(&z).unwrap()] {
+        let h = CompiledChain::compile(&root).unwrap();
+        assert_eq!(h.num_steps(), 2);
+        close(&h.replay().unwrap().to_vec(), &root.to_vec(), 1e-6);
+    }
+    let expanding = y.relu().mul(&x).unwrap().relu();
+    assert!(CompiledChain::compile(&expanding).is_err());
+    let g = Graph::from_root(&expanding);
+    assert!(g.plan_fusion().chains[0].resolve(&g).is_err());
+    let u = x.relu();
+    for root in [x.relu().mul(&y.relu()).unwrap(), y.sub(&x.relu()).unwrap(),
+                 y.div(&x.relu()).unwrap(), u.mul(&u).unwrap(), x.sum().relu()] {
+        assert!(CompiledChain::compile(&root).is_err());
+    }
+}
+
 // n < block, n == block, n = block+1, and sizes large enough to exercise the
 // grid-stride loop and the REDUCE_MAX_BLOCKS cap (non-multiples of both 256
 // and 2048*256).

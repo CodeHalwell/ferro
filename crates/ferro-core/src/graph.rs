@@ -417,6 +417,14 @@ impl FusedChain {
     /// captured here by index. Broadcast shapes are decomposed against the
     /// SEED's shape (all chain intermediates share it pointwise).
     pub fn resolve(&self, g: &Graph) -> Result<ExecutableChain> {
+        let seed_id = *self.nodes.first().ok_or_else(|| Error::Unsupported {
+            op: "chain_resolve", msg: "empty chain".into(),
+        })?;
+        if self.nodes.iter().any(|id| g.nodes[id].shape != g.nodes[&seed_id].shape) {
+            return Err(Error::Unsupported {
+                op: "chain_resolve", msg: "seed-expanding broadcast is not supported".into(),
+            });
+        }
         let mut steps: Vec<ChainStepRef> = Vec::with_capacity(self.nodes.len());
         // operand index -> tensor id; slot 0 is filled with the seed below.
         let mut slots: Vec<usize> = Vec::new();
@@ -427,11 +435,11 @@ impl FusedChain {
                 msg: format!("node {id} has no kernel tag and cannot be fused"),
             })?;
             match (tag, k == 0) {
-                (OpTag::Unary(kind), true) => {}
+                (_, true) => {}
                 (OpTag::Unary(kind), false) => {
                     steps.push(ChainStepRef::Unary(kind));
                 }
-                (OpTag::Binary(kind), _) => {
+                (OpTag::Binary(kind), false) => {
                     let pred = self.nodes[k - 1];
                     let other_id = *node.inputs.iter().find(|&&i| i != pred).ok_or_else(|| {
                         Error::Unsupported {
@@ -464,12 +472,6 @@ impl FusedChain {
                             other,
                         });
                     }
-                }
-                _ => {
-                    return Err(Error::Unsupported {
-                        op: "chain_resolve",
-                        msg: "a chain cannot start with a binary step".into(),
-                    })
                 }
             }
         }
@@ -557,8 +559,9 @@ pub fn run_chain_host(chain: &ExecutableChain) -> Result<Tensor> {
         // `resolve` sets each binary step's `other` to the operand's index in
         // `chain.operands` (operands[0] is the seed; operands[k] is referenced
         // as other==k). So map operand index -> tensor directly; the earlier
-        // `slot+1` shifted every key by one and missed on lookup.
-        for (idx, t) in chain.operands.iter().enumerate().skip(1) {
+        // `slot+1` shifted every key by one and missed on lookup. Slot zero
+        // is valid too: a compiled chain can reuse its original seed leaf.
+        for (idx, t) in chain.operands.iter().enumerate() {
             slot_values.insert(idx, t.clone());
         }
         for step in &chain.steps {
@@ -575,41 +578,86 @@ pub fn run_chain_host(chain: &ExecutableChain) -> Result<Tensor> {
         Ok(cur)
 }
 
-/// A precompiled fused chain: resolve the fusion plan ONCE from a tape, then
-/// replay the single fused kernel many times without re-walking the tape or
-/// re-planning. This is what turns the fused-kernel throughput win into a
-/// Python-visible speedup - the eager `.fuse()` path re-plans every call, and
-/// that host cost swamps the DRAM saving on a memory-bound chain.
+/// A precompiled fused chain: resolve once from a tape, then replay without
+/// re-walking or re-planning. Compilation is separate from inference timing.
 ///
-/// The captured operands are immutable (ferro tensors never mutate storage
-/// identity), so replay does identical device traffic each call; it is a
-/// faithful timing of one fused launch vs the equivalent eager launches.
+/// Captures graph leaves, not computed intermediates, and reads their current
+/// storage on every replay. Storage identity is stable; values may change.
+/// Only recorded operations can be replayed: enable grad before building the
+/// expression. Detached/no-grad computations are opaque graph input values.
 pub struct CompiledChain {
     exec: ExecutableChain,
 }
 
 impl CompiledChain {
-    /// Build a handle from a graph root: walk the tape once, plan fusion, and
-    /// resolve the single chain that produces the root. Errors if the root's
-    /// producing region is not a single fusible pointwise chain (e.g. it
-    /// contains a matmul/reduce, or nothing fusible).
+    /// Compile a tagged left-to-right pointwise chain from its leaf seed.
+    /// All right operands must be graph leaves; repeated leaves are allowed.
+    /// Includes the first operation. Rejects computed side branches, untagged
+    /// operations and seed-expanding broadcasts rather than freezing values.
+    /// Right-leaf broadcasts that preserve the seed shape are supported.
     pub fn compile(root: &Tensor) -> Result<CompiledChain> {
         let g = Graph::from_root(root);
-        let plan = g.plan_fusion();
-        let root_id = *g.order.first().ok_or_else(|| Error::Unsupported {
-            op: "compile_chain",
-            msg: "empty graph".into(),
-        })?;
-        let chain = plan
-            .chains
-            .iter()
-            .find(|c| c.nodes.last() == Some(&root_id))
-            .ok_or_else(|| Error::Unsupported {
-                op: "compile_chain",
-                msg: "root is not produced by a single fusible pointwise chain".into(),
-            })?;
-        let exec = chain.resolve(&g)?;
-        Ok(CompiledChain { exec })
+        // Unlike FusedChain::resolve's seeded-intermediate contract, compiled
+        // replay starts at the actual leaf and includes every recorded op.
+        let mut ids = Vec::new();
+        let mut seed_id = root.id();
+        while !g.nodes[&seed_id].inputs.is_empty() {
+            ids.push(seed_id);
+            seed_id = g.nodes[&seed_id].inputs[0];
+        }
+        if ids.is_empty() {
+            return Err(Error::Unsupported {
+                op: "compile_chain", msg: "root has no recorded operations".into(),
+            });
+        }
+        let mut operands = vec![g.tensors[&seed_id].clone()];
+        let mut slots = vec![seed_id];
+        let mut steps = Vec::new();
+        for id in ids.into_iter().rev() {
+            let node = &g.nodes[&id];
+            if node.shape != operands[0].shape() {
+                return Err(Error::Unsupported {
+                    op: "compile_chain", msg: "seed-expanding broadcast is not supported".into(),
+                });
+            }
+            match node.tag {
+                Some(OpTag::Unary(kind)) => steps.push(ChainStepRef::Unary(kind)),
+                Some(OpTag::Binary(kind)) => {
+                    let other_id = node.inputs[1];
+                    if !g.nodes[&other_id].inputs.is_empty() {
+                        return Err(Error::Unsupported {
+                            op: "compile_chain",
+                            msg: "computed right operands (side branches) are not supported; detach explicitly to freeze a value".into(),
+                        });
+                    }
+
+                    let other = match slots.iter().position(|&s| s == other_id) {
+                        Some(i) => i,
+                        None => {
+                            slots.push(other_id);
+                            operands.push(g.tensors[&other_id].clone());
+                            slots.len() - 1
+                        }
+                    };
+                    if operands[other].shape() == operands[0].shape() {
+                        steps.push(ChainStepRef::Binary { kind, other });
+                    } else {
+                        steps.push(ChainStepRef::BinaryBc {
+                            kind, other,
+                            dims: node.shape.iter().map(|&d| d as u32).collect(),
+                            strides: padded_strides(operands[other].shape(), &node.shape)
+                                .iter().map(|&d| d as u32).collect(),
+                        });
+                    }
+                }
+                None => return Err(Error::Unsupported {
+                    op: "compile_chain", msg: "untagged operations cannot be replayed".into(),
+                }),
+            }
+        }
+        Ok(CompiledChain { exec: ExecutableChain {
+            steps, operands, out_shape: root.shape().to_vec(),
+        } })
     }
 
     /// Replay the fused chain: one backend `chain_dev` launch when resident.
@@ -622,7 +670,7 @@ impl CompiledChain {
         self.exec.operands.len()
     }
 
-    /// Number of fused steps (chain length after the seed).
+    /// Number of recorded operations, including the first operation.
     pub fn num_steps(&self) -> usize {
         self.exec.steps.len()
     }

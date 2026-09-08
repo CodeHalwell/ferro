@@ -1,130 +1,92 @@
-# Elementwise Fusion: measured win on RTX 3090
+# Compiled pointwise fusion on RTX 3090
 
-The fusion engine (core `Graph::plan_fusion` → `FusedChain::resolve` → `run` →
-`Backend::chain_dev`, emitting one nvrtc kernel via `kernels::chain_source`)
-already exists and is correctness-tested (`gpu_integration.rs`:
-`fused_relu_mul_add_chain_matches_cpu`, `core_fusion_seam_runs_one_gpu_launch_and_matches_eager`).
-This records its **throughput** on the 3090 — the win the GPU baseline's
-unfused elementwise ceiling was leaving on the table.
+## PR18 correction (2026-09-08)
 
-## Why fusion helps (the arithmetic, not a vibe)
+The earlier compiled-fusion table and its interpretation are withdrawn. That
+handle captured the already-computed first unary result, omitted the first
+operation on replay, and could freeze computed side branches. Binary-first
+chains could panic. A broadcast that expanded the seed could launch with the
+wrong element count. The old benchmark calculated an absolute difference but
+never asserted correctness, and the ferro input still required gradients while
+PyTorch's did not. Those results did not validate full-expression replay.
 
-The chain `relu(x) * y + z` unfused runs three kernels, each round-tripping
-DRAM:
+The earlier `.fuse()` throughput table and the claim that planning overhead was
+its entire loss are also withdrawn as evidence for compiled replay. `.fuse()`
+and the low-level `FusedChain::resolve` retain their legacy intermediate-seeded
+contract; they are not the compile-once API. Historical Rust `bench_chain`
+numbers are not revalidated here and must not be presented as Python API speedups.
 
-- `t1 = relu(x)`   : read x, write t1              = 2n
-- `t2 = t1 * y`    : read t1, read y, write t2      = 3n
-- `out = t2 + z`   : read t2, read z, write out     = 3n
-- **total = 8n array-passes = 32n bytes**
+## What the corrected handle supports
 
-Fused into one kernel the intermediates `t1,t2` never touch DRAM — they live in
-registers:
+`Tensor.compile_fused()` walks the recorded graph once. `handle.replay()` executes
+all its supported operations, including the first unary or binary operation,
+over current graph-leaf storage. It returns a detached tensor. The handle is not
+a CUDA graph and does not provide a fused backward pass.
 
-- read x, y, z, write out = **4n array-passes = 16n bytes**
+Supported: tagged, left-to-right pointwise chains such as `relu(x)*y+z`, `x*y+z`,
+`(relu(x)-y)/z`, repeated leaf operands such as `x*x-x`, and right-leaf broadcasts
+that preserve the seed shape (`[2,3]` with `[3]`). Operand order is preserved.
 
-So fusion halves DRAM traffic (32n → 16n). On a bandwidth-bound elementwise
-chain that predicts a **~2× speedup**, and the measurement confirms it.
+Rejected explicitly on CPU and CUDA: seed expansion (`[3]` to `[2,3]`), computed
+right-side branches (`relu(x)*relu(y)`), repeated computed intermediates (`u*u`
+where `u=relu(x)`), untagged operations/reductions and roots without a tape.
+These raise an error rather than capture stale intermediates.
 
-## Measured (bench_chain.rs, chain = gelu(x)*y+z, 200 iters, device-resident)
+Enable `requires_grad` **before computing every upstream path that must be
+replayed**. The compiler can only see the recorded autograd graph. Detached or
+no-grad computations have no upstream tape and are opaque input values; it
+cannot recover their original leaves. Explicitly detach a computed value only
+when treating it as a frozen graph input is intended. Shape/storage identities
+are fixed; leaf values can change (optimizer-driven mutations are regression
+tested on CPU and CUDA).
 
-Run: `cargo build -p ferro-cuda --release --example bench_chain` then
-`target/release/examples/bench_chain.exe --n <N>`. Each timed loop ends in a
-device sync; a correctness anchor asserts fused == unfused == graph-replay
-before timing.
+The independent counting backend test asserts three compiled steps, one
+`chain_dev` call, zero per-op calls, and numeric output. `fusion_launches()` is a
+planner estimate, not a runtime launch counter.
 
-| n     | fused 1-launch | unfused 3-launch | **speedup** | graph replay | graph vs unfused |
-|-------|----------------|------------------|-------------|--------------|------------------|
-| 2²⁰   | 22.4 µs/iter   | 52.1 µs/iter     | **2.33×**   | 21.8 µs      | 2.39×            |
-| 2²²   | 79.1 µs/iter   | 168.2 µs/iter    | **2.13×**   | 78.4 µs      | 2.15×            |
-| 2²⁴   | 305 µs/iter    | 649 µs/iter      | **2.13×**   | 304 µs       | 2.14×            |
-| 2²⁶   | 1.208 ms/iter  | 2.523 ms/iter    | **2.09×**   | 1.207 ms     | 2.09×            |
+## Corrected measurement
 
-## Honest reading
+Hardware: NVIDIA GeForce RTX 3090 (GDDR6X, not HBM). Windows, Python bindings built
+with `maturin develop --release`, PyTorch 2.6.0+cu124. Two separate runs, each with
+30 warmups and 100 wall-clock samples per path and size:
 
-1. **The 2× is real and matches theory.** At large n (2²⁶) the chain is pure
-   DRAM traffic; halving traffic halves time → 2.09×. This is an *algorithm*
-   win (fewer bytes moved), available to any framework that fuses — not a
-   Rust-vs-C++ language win. torch gets the same class of win from
-   `torch.compile`/nvFuser. ferro's angle is that the fusion seam is
-   compile-in-from-the-start (record_fn), not an opt-in JIT.
-2. **CUDA-graph replay adds little here** (1.00–1.03× over eager-fused) because
-   one fused launch is already cheap relative to the kernel; graph capture pays
-   off most when there are many small launches. At 2²⁰ its 2.39×-vs-unfused
-   edge is the launch-overhead component still visible before the chain goes
-   fully bandwidth-bound.
-3. **Small-n does NOT beat 2×** by much and never explodes — no inflated
-   headline. The range is a tight 2.09–2.33×, largest at the smallest size
-   (launch overhead saved on top of traffic saved), settling to the pure-traffic
-   2.09× floor.
+```bash
+crates/ferro-py/.venv/Scripts/python.exe bench/compiled_fusion.py --iters 100 --warmup 30 --json bench/compiled_fusion_3090.json
+crates/ferro-py/.venv/Scripts/python.exe bench/compiled_fusion.py --iters 100 --warmup 30 --json bench/compiled_fusion_3090_run2.json
+```
 
-## Python fusion: eager `.fuse()` vs compiled `.compile_fused()`
+All paths compute **the full `relu(x)*y+z`** with the same f32 input values and
+with autograd disabled during timing. Tape construction and compilation occur
+outside timing. Each timed call is bracketed by a copy-free device fence;
+allocation and dispatch are included. Device-to-host correctness reads are
+outside timing. Before timing, shape, detached-output, three-step and operand
+count assertions run, followed by `torch.testing.assert_close` against both
+ferro eager and PyTorch eager (`rtol=1e-5`, `atol=1e-6`).
 
-ferro-py exposes two entry points:
+| Run | n | ferro eager median us | replay median us | torch eager median us | eager/replay | torch/replay |
+|---|---|---:|---:|---:|---:|---:|
+| 1 | 2^20 | 54.3 | 33.5 | 68.2 | 1.62x | 2.03x |
+| 1 | 2^22 | 180.5 | 92.0 | 191.8 | 1.96x | 2.09x |
+| 1 | 2^24 | 652.8 | 320.4 | 660.3 | 2.04x | 2.06x |
+| 1 | 2^26 | 2543.3 | 1224.5 | 2503.5 | 2.08x | 2.04x |
+| 2 | 2^20 | 60.6 | 35.4 | 68.4 | 1.71x | 1.93x |
+| 2 | 2^22 | 173.2 | 90.8 | 192.9 | 1.91x | 2.12x |
+| 2 | 2^24 | 651.1 | 318.3 | 641.9 | 2.05x | 2.02x |
+| 2 | 2^26 | 2533.3 | 1226.9 | 2503.7 | 2.06x | 2.04x |
 
-- `Tensor.fuse()` — one-shot: capture graph, plan, run one fused `chain_dev`
-  launch. Correct (launches 3→1, CPU bit-exact, GPU ~1 ULP) but **re-plans every
-  call**, so on a memory-bound chain the host cost swamps the traffic saving.
-- `Tensor.compile_fused()` — returns a `FusedChain` handle: **plan/resolve ONCE**,
-  then `handle.replay()` re-runs the single fused kernel with no tape walk and
-  no re-planning. This is the one that banks the win.
+At the largest size the conservative two-run floor is 2.06x vs ferro eager and
+2.04x vs PyTorch eager (rounded). Small sizes show host/launch noise; their
+ratios are not a stable throughput claim. This does not compare to
+`torch.compile` and does not establish a language advantage or a training win.
 
-### `.fuse()` alone is a loss (bench/eager_fusion.py) — plans every call
+For f32, the unfused chain's ideal physical traffic is 32n bytes (2+3+3 array
+passes), vs 16n bytes fused (x,y,z reads and one output write). The benchmark
+reports bandwidth using these separate numerators, not a fused numerator for
+the unfused path. At 2^26 it measured 844.4/847.7 GB/s eager and 876.9/875.2 GB/s
+replay across the two runs. Cache effects and host overhead remain included.
 
-| n     | ferro eager (µs) | ferro `.fuse()` (µs) | speedup |
-|-------|------------------|----------------------|---------|
-| 2²⁰   | 55.8             | 78.0                 | 0.72×   |
-| 2²²   | 174.5            | 253.0                | 0.69×   |
-| 2²⁴   | 652.1            | 953.3                | 0.68×   |
-| 2²⁶   | 2561.5           | 3741.9               | 0.68×   |
-
-The per-call planning overhead (re-`from_root` + re-`plan_fusion` + re-`resolve`
-+ re-alloc) is the whole loss; the fused kernel underneath is fine.
-
-### `.compile_fused()` banks it (bench/compiled_fusion.py, 100 iters/30 warmup)
-
-Plan once, `replay()` in the timed loop. Each iteration ends in a device sync;
-a correctness anchor asserts replay == eager before timing.
-
-| n     | eager ferro (µs) | compiled replay (µs) | **fused/eager** | torch eager (µs) | **fused/torch** | max\|Δ\| |
-|-------|------------------|----------------------|-----------------|------------------|-----------------|---------|
-| 2²⁰   | 55.4             | 28.5                 | **1.94×**       | 51.6             | **1.81×**       | 9.5e-7  |
-| 2²²   | 174.7            | 85.3                 | **2.05×**       | 175.5            | **2.06×**       | 9.5e-7  |
-| 2²⁴   | 671.0            | 322.4                | **2.08×**       | 662.1            | **2.05×**       | 9.5e-7  |
-| 2²⁶   | 2541.3           | 1226.6               | **2.07×**       | 2504.1           | **2.04×**       | 9.5e-7  |
-
-**This lands on the Rust `bench_chain` silicon numbers (2.07–2.09× at large n),
-independently validating the whole path from Python.** And because torch eager
-runs the same unfused 3-launch chain, the compiled handle beats **torch** by
-~2.04–2.06× at the same time — the fusion algorithm win, now reachable from
-Python without a JIT warmup dance.
-
-## Honest reading of the compiled result
-
-1. **~2.05× is the algorithm win, not a language win.** It comes from moving
-   half the bytes (32n → 16n), available to any framework that fuses. torch
-   reaches the same class of win via `torch.compile`/nvFuser after a trace/warmup;
-   ferro's angle is that the fusion seam is compile-in-from-record (`record_fn`)
-   and the compiled handle is a plain object, no JIT guard machinery.
-2. **The 2²⁰ case is 1.94×, not higher** — at the smallest size the launch and
-   host residue is still a visible fraction, so it sits *below* the large-n
-   floor rather than exploding above it. No inflated headline; the range is a
-   tight 1.94–2.08×.
-3. **`ratio_best` (min/min) tracks the median** (1.93–2.12×), so the headline is
-   not resting on one lucky iteration.
-4. **What this handle is NOT yet:** it recomputes over the operands' *current*
-   storage each replay (correct for repeated forwards with changing leaf
-   values), but it does not yet capture a CUDA graph of the launch — the
-   `capture_chain`/`replay` seam in ferro-cuda would shave the residual launch
-   overhead further at small n. Left as future work; the memory-bound win is
-   already banked without it.
-
-### Bugs fixed while wiring this up
-
-- **Classifier mislabel (graph.rs `classify`):** kind was inferred from shapes
-  alone, so a same-shape elementwise binary (e.g. 512×512 * 512×512) satisfied
-  the matmul shape contract and was tagged `MatMul` (not fusible), silently
-  breaking every square-tensor pointwise chain. Fixed by reconciling against the
-  op TAG (matmul is untagged; pointwise ops carry `OpTag::Binary/Unary`).
-- **Off-by-one in `FusedChain::run_host`:** operand values were keyed at
-  `slot+1` while `resolve` emits `other == operand_index`, so the host fallback
-  panicked with "no entry found for key". Fixed to key by operand index.
+Both runs passed correctness assertions at every size; the largest observed
+absolute difference vs ferro eager was 9.5367431640625e-7. This is **not a ULP
+measurement** and implies no universal ULP bound. Raw samples, medians, min/min
+secondary ratios and correctness differences are in the two JSON files above.
+Verification logs and the failing regression evidence are in `verification/pr18/`.

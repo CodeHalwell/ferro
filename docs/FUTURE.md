@@ -191,18 +191,27 @@ a good substrate for an IR.
 - (XL) Fusion compiler: elementwise/reduction fusion into generated kernels
   (nvrtc on GPU, cranelift or generated Rust on CPU). This is the
   torch.compile/Inductor analogue and the largest single win available.
-  STATUS: the pointwise-chain engine EXISTS and is measured — `plan_fusion` →
-  `FusedChain::resolve` → `chain_dev` runs `relu(x)*y+z` as one nvrtc kernel at
-  a proven **2.1× over the unfused 3-kernel path** on the 3090 (docs/FUSION_3090.md,
-  `bench_chain`). It is now reachable from Python via `Tensor.fuse()` /
-  `Tensor.fusion_launches()` (collapses launches 3→1, numerically exact).
-  REMAINING (the actual next task): `.fuse()` re-plans on every call so it is
-  currently ~0.68× (slower than eager) despite the 2× kernel — needs a
-  **compile-once fused callable** (plan/resolve once, replay the chain, ideally
-  over the existing `capture_chain`/`replay` CUDA-graph seam) to expose the
-  kernel win at the Python level. Two planner bugs were fixed getting here:
-  same-shape elementwise mislabelled as MatMul, and a `run_host` operand
-  off-by-one (see docs/FUSION_3090.md).
+  STATUS: `Tensor.compile_fused()` now replays every supported recorded
+  operation, including the first op, from current graph leaves. PR18's earlier
+  performance/correctness claims are withdrawn: the old handle skipped the
+  first unary op, froze computed side branches, could panic on binary-first
+  chains and mishandled seed-expanding broadcasts. Its benchmark did not
+  assert parity and compared unequal grad modes.
+  Corrected two-run RTX 3090 measurements (GDDR6X) at 2^26 elements show a
+  conservative 2.06x median floor over ferro eager and 2.04x over torch eager
+  for full `relu(x)*y+z` with no grad on either side. These are inference
+  pointwise results, not training or torch.compile comparisons. Absolute
+  differences are tolerance-checked, not a proof of ULP parity. See
+  docs/FUSION_3090.md for raw data, method and caveats.
+  Supported graphs are tagged left-to-right chains with graph-leaf right
+  operands; seed expansion, computed side branches and untagged operations
+  are rejected explicitly. Upstream paths must be recorded (requires_grad
+  enabled before building); no-grad/detached values are opaque inputs.
+  REMAINING: general DAG replay/fusion, expanding-seed indexing, broader op
+  coverage, backward fusion, and CUDA-graph capture of the compiled handle.
+  The legacy `.fuse()`/`FusedChain::resolve` intermediate-seeded path is not
+  the compiled replay contract; its historical timings do not establish the
+  cause or magnitude of planning overhead.
 - (L) Whole-step compilation: capture forward+backward+optimizer as one
   graph; combined with CUDA graphs this can beat eager torch meaningfully.
 

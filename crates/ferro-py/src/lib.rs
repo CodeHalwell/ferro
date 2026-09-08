@@ -74,7 +74,7 @@ impl PyCompiledChain {
         self.inner.num_operands()
     }
 
-    /// Number of fused steps after the seed.
+    /// Number of fused operations, including the first operation.
     #[getter]
     fn num_steps(&self) -> usize {
         self.inner.num_steps()
@@ -441,14 +441,15 @@ impl PyTensor {
     }
 
     /// Compile the pointwise expression that produced this tensor into a
-    /// reusable fused handle: the fusion plan is resolved ONCE here, and the
-    /// returned `FusedChain.replay()` re-runs the single fused kernel with no
-    /// tape walk or re-planning. This is what turns the fused-kernel
-    /// throughput win into a real speedup - eager `.fuse()` re-plans every
-    /// call, and that host cost swamps the DRAM saving on a memory-bound chain.
+    /// reusable fused handle, resolved once here. `FusedChain.replay()` runs
+    /// the fused kernel without a tape walk or re-planning. Benchmark
+    /// compilation separately from replay; replay outputs are detached.
     ///
-    /// The captured operands are the immutable leaf tensors of this
-    /// expression; replay recomputes over their current storage each call.
+    /// Replay includes every recorded operation over current graph-leaf values.
+    /// Enable requires_grad before building the expression; detached/no-grad
+    /// computations are opaque input values, not replayable upstream graphs.
+    /// Only left-to-right tagged chains with leaf right operands are supported.
+    /// Computed side branches and seed-expanding broadcasts raise ValueError.
     fn compile_fused(&self) -> PyResult<PyCompiledChain> {
         ferro_core::graph::CompiledChain::compile(&self.inner)
             .map(|c| PyCompiledChain { inner: c })
