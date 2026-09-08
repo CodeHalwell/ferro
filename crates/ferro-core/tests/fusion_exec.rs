@@ -186,8 +186,27 @@ fn apply_unary(kind: UnaryKind, v: f32) -> f32 {
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn setup() -> MutexGuard<'static, ()> {
+    let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     register_backend(DEV, Arc::new(FakeDevice));
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    guard
+}
+
+#[test]
+fn compiled_chain_includes_first_op_in_one_launch() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![-2., 3., 4.], &[3]).unwrap()
+        .to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let y = Tensor::from_vec(vec![2., 4., 8.], &[3]).unwrap().to_device(DEV).unwrap();
+    let root = x.relu().mul(&y).unwrap().add(&y).unwrap();
+    let h = ferro_core::graph::CompiledChain::compile(&root).unwrap();
+    assert_eq!(h.num_steps(), 3);
+    assert_eq!(h.num_operands(), 2);
+    let before = (CHAINS.load(Ordering::SeqCst), PER_OP.load(Ordering::SeqCst));
+    let got = h.replay().unwrap();
+    assert_eq!(got.device(), DEV);
+    assert_eq!(got.to_vec(), vec![2., 16., 40.]);
+    assert_eq!(CHAINS.load(Ordering::SeqCst) - before.0, 1);
+    assert_eq!(PER_OP.load(Ordering::SeqCst) - before.1, 0);
 }
 
 #[test]
