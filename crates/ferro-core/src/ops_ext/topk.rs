@@ -80,7 +80,7 @@ impl Tensor {
 
         let indices = Tensor::from_vec_i64(i_out, &out_shape)?;
         let values = Tensor::from_vec(v_out, &out_shape)?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Ok((values, indices));
         }
         let in_shape = shape;

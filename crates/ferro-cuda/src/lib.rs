@@ -21,6 +21,7 @@ pub use kernels::{chain_bc_args, chain_source, broadcast_strides, ChainStep};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig, StridedBatchedConfig};
@@ -295,6 +296,7 @@ pub struct CudaBackend {
     // nvrtc-compiled elementwise kernels, keyed by generated source text so
     // parametrized kinds (Powf, Clamp) cache per scalar value.
     funcs: Mutex<HashMap<String, CudaFunction>>,
+    pointwise_launches: [AtomicUsize; 3],
     // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
     // carries a clone and returns its slice here on drop.
     alloc: crate::alloc::CachingAllocator,
@@ -354,6 +356,7 @@ impl CudaBackend {
             blas,
             device,
             funcs: Mutex::new(HashMap::new()),
+            pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
             alloc,
         })
     }
@@ -429,6 +432,14 @@ impl CudaBackend {
         self.alloc.stats()
     }
 
+    /// Successful non-empty kernel enqueues: (fused chains, elementwise, broadcast).
+    /// Excludes reductions, BLAS, memset, and CUDA graph replays. During capture
+    /// these count enqueues into the graph, not subsequent graph executions.
+    pub fn pointwise_launch_counts(&self) -> (usize, usize, usize) {
+        let c = &self.pointwise_launches;
+        (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
+    }
+
     /// Number of slices currently held in the allocator's freelist.
     pub fn pooled_buffers(&self) -> usize {
         self.alloc.pooled()
@@ -479,6 +490,7 @@ impl CudaBackend {
         launch.arg(&n_arg);
         unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
             .map_err(|e| cuda_err(op, e))?;
+        self.pointwise_launches[1].fetch_add(1, Ordering::Relaxed);
         Ok(out)
     }
 
@@ -830,6 +842,7 @@ impl CudaBackend {
             launch.arg(&n_arg);
             unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
                 .map_err(|e| cuda_err(op, e))?;
+            self.pointwise_launches[0].fetch_add(1, Ordering::Relaxed);
         }
         Ok(out)
     }
@@ -1207,6 +1220,7 @@ impl Backend for CudaBackend {
             }
             unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
                 .map_err(|e| cuda_err(OP, e))?;
+            self.pointwise_launches[2].fetch_add(1, Ordering::Relaxed);
         }
         Ok(self.wrap(out))
     }

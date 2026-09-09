@@ -9,13 +9,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use ferro_core::dispatch::{
-    register_backend, Backend, BinaryKind, ChainStepRef, DeviceBuffer, ReduceKind, UnaryKind,
+    register_backend, Backend, BinaryKind, ChainStepRef, DeviceBuffer, UnaryKind,
 };
 use ferro_core::graph::Graph;
 use ferro_core::{Device, Result, Tensor};
 
 static CHAINS: AtomicUsize = AtomicUsize::new(0);
 static PER_OP: AtomicUsize = AtomicUsize::new(0);
+static DOWNLOADS: AtomicUsize = AtomicUsize::new(0);
+static UPLOADS: AtomicUsize = AtomicUsize::new(0);
 
 const DEV: Device = Device::Cuda(21);
 
@@ -63,9 +65,11 @@ impl Backend for FakeDevice {
     }
 
     fn alloc_from_host(&self, d: &[f32]) -> Result<Box<dyn DeviceBuffer>> {
+        UPLOADS.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(FakeBuf(d.to_vec())))
     }
     fn copy_to_host(&self, buf: &dyn DeviceBuffer) -> Result<Vec<f32>> {
+        DOWNLOADS.fetch_add(1, Ordering::SeqCst);
         Ok(data(buf).to_vec())
     }
 
@@ -189,6 +193,34 @@ fn setup() -> MutexGuard<'static, ()> {
     let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     register_backend(DEV, Arc::new(FakeDevice));
     guard
+}
+
+#[test]
+fn compiled_dag_shares_intermediates_without_transfers() {
+    let _serial = setup();
+    let leaf = |v: Vec<f32>, shape: &[usize]| Tensor::from_vec(v, shape).unwrap()
+        .to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let x = leaf(vec![2., 3., 4.], &[3]);
+    let y = leaf(vec![1., 2., 3., 4., 5., 6.], &[2, 3]);
+    let u = x.relu();
+    let roots = [
+        (u.mul(&u).unwrap().sub(&x).unwrap(), 2, 0),
+        (x.relu().sub(&y).unwrap().relu().mul(&y).unwrap(), 2, 1),
+        (u.div(&x.relu()).unwrap().sub(&u).unwrap(), 3, 0),
+    ];
+    for (root, chains, per_op) in roots {
+        let want = root.to_vec();
+        let h = ferro_core::graph::CompiledChain::compile(&root).unwrap();
+        let before = (CHAINS.load(Ordering::SeqCst), PER_OP.load(Ordering::SeqCst),
+            DOWNLOADS.load(Ordering::SeqCst), UPLOADS.load(Ordering::SeqCst));
+        let got = h.replay().unwrap();
+        assert_eq!(CHAINS.load(Ordering::SeqCst) - before.0, chains);
+        assert_eq!(PER_OP.load(Ordering::SeqCst) - before.1, per_op);
+        assert_eq!(DOWNLOADS.load(Ordering::SeqCst) - before.2, 0);
+        assert_eq!(UPLOADS.load(Ordering::SeqCst) - before.3, 0);
+        assert_eq!(got.device(), DEV);
+        assert_eq!(got.to_vec(), want);
+    }
 }
 
 #[test]

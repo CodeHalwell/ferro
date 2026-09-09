@@ -11,7 +11,7 @@ impl Tensor {
     pub fn silu(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Silu)
             .expect("tensor's device backend is always registered");
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return out;
         }
         let x = self.detach_copy();

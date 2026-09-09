@@ -12,9 +12,10 @@ PyTorch's did not. Those results did not validate full-expression replay.
 
 The earlier `.fuse()` throughput table and the claim that planning overhead was
 its entire loss are also withdrawn as evidence for compiled replay. `.fuse()`
-and the low-level `FusedChain::resolve` retain their legacy intermediate-seeded
-contract; they are not the compile-once API. Historical Rust `bench_chain`
-numbers are not revalidated here and must not be presented as Python API speedups.
+now invokes the full-graph compiler per call; low-level `FusedChain::resolve`
+still has its legacy intermediate seed contract. Neither is the compile-once API.
+Historical Rust `bench_chain` numbers are not revalidated here and must not be
+presented as Python API speedups.
 
 ## What the corrected handle supports
 
@@ -23,22 +24,19 @@ all its supported operations, including the first unary or binary operation,
 over current graph-leaf storage. It returns a detached tensor. The handle is not
 a CUDA graph and does not provide a fused backward pass.
 
-Supported: tagged, left-to-right pointwise chains such as `relu(x)*y+z`, `x*y+z`,
-`(relu(x)-y)/z`, repeated leaf operands such as `x*x-x`, and right-leaf broadcasts
-that preserve the seed shape (`[2,3]` with `[3]`). Operand order is preserved.
+The current compiler also supports pointwise DAG branches, shared intermediates
+(`u*u`), ordered binary operands and seed-expanding broadcasts. Expansion is a
+run boundary using ordinary resident broadcast dispatch, not a truncated chain.
+Explicit forward metadata supports matmul, bmm, reshape, transpose, softmax,
+sum_dim and LayerNorm; unsupported recorded operations still fail rather than
+freeze. Roots without recorded operations fail compilation.
 
-Rejected explicitly on CPU and CUDA: seed expansion (`[3]` to `[2,3]`), computed
-right-side branches (`relu(x)*relu(y)`), repeated computed intermediates (`u*u`
-where `u=relu(x)`), untagged operations/reductions and roots without a tape.
-These raise an error rather than capture stale intermediates.
-
-Enable `requires_grad` **before computing every upstream path that must be
-replayed**. The compiler can only see the recorded autograd graph. Detached or
-no-grad computations have no upstream tape and are opaque input values; it
-cannot recover their original leaves. Explicitly detach a computed value only
-when treating it as a frozen graph input is intended. Shape/storage identities
-are fixed; leaf values can change (optimizer-driven mutations are regression
-tested on CPU and CUDA).
+Use `ferro.capture(lambda: expression)` to record every upstream inference path
+without enabling gradients. Grad-requiring graphs remain supported. Detached or
+no-grad computations OUTSIDE capture are opaque inputs. Shape/storage identities
+are fixed; current leaf values are read on every replay. Full MLP/residual and
+transformer correctness and separate timings are in MODEL_GRAPH_BENCHMARKS.md;
+the historical pointwise table below is not a model-performance result.
 
 The independent counting backend test asserts three compiled steps, one
 `chain_dev` call, zero per-op calls, and numeric output. `fusion_launches()` is a

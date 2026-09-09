@@ -62,6 +62,8 @@ def check_conv2d(name, in_shape, w_shape, stride, padding):
 
 
 def main():
+    check_unary("reshape transpose layout", MIX, lambda x: x.transpose(0, 1).reshape([2, 3]), lambda x: x.transpose(0, 1).reshape(2, 3))
+    check_unary("layer_norm", MIX, lambda x: x.layer_norm(), lambda x: F.layer_norm(x, (3,)))
     check_unary("log", POS, lambda x: x.log(), torch.log)
     check_unary("tanh", MIX, lambda x: x.tanh(), torch.tanh)
     check_unary("sqrt", POS, lambda x: x.sqrt(), torch.sqrt)

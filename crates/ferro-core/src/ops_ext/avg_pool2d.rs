@@ -50,7 +50,7 @@ impl Tensor {
         }
         let out_shape = [n, c, out_h, out_w];
         let out = Tensor::from_vec(out_data, &out_shape)?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Ok(out);
         }
 

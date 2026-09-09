@@ -55,6 +55,11 @@ fn compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs() {
     let (x, y, z) = (px.tensor(), py.tensor(), pz.tensor());
     let build = || x.relu().sub(&y).unwrap().div(&z).unwrap();
     let root = build();
+    let branch_build = || {
+        let u = y.relu();
+        u.sub(&x.relu()).unwrap().div(&u.add(&z).unwrap()).unwrap()
+    };
+    let branch = CompiledChain::compile(&branch_build()).unwrap();
     let h = CompiledChain::compile(&root).unwrap();
     assert_eq!(h.num_steps(), 3);
     let initial = h.replay().unwrap();
@@ -68,6 +73,9 @@ fn compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs() {
         let got = h.replay().unwrap();
         assert_eq!(got.device(), DEV);
         close(&got.to_vec(), &build().to_vec(), 1e-6);
+        let branched = branch.replay().unwrap();
+        assert_eq!(branched.device(), DEV);
+        close(&branched.to_vec(), &branch_build().to_vec(), 1e-6);
     }
     assert_ne!(h.replay().unwrap().to_vec(), initial.to_vec());
     for root in [x.mul(&x).unwrap().sub(&x).unwrap(), x.mul(&y).unwrap().add(&z).unwrap()] {
@@ -76,13 +84,72 @@ fn compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs() {
         close(&h.replay().unwrap().to_vec(), &root.to_vec(), 1e-6);
     }
     let expanding = y.relu().mul(&x).unwrap().relu();
-    assert!(CompiledChain::compile(&expanding).is_err());
+    let h = CompiledChain::compile(&expanding).unwrap();
+    close(&h.replay().unwrap().to_vec(), &expanding.to_vec(), 1e-6);
     let g = Graph::from_root(&expanding);
     assert!(g.plan_fusion().chains[0].resolve(&g).is_err());
     let u = x.relu();
     for root in [x.relu().mul(&y.relu()).unwrap(), y.sub(&x.relu()).unwrap(),
-                 y.div(&x.relu()).unwrap(), u.mul(&u).unwrap(), x.sum().relu()] {
-        assert!(CompiledChain::compile(&root).is_err());
+                 y.div(&x.relu().add(&z).unwrap()).unwrap(), u.mul(&u).unwrap()] {
+        let h = CompiledChain::compile(&root).unwrap();
+        let got = h.replay().unwrap();
+        assert_eq!(got.device(), DEV);
+        close(&got.to_vec(), &root.to_vec(), 1e-6);
+    }
+    assert!(CompiledChain::compile(&x.sum().relu()).is_err());
+}
+
+#[test]
+fn compiled_dag_counts_real_pointwise_launches() {
+    let (_guard, b) = match setup() { Some(s) => s, None => return };
+    eprintln!("CUDA available: exercising compiled DAG launch counters");
+    use ferro_core::graph::CompiledChain;
+    let leaf = |v: Vec<f32>, shape: &[usize]| Tensor::from_vec(v, shape).unwrap()
+        .to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let x = leaf(vec![2., 3., 4.], &[3]);
+    let y = leaf(vec![1., 2., 3., 4., 5., 6.], &[2, 3]);
+    let u = x.relu();
+    let root = u.mul(&u).unwrap().sub(&x).unwrap();
+    let h = CompiledChain::compile(&root).unwrap();
+    assert_eq!(h.num_steps(), 3);
+    assert_eq!(h.num_runs(), 2);
+    let before = b.pointwise_launch_counts();
+    let out = h.replay().unwrap();
+    let after = b.pointwise_launch_counts();
+    assert_eq!((after.0-before.0, after.1-before.1, after.2-before.2), (2, 0, 0));
+    assert_eq!(out.device(), DEV);
+    close(&out.to_vec(), &[2., 6., 12.], 1e-6);
+    let root = x.relu().sub(&y).unwrap().relu().mul(&y).unwrap();
+    let h = CompiledChain::compile(&root).unwrap();
+    assert_eq!(h.num_runs(), 3);
+    let before = b.pointwise_launch_counts();
+    let out = h.replay().unwrap();
+    let after = b.pointwise_launch_counts();
+    assert_eq!((after.0-before.0, after.1-before.1, after.2-before.2), (2, 0, 1));
+    assert_eq!(out.device(), DEV);
+    assert_eq!(out.shape(), &[2, 3]);
+    close(&out.to_vec(), &[1., 2., 3., 0., 0., 0.], 1e-6);
+}
+
+#[test]
+fn compiled_broadcast_shape_cases_match_cpu() {
+    let (_guard, _) = match setup() { Some(s) => s, None => return };
+    for (sa, sb) in [
+        (vec![], vec![2, 3]), (vec![3], vec![2, 3]),
+        (vec![2, 1], vec![1, 3]), (vec![1, 2, 1], vec![3, 1, 4]),
+        (vec![1, 3], vec![0, 3]),
+    ] {
+        let make = |shape: &[usize]| Tensor::from_vec(
+            (0..shape.iter().product()).map(|i| 1.0 + i as f32 * 0.125).collect(), shape).unwrap();
+        let (a, b) = (make(&sa), make(&sb));
+        let expected = a.relu().sub(&b).unwrap().div(&b).unwrap();
+        let a = a.to_device(DEV).unwrap().requires_grad_(true).unwrap();
+        let b = b.to_device(DEV).unwrap().requires_grad_(true).unwrap();
+        let root = a.relu().sub(&b).unwrap().div(&b).unwrap();
+        let got = ferro_core::graph::CompiledChain::compile(&root).unwrap().replay().unwrap();
+        assert_eq!(got.device(), DEV);
+        assert_eq!(got.shape(), expected.shape());
+        close(&got.to_vec(), &expected.to_vec(), 1e-6);
     }
 }
 
