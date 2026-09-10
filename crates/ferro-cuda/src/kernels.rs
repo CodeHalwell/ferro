@@ -326,6 +326,25 @@ pub fn sum_dim_source() -> String {
 /// Row gather for embedding/index_select_t: one thread per output element.
 /// out[i] = w[idx[i / inner] * inner + i % inner]; idx entries were
 /// bounds-checked on the host before launch, so no guard is needed.
+/// Fixed scalar metadata arguments avoid temporary device index/metadata buffers.
+pub fn materialize_source() -> String {
+    let args = (0..16).map(|i| format!(", unsigned long long d{i}, unsigned long long s{i}")).collect::<String>();
+    let dims = (0..16).map(|i| format!("d{i}")).collect::<Vec<_>>().join(",");
+    let strides = (0..16).map(|i| format!("s{i}")).collect::<Vec<_>>().join(",");
+    format!(r#"extern "C" __global__ void {KERNEL_NAME}(const float* x, float* out, unsigned int n, unsigned int rank, unsigned long long offset{args}) {{
+        unsigned long long i = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+        if (i >= n) return;
+        unsigned long long dims[16] = {{{dims}}};
+        unsigned long long strides[16] = {{{strides}}};
+        unsigned long long rem = i, at = offset;
+        for (int d = (int)rank - 1; d >= 0; --d) {{
+            at += (rem % dims[d]) * strides[d];
+            rem /= dims[d];
+        }}
+        out[i] = x[at];
+    }}"#)
+}
+
 pub fn gather_source() -> String {
     format!(
         r#"extern "C" __global__ void {KERNEL_NAME}(const long long* idx, const float* w, float* out, unsigned int inner, unsigned int n) {{
