@@ -505,6 +505,13 @@ pub trait Backend: Send + Sync {
         not_resident("scalar_increment_dev")
     }
 
+    /// Materialize a strided f32 view in logical row-major order. Implementations
+    /// must validate shape/stride arithmetic and storage bounds before reading.
+    /// Unsupported backends may decline without mutating the source.
+    fn materialize_dev(&self, _x: &dyn DeviceBuffer, _shape: &[usize], _strides: &[usize], _offset: usize) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("materialize_dev")
+    }
+
     // --- i64 index buffers --------------------------------------------------
     // DeviceBuffer stays opaque: i64 device buffers are produced only by
     // `alloc_i64_from_host` and consumed only by `copy_i64_to_host` /

@@ -1,0 +1,15 @@
+[package]
+name = "capture-layout-gpu-verification"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+ferro-core = { path = "../../crates/ferro-core" }
+ferro-cuda = { path = "../../crates/ferro-cuda" }
+
+[[test]]
+name = "capture_layout"
+path = "capture_layout.rs"

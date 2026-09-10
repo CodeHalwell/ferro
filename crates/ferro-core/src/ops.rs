@@ -104,8 +104,10 @@ impl Tensor {
 
     pub fn exp(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Exp).expect(REGISTERED);
-        if !self.requires_grad() && !crate::capture::is_recording() {
-            return out;
+        if !self.requires_grad() {
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Exp), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let y = out.detach_copy();
         out.record_fn_tagged(
@@ -119,8 +121,10 @@ impl Tensor {
 
     pub fn sigmoid(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Sigmoid).expect(REGISTERED);
-        if !self.requires_grad() && !crate::capture::is_recording() {
-            return out;
+        if !self.requires_grad() {
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Sigmoid), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let y = out.detach_copy();
         out.record_fn_tagged(

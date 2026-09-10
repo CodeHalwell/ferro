@@ -22,8 +22,10 @@ impl Tensor {
         }
         let shape = self.shape().to_vec();
         if let Some(out) = raw_row_softmax(self, dim, false) {
-            if !self.requires_grad() && !crate::capture::is_recording() {
-                return Ok(out);
+            if !self.requires_grad() {
+                return Ok(if crate::capture::is_recording() {
+                    out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), |_| unreachable!("inference node has no backward"))
+                } else { out });
             }
             let y = out.detach_copy();
             return Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), move |g| {
@@ -38,8 +40,10 @@ impl Tensor {
         // Host-composed op: return to the input's device so chained
         // device-resident ops stay on-device.
         let out = Tensor::from_vec(y_data, &shape)?.to_device(self.device())?;
-        if !self.requires_grad() && !crate::capture::is_recording() {
-            return Ok(out);
+        if !self.requires_grad() {
+            return Ok(if crate::capture::is_recording() {
+                out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), |_| unreachable!("inference node has no backward"))
+            } else { out });
         }
         let y = out.detach_copy();
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), move |g| {
