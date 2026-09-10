@@ -21,8 +21,10 @@ impl Tensor {
             });
         }
         if let Some(out) = raw_row_softmax(self, dim, true) {
-            if !self.requires_grad() && !crate::capture::is_recording() {
-                return Ok(out);
+            if !self.requires_grad() {
+                return Ok(if crate::capture::is_recording() {
+                    out.record_fn(vec![self.clone()], |_| unreachable!("inference node has no backward"))
+                } else { out });
             }
             let y = out.detach_copy();
             return Ok(out.record_fn(vec![self.clone()], move |g| {
@@ -57,8 +59,11 @@ impl Tensor {
             }
         }
 
-        if !self.requires_grad() && !crate::capture::is_recording() {
-            return Tensor::from_vec(y, &shape);
+        if !self.requires_grad() {
+            let out = Tensor::from_vec(y, &shape)?;
+            return Ok(if crate::capture::is_recording() {
+                out.record_fn(vec![self.clone()], |_| unreachable!("inference node has no backward"))
+            } else { out });
         }
         // Save softmax = exp(log_softmax output) for the backward; from_vec
         // already yields a fresh detached leaf.

@@ -869,6 +869,16 @@ impl Tensor {
     fn materialize_device(&self) -> Result<Option<Tensor>> {
         if self.device() == Device::Cpu || self.dtype() != DType::F32 { return Ok(None); }
         let backend = backend_for(self.device())?;
+        {
+            let storage = self.0.storage.read();
+            let Storage::Device(buf) = &*storage else { return Ok(None); };
+            if let Ok(out) = backend.materialize_dev(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset) {
+                return Ok(Some(device_leaf(out, self.shape(), self.device())));
+            }
+        }
+        // Layout and buffer identity are immutable. Build/upload gather indices
+        // unlocked, then reacquire only for dispatch; device values follow the
+        // backend's stream ordering, just as in the direct materialization seam.
         let mut indices = Vec::with_capacity(self.numel());
         for i in 0..self.numel() {
             let mut rem = i;
@@ -881,7 +891,7 @@ impl Tensor {
         }
         let Ok(index) = backend.alloc_i64_from_host(&indices) else { return Ok(None); };
         let storage = self.0.storage.read();
-        let Storage::Device(buf) = &*storage else { return Ok(None); };
+        let Storage::Device(buf) = &*storage else { unreachable!("storage identity is immutable"); };
         match backend.gather_rows_dev(buf.as_ref(), index.as_ref(), buf.len(), 1) {
             Ok(out) => Ok(Some(device_leaf(out, self.shape(), self.device()))),
             Err(_) => Ok(None),
@@ -895,7 +905,7 @@ impl Tensor {
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
             });
         }
-        // Materialize strided f32 device views with gather when supported.
+        // Materialize strided f32 device views directly, or via gather fallback.
         // Other backends/dtypes retain the dtype-preserving host fallback.
         let base = if self.is_contiguous() {
             self.clone()
@@ -924,6 +934,7 @@ impl Tensor {
             false,
             None,
         );
+        let out = self.capture_layout(out)?;
         let in_shape = self.0.shape.clone();
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Reshape(shape.to_vec()), move |g| {
             vec![Tensor::from_vec(g.to_vec(), &in_shape).unwrap()]
@@ -954,8 +965,24 @@ impl Tensor {
         ))
     }
 
+    // Isolate inference views of graph leaves, the public update seam. Computed
+    // inputs already forbid public mutation through their op history. Copy into
+    // a NEW cell, preserving layout; never relax ordinary alias/snapshot gates.
+    // Replay disables capture and pays no copy.
+    fn capture_layout(&self, out: Tensor) -> Result<Tensor> {
+        if !crate::capture::is_recording() || self.requires_grad() || self.0.op.is_some()
+            || !Arc::ptr_eq(&self.0.storage, &out.0.storage) { return Ok(out); }
+        let storage = out.0.storage.read();
+        let Storage::Device(buf) = &*storage else { return Ok(out.clone()); };
+        let copy = backend_for(out.device())?.copy_dev(buf.as_ref())?;
+        Ok(Tensor::from_parts(
+            Arc::new(StorageCell::new(Storage::Device(copy))),
+            out.0.shape.clone(), out.0.stride.clone(), out.0.offset, out.device(), false, None,
+        ))
+    }
+
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
-        let out = self.transpose_view(d0, d1)?;
+        let out = self.capture_layout(self.transpose_view(d0, d1)?)?;
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Transpose(d0, d1), move |g| {
             vec![g.transpose_view(d0, d1).unwrap()]
         }))
@@ -1529,6 +1556,10 @@ pub(crate) fn unbroadcast(g: &Tensor, target: &[usize]) -> Tensor {
     }
     g
 }
+
+#[cfg(test)]
+#[path = "layout_lock_tests.rs"]
+mod layout_lock_tests;
 
 #[cfg(test)]
 mod tests {
