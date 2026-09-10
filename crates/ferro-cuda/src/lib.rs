@@ -297,6 +297,7 @@ pub struct CudaBackend {
     // parametrized kinds (Powf, Clamp) cache per scalar value.
     funcs: Mutex<HashMap<String, CudaFunction>>,
     pointwise_launches: [AtomicUsize; 3],
+    layout_counters: [AtomicUsize; 3],
     // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
     // carries a clone and returns its slice here on drop.
     alloc: crate::alloc::CachingAllocator,
@@ -357,6 +358,7 @@ impl CudaBackend {
             device,
             funcs: Mutex::new(HashMap::new()),
             pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
+            layout_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             alloc,
         })
     }
@@ -437,6 +439,13 @@ impl CudaBackend {
     /// these count enqueues into the graph, not subsequent graph executions.
     pub fn pointwise_launch_counts(&self) -> (usize, usize, usize) {
         let c = &self.pointwise_launches;
+        (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
+    }
+
+    /// Successful i64 uploads, uploaded bytes, and non-empty direct layout enqueues.
+    /// Kernel parameter metadata is not an index-buffer upload.
+    pub fn layout_counts(&self) -> (usize, usize, usize) {
+        let c = &self.layout_counters;
         (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
     }
 
@@ -1557,9 +1566,49 @@ impl Backend for CudaBackend {
         self.scalar_increment_dev_inner(t, beta1, beta2)
     }
 
+    fn materialize_dev(&self, x: &dyn DeviceBuffer, shape: &[usize], strides: &[usize], offset: usize) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "materialize_dev";
+        let x = self.resident(OP, x)?;
+        let invalid = || Error::Unsupported { op: OP, msg: "invalid or unsupported layout bounds".into() };
+        if shape.len() != strides.len() || shape.len() > 16 { return Err(invalid()); }
+        let n = if shape.contains(&0) { 0 } else {
+            shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d)).ok_or_else(invalid)?
+        };
+        let n_arg = as_u32(OP, n)?;
+        if n == 0 {
+            if offset > x.data.len() { return Err(invalid()); }
+            return Ok(self.wrap(unsafe { self.alloc_uninit(OP, 0)? }));
+        }
+        let max = shape.iter().zip(strides).try_fold(offset, |at, (&d, &s)| {
+            at.checked_add((d - 1).checked_mul(s)?)
+        }).ok_or_else(invalid)?;
+        if max >= x.data.len() { return Err(invalid()); }
+        let func = self.get_kernel(OP, &kernels::materialize_source())?;
+        let mut out = unsafe { self.alloc_uninit(OP, n)? };
+        let rank = shape.len() as u32;
+        let offset = offset as u64;
+        let mut metadata = [(1u64, 0u64); 16];
+        for (i, (&d, &s)) in shape.iter().zip(strides).enumerate() {
+            metadata[i] = (d as u64, s as u64);
+        }
+        let mut launch = self.stream.launch_builder(&func);
+        launch.arg(&*x.data);
+        launch.arg(&mut out);
+        launch.arg(&n_arg);
+        launch.arg(&rank);
+        launch.arg(&offset);
+        for (d, s) in &metadata { launch.arg(d); launch.arg(s); }
+        unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }.map_err(|e| cuda_err(OP, e))?;
+        self.layout_counters[2].fetch_add(1, Ordering::Relaxed);
+        Ok(self.wrap(out))
+    }
+
     fn alloc_i64_from_host(&self, data: &[i64]) -> Result<Box<dyn DeviceBuffer>> {
+        let uploaded = self.htod_i64("alloc_i64_from_host", data)?;
+        self.layout_counters[0].fetch_add(1, Ordering::Relaxed);
+        self.layout_counters[1].fetch_add(std::mem::size_of_val(data), Ordering::Relaxed);
         Ok(Box::new(CudaBufI64 {
-            data: self.htod_i64("alloc_i64_from_host", data)?,
+            data: uploaded,
             device: self.device,
         }))
     }

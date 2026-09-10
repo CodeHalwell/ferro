@@ -869,6 +869,12 @@ impl Tensor {
     fn materialize_device(&self) -> Result<Option<Tensor>> {
         if self.device() == Device::Cpu || self.dtype() != DType::F32 { return Ok(None); }
         let backend = backend_for(self.device())?;
+        let storage = self.0.storage.read();
+        let Storage::Device(buf) = &*storage else { return Ok(None); };
+        if let Ok(out) = backend.materialize_dev(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset) {
+            return Ok(Some(device_leaf(out, self.shape(), self.device())));
+        }
+        // Compatibility for gather-only backends. CUDA uses the direct seam.
         let mut indices = Vec::with_capacity(self.numel());
         for i in 0..self.numel() {
             let mut rem = i;
@@ -880,8 +886,6 @@ impl Tensor {
             indices.push(i64::try_from(offset).map_err(|_| Error::Unsupported { op: "reshape", msg: "layout exceeds i64 indexing".into() })?);
         }
         let Ok(index) = backend.alloc_i64_from_host(&indices) else { return Ok(None); };
-        let storage = self.0.storage.read();
-        let Storage::Device(buf) = &*storage else { return Ok(None); };
         match backend.gather_rows_dev(buf.as_ref(), index.as_ref(), buf.len(), 1) {
             Ok(out) => Ok(Some(device_leaf(out, self.shape(), self.device()))),
             Err(_) => Ok(None),
@@ -895,7 +899,7 @@ impl Tensor {
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
             });
         }
-        // Materialize strided f32 device views with gather when supported.
+        // Materialize strided f32 device views directly, or via gather fallback.
         // Other backends/dtypes retain the dtype-preserving host fallback.
         let base = if self.is_contiguous() {
             self.clone()
