@@ -141,7 +141,7 @@ impl Tensor {
         let rm_t = Tensor::from_vec(rm_new, &[c])?;
         let rv_t = Tensor::from_vec(rv_new, &[c])?;
         let needs_grad = self.requires_grad() || weight.requires_grad() || bias.requires_grad();
-        if !needs_grad {
+        if !needs_grad && !crate::capture::is_recording() {
             return Ok(BatchNormOut {
                 output: out,
                 running_mean: rm_t,

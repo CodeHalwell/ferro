@@ -23,10 +23,12 @@ impl Tensor {
         let out = raw_unary_k(self, UnaryKind::Gelu)
             .expect("tensor's device backend is always registered");
         if !self.requires_grad() {
-            return out;
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Gelu), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let x = self.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Gelu), move |g| {
             let dev = g.device();
             let c = |v: f32| Tensor::scalar(v).to_device(dev).unwrap();
             let one = c(1.0);
@@ -58,10 +60,12 @@ impl Tensor {
         let out = raw_unary_k(self, UnaryKind::GeluErf)
             .expect("tensor's device backend is always registered");
         if !self.requires_grad() {
-            return out;
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::GeluErf), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let x = self.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::GeluErf), move |g| {
             let mask = raw_unary_k(&x, UnaryKind::GeluErfGrad).unwrap();
             vec![raw_binary_k("gelu_erf_bw", g, &mask, BinaryKind::Mul).unwrap()]
         })

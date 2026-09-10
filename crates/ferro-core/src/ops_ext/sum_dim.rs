@@ -16,7 +16,7 @@ impl Tensor {
         }
         let out = raw_sum_dim(self, dim, keepdim);
         let in_shape = self.shape().to_vec();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::SumDim(dim, keepdim), move |g| {
             let mut keep_shape = in_shape.clone();
             keep_shape[dim] = 1;
             let g = g.reshape(&keep_shape).unwrap();

@@ -49,13 +49,15 @@ the world" is therefore two different games, and this plan plays both:
 Everything below is tagged [P] parity or [D] differentiator, with a rough
 size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
 
-## 1. Run it on a GPU (the single most informative next step)
+## 1. GPU validation and ongoing measurement
 
-- [P/S] Validate on real hardware: `cargo test -p ferro-cuda` on a GPU box
-  runs the staged end-to-end resident training loop. Everything is written;
-  nothing has executed on silicon yet. Expect a debugging round.
-- [P/M] GPU benchmark suite vs torch: matmul, elementwise chains, the
-  training loop. Establish the honest baseline gap.
+- [P/S] Real-hardware measurements have landed: see GPU_BASELINE_3090.md
+  and FUSION_3090.md for RTX 3090 runs and their limits. The old claim that
+  nothing has executed on silicon is obsolete. GPU correctness remains a
+  hardware gate: `cargo test -p ferro-cuda` can skip without a usable runtime.
+- [P/M] Full inference MLP/residual/transformer DAG benchmarks now have two
+  local runs (MODEL_GRAPH_BENCHMARKS.md); representative training remains.
+  Hosted CPU CI checks CUDA compilation, not execution or performance.
 
 ## 2. Correctness and semantics parity [P]
 
@@ -87,10 +89,11 @@ size: (S) days, (M) weeks, (L) months, (XL) multi-month/team-scale.
   swappable matmul kernel), then breadth. gelu/rmsnorm/rope/cumsum/
   topk/argmax/argmin/gather and masked causal attention landed 2026-07.
   Each op stays one-file/one-agent parallel work.
-- (M) Torch parity fuzzer: property-based random-shape/dtype op tests diffing
-  ferro vs torch through DLPack, run in CI. The single highest-leverage
-  correctness investment - it turns "validated on examples" into "validated
-  on distributions".
+- (M) Torch parity fuzzer: `examples/fuzz_vs_torch.py` has landed and is
+  wired into correctness CI (200 trials/op, seed 0). It checks random-shape
+  f32 values with documented ULP/accumulation exceptions, not arbitrary
+  dtypes or random backward graphs. Remaining: broader dtype/gradient
+  coverage, more seeds and CUDA parity on a real GPU runner.
 
 ## 2.5 CUDA-graph capture of full training steps [P]
 
@@ -102,13 +105,15 @@ with stable buffer addresses (one fused kernel per param per step, scalars
 as kernel arguments, zero per-step host traffic - proven by counting
 backends in tests/optim_device.rs), and `write_dev_from_host`/`copy_into`
 overwrite a buffer without moving it (the batch-upload seam capture needs;
-copy_into's dtod-clone no-op bug is fixed). Still blocking full
-fwd+bwd+optimizer capture: every backward INTERMEDIATE (activations,
-grads) gets a fresh address each step - that needs the buffer pool /
-static memory planner (CAPABILITY.md 4.2-4.4). Expected win at our
-profile (loss_bwd = 72% of step, launch-gap dominated): NVIDIA-published
-9.6 -> 3.4 us per kernel effective; our own measurement shows a 3-7x
-reduction per chain.
+copy_into's dtod-clone no-op bug is fixed). Full-step capture has since landed:
+`CudaBackend::begin_step_capture` / `end_step_capture` return a
+`CapturedStep`; the allocator bypasses recycling during capture and retains
+intermediates for the graph lifetime. See `crates/ferro-cuda/src/alloc.rs`
+and the integration tests `captured_step_advances_params_across_replays`
+and `captured_adamw_optimiser_advances_across_replays`. This is explicit,
+warmed-up, fixed-address capture, not a general static memory planner or
+automatic whole-step compiler. Chain timings do not establish a full-step
+training speedup.
 
 **Capturable AdamW backend primitive LANDED 2026-08 (PR #14):** timestep
 lives on-device (`t = [step, bc1, bc2]`), a 1-thread increment kernel bumps
@@ -118,18 +123,7 @@ correction under replay instead of freezing it (mirrors PyTorch
 `capturable=True`). Proven by a graph-replay test (replay 6x, timestep
 1->6, params track eager to 1e-5). Backend layer only.
 
-- **(M) G9 - route the public `AdamW` optimiser through the capturable
-  path.** Blocker raised in PR #14 review (Codex P1): `ferro-core::AdamW::
-  update` still advances host `self.t`, computes host bc1/bc2, and calls the
-  frozen `adamw_step_dev`, so production AdamW is NOT capturable end-to-end
-  despite the backend primitive existing. Needs: device-resident optimiser
-  state (timestep buffer owned by the optimiser), a capture-aware `update`
-  that selects `adamw_step_capturable_dev` + `scalar_increment_dev` during a
-  capture window, and lifting those methods out of `pub(crate)`. Stretch:
-  on-device `lr` so LR scheduling works under replay (currently lr is baked
-  host-const, fixed per captured graph - re-capture to change).
-
-  **G9 LANDED 2026-08 (PR #15):** public `AdamW.capturable()` routes the
+- **G9 LANDED 2026-08 (PR #15):** public `AdamW.capturable()` routes the
   production optimiser through `adamw_step_capturable_dev` +
   `scalar_increment_dev`. CUDA-uniform-device guard (CPU/mixed -> silent host
   fallback), device buffer `[step,bc1,bc2]` is timestep authority (seeded from
@@ -140,6 +134,8 @@ correction under replay instead of freezing it (mirrors PyTorch
   steps) - the counter and bias correction silently freeze. Fix is an i32 step
   field in the buffer (mixed int/float layout across kernel + seeding +
   snapshot); distant enough to defer but must precede any >16M-step run.
+  Remaining: on-device learning-rate scheduling (lr is baked into the graph;
+  re-capture to change it), broader capture coverage and lifetime/error tests.
 
 ## 3. Performance: CPU [P]
 
@@ -148,8 +144,9 @@ correction under replay instead of freezing it (mirrors PyTorch
   performs zero fresh host allocations after warmup - CAPABILITY.md 4.2's
   G5 host half, proven by tests/pool_zero_alloc.rs). accumulate_grad adds
   in place when the stored grad is provably unshared, and in-place
-  optimizer steps keep params/state storage stable. Remaining: the device
-  caching allocator (see 4 below) and pooling the ops_ext host paths.
+  optimizer steps keep params/state storage stable. The device caching
+  allocator has also landed (see 4 below). Remaining: pooling additional
+  ops_ext host paths and a general static memory planner.
 - (M) Elementwise: SIMD + multithreaded kernels (fastcpu treatment beyond
   matmul); strided kernels that skip materialization.
 - (M) Fusion of elementwise chains at the record_fn layer (peephole first,
@@ -162,18 +159,24 @@ correction under replay instead of freezing it (mirrors PyTorch
 
 ## 4. Performance: GPU [P]
 
-- (L) Memory caching allocator (the thing that actually makes GPU training
-  fast; cudaMalloc per op is a non-starter at scale).
-- (L) Streams and async execution; pinned host staging buffers; overlap of
-  transfer and compute. Today every op is synchronous.
+- (L) Memory caching allocator LANDED: `crates/ferro-cuda/src/alloc.rs`
+  provides exact-length f32 bins, bounded retention, allocation counters,
+  pass-through comparison mode and capture-time buffer retention. G6 tests
+  in `crates/ferro-cuda/src/lib.rs` assert zero fresh buffer requests after
+  warmup for their workload. This is not a universal zero-allocation claim;
+  remaining work includes general memory planning and broader workloads.
+- (L) Broader streams and async execution: the CUDA backend already owns a
+  stream and exposes synchronization; pinned host staging and transfer/compute
+  overlap remain work. Do not equate asynchronous launches with measured overlap.
 - (M) Real reduction kernels (tree/block reductions - current ones are
   correctness-only), occupancy-tuned elementwise, fused epilogues via
   cuBLASLt.
 - (L) conv/attention: cuDNN bindings or implicit-GEMM kernels; a fused
   attention kernel is the marquee target.
 - (L) Multi-GPU: NCCL bindings, DDP-style gradient all-reduce.
-- (M) CUDA graphs for step capture (ferro's immutable graphs are a natural
-  fit - potential differentiator).
+- (M) CUDA graphs for chain and explicit training-step capture LANDED
+  (see 2.5). Remaining: compiled-handle capture, broader workload validation
+  and automatic whole-step compilation; these are separate acceptance gates.
 - (L) [D] Portable backends through the same Backend trait: Metal, ROCm/HIP,
   and wgpu/WebGPU (the wgpu backend doubles as the browser/edge story).
 
@@ -203,17 +206,25 @@ a good substrate for an IR.
   pointwise results, not training or torch.compile comparisons. Absolute
   differences are tolerance-checked, not a proof of ULP parity. See
   docs/FUSION_3090.md for raw data, method and caveats.
-  Supported graphs are tagged left-to-right chains with graph-leaf right
-  operands; seed expansion, computed side branches and untagged operations
-  are rejected explicitly. Upstream paths must be recorded (requires_grad
-  enabled before building); no-grad/detached values are opaque inputs.
-  REMAINING: general DAG replay/fusion, expanding-seed indexing, broader op
-  coverage, backward fusion, and CUDA-graph capture of the compiled handle.
-  The legacy `.fuse()`/`FusedChain::resolve` intermediate-seeded path is not
-  the compiled replay contract; its historical timings do not establish the
-  cause or magnitude of planning overhead.
+  The integrated compiler now supports tagged DAG branches, shared nodes and
+  expanding broadcasts, plus explicit matmul/bmm, layout, softmax, sum_dim and
+  LayerNorm forward metadata. `capture(|| ...)` / `ferro.capture(callable)`
+  records inference without requires_grad through the same op hooks. Unknown
+  recorded ops reject rather than freeze. Outside capture, detached/no-grad
+  values are still opaque inputs. `.fuse()` uses the same compiler per call;
+  low-level `FusedChain::resolve` retains its legacy seed contract.
+  REMAINING: broader op coverage, backward fusion, and CUDA-graph capture of
+  the whole compiled model. Model results do not inherit pointwise speedups.
 - (L) Whole-step compilation: capture forward+backward+optimizer as one
   graph; combined with CUDA graphs this can beat eager torch meaningfully.
+
+Current compiler/graph wave: inference capture and full MLP/residual/transformer
+DAG replay have local CPU/CUDA parity, changed input/weight and backward regression
+evidence. Two serial full-model RTX 3090 runs are in MODEL_GRAPH_BENCHMARKS.md.
+Timing is noisy, transformer replay is slower than Torch eager in both runs,
+and Torch Inductor is blocked by unavailable Triton in this installation.
+Whole-model CUDA-graph capture and backward fusion remain incomplete. Hosted
+CI is configured, not claimed to have run; local evidence is in verification/.
 
 ## 6. Training stack completeness [P]
 
@@ -226,7 +237,8 @@ a good substrate for an IR.
   device-resident optimizer state have all landed; steps are fused and
   in-place as of 2026-08. Remaining here: parameter groups (per-group lr /
   weight decay) and optimizer-state offloading policies.
-- (M) Mixed precision: autocast policy + grad scaler once f16/bf16 land.
+- (M) Mixed precision: autocast policy + grad scaler and native low-precision
+  math remain; f16/bf16 storage, casts and checkpoint IO have already landed.
 - (M) Serialization: safetensors read/write and named state_dict save/load
   on the Module trait (strict torch semantics) landed 2026-07, byte-validated
   against the reference implementation - the model-import path for M3 is
@@ -239,19 +251,35 @@ a good substrate for an IR.
 - (M) Binding codegen: a macro/table so every core op gets a PyTensor method
   automatically - the hand-written binding lag is already the known failure
   mode.
-- (M) Zero-copy DLPack (export without the copy; the storage refactor now
-  supports a stable pointer), numpy __array_interface__.
+- (M) DLPack producer/consumer support LANDED in
+  `crates/ferro-py/src/dlpack.rs`: CUDA export is zero-copy and retains the
+  source storage; CPU export copies to owned f32 data. Imports copy (CUDA
+  imports stage through host before uploading), not foreign-buffer adoption.
+  Remaining: safe zero-copy CPU export/import, zero-copy CUDA import and
+  numpy `__array_interface__`. The older DLPACK.md is a design proposal,
+  not an accurate implementation-status reference.
 - (L) A torch-shaped shim module (ferro.nn/ferro.optim mirroring torch names)
   so small torch scripts port by changing an import.
-- (M) Packaging: manylinux/macos/windows wheels via maturin CI; abi3.
-- (M) Expose device API to Python (to_device, ferro.cuda.is_available) with
-  ferro-cuda compiled in behind a feature flag.
+- (M) Packaging: abi3-py311 is already enabled; correctness CI builds and
+  installs a local Linux wheel via maturin. Published manylinux/macos/windows
+  release wheels and release automation remain pending.
+- (M) Python device API LANDED in `crates/ferro-py/src/lib.rs`:
+  `Tensor.to`, `.cpu`, `.cuda`, `ferro.cuda_init`, `cuda_is_available` and
+  `cuda_synchronize`. CUDA is currently an unconditional dependency using
+  runtime dynamic loading, not an optional feature. A torch-shaped CUDA
+  namespace and optional-backend packaging are separate future choices.
 
 ## 8. Engineering foundations [P]
 
-- (M) CI: GitHub Actions matrix (test, clippy, fmt, docs), GPU runner for the
-  gated suites, the torch-parity fuzzer, benchmark tracking with regression
-  alerts.
+- (M) Correctness CI is now defined in `.github/workflows/correctness.yml`:
+  hosted Linux Rust tests for core/fastcpu/tokenizer, CUDA all-target compile
+  check without a toolkit, and a release Python extension exercised by binding,
+  torch value/gradient, safetensors and seeded ULP regressions. These gates
+  must run successfully in Actions before being treated as hosted validation.
+  Remaining: real GPU runner, more platforms/Python versions, clippy/rustdoc,
+  benchmark regression alerts and a scoped formatting policy. No blanket
+  rustfmt gate is added over existing format drift. GPU skips and unavailable
+  external GPT-2 vocab tests are not evidence that those gates passed.
 - (M) Unsafe audit: the DLPack and CUDA FFI surfaces under miri/asan where
   applicable; document every invariant.
 - (M) rustdoc + an mdbook (architecture, how to add an op, how to add a
@@ -290,10 +318,12 @@ a good substrate for an IR.
 
 ## Milestones (sequenced, each independently demonstrable)
 
-- M1: GPU validation - the staged resident training loop passes on real
-  hardware. (Blocked only on access to a GPU box.)
-- M2: GPU perf floor - caching allocator + streams + real reductions;
-  benchmark suite reporting the gap vs torch eager.
+- M1: GPU validation - real RTX 3090 measurements are published, so hardware
+  access is no longer the blanket blocker. Keep resident training/capture
+  correctness verified on a GPU; CPU-hosted CI cannot certify this milestone.
+- M2: GPU perf floor - caching allocator and baseline benchmark harness have
+  landed; broader async overlap, reduction tuning and representative training
+  performance remain, rather than restarting the allocator work.
 - M3: Transformer inference - load a small real LLM (e.g. a TinyStories-class
   model) from safetensors and generate tokens correctly. The prerequisites
   (transformer op set, serialization, attention/block modules) landed

@@ -74,7 +74,7 @@ impl Tensor {
     pub fn matmul(&self, other: &Tensor) -> Result<Tensor> {
         let out = raw_matmul(self, other)?;
         let (a, b) = (self.clone(), other.clone());
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone(), other.clone()], crate::autograd::ForwardOp::MatMul, move |g| {
             // C = A @ B  =>  dA = dC @ B^T,  dB = A^T @ dC
             let da = raw_matmul_t(g, &b, false, true).unwrap();
             let db = raw_matmul_t(&a, g, true, false).unwrap();
@@ -104,7 +104,7 @@ impl Tensor {
 
     pub fn exp(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Exp).expect(REGISTERED);
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return out;
         }
         let y = out.detach_copy();
@@ -119,7 +119,7 @@ impl Tensor {
 
     pub fn sigmoid(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Sigmoid).expect(REGISTERED);
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return out;
         }
         let y = out.detach_copy();

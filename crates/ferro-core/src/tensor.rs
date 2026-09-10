@@ -866,6 +866,28 @@ impl Tensor {
         ))
     }
 
+    fn materialize_device(&self) -> Result<Option<Tensor>> {
+        if self.device() == Device::Cpu || self.dtype() != DType::F32 { return Ok(None); }
+        let backend = backend_for(self.device())?;
+        let mut indices = Vec::with_capacity(self.numel());
+        for i in 0..self.numel() {
+            let mut rem = i;
+            let mut offset = self.0.offset;
+            for d in (0..self.ndim()).rev() {
+                offset += (rem % self.shape()[d]) * self.0.stride[d];
+                rem /= self.shape()[d];
+            }
+            indices.push(i64::try_from(offset).map_err(|_| Error::Unsupported { op: "reshape", msg: "layout exceeds i64 indexing".into() })?);
+        }
+        let Ok(index) = backend.alloc_i64_from_host(&indices) else { return Ok(None); };
+        let storage = self.0.storage.read();
+        let Storage::Device(buf) = &*storage else { return Ok(None); };
+        match backend.gather_rows_dev(buf.as_ref(), index.as_ref(), buf.len(), 1) {
+            Ok(out) => Ok(Some(device_leaf(out, self.shape(), self.device()))),
+            Err(_) => Ok(None),
+        }
+    }
+
     pub fn reshape(&self, shape: &[usize]) -> Result<Tensor> {
         if numel(shape) != self.numel() {
             return Err(Error::InvalidShape {
@@ -873,12 +895,12 @@ impl Tensor {
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
             });
         }
-        // reshape needs contiguous data; materialize if this is a strided view
-        // (through the host, preserving dtype, then back to the source device
-        // so the result's device tag always matches its storage; non-F32
-        // views are always host tensors, so their to_device is a no-op).
+        // Materialize strided f32 device views with gather when supported.
+        // Other backends/dtypes retain the dtype-preserving host fallback.
         let base = if self.is_contiguous() {
             self.clone()
+        } else if let Some(resident) = self.materialize_device()? {
+            resident
         } else {
             let host = match self.dtype() {
                 DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape)?,
@@ -903,7 +925,7 @@ impl Tensor {
             None,
         );
         let in_shape = self.0.shape.clone();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Reshape(shape.to_vec()), move |g| {
             vec![Tensor::from_vec(g.to_vec(), &in_shape).unwrap()]
         }))
     }
@@ -934,9 +956,14 @@ impl Tensor {
 
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
         let out = self.transpose_view(d0, d1)?;
-        Ok(out.record_fn(vec![self.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Transpose(d0, d1), move |g| {
             vec![g.transpose_view(d0, d1).unwrap()]
         }))
+    }
+
+    /// Share storage and layout, stripping recording and gradient state.
+    pub(crate) fn detached_view(&self) -> Tensor {
+        Tensor::from_parts(self.0.storage.clone(), self.0.shape.clone(), self.0.stride.clone(), self.0.offset, self.0.device, false, None)
     }
 
     /// A detached, contiguous copy sharing no autograd history. Host copies
@@ -989,7 +1016,8 @@ impl Tensor {
     /// The single autograd recording hook: `inputs` are the differentiable
     /// operands; `backward` maps the output gradient to one gradient per input
     /// (same order; the engine asserts arity and shapes). Recorded only when
-    /// some input requires grad. `self` must be a freshly-created, uniquely-
+    /// some input requires grad or inference capture is active. Capture-only
+    /// nodes discard the backward closure. `self` must be freshly-created, uniquely-
     /// owned output (as returned by the raw kernels).
     pub fn record_fn<F>(mut self, inputs: Vec<Tensor>, backward: F) -> Tensor
     where
@@ -999,6 +1027,9 @@ impl Tensor {
             let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
             inner.requires_grad = true;
             inner.op = Some(Op::new(inputs, Box::new(backward)));
+        } else if crate::capture::is_recording() {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
+            inner.op = Some(Op::inference(inputs, None));
         }
         self
     }
@@ -1020,8 +1051,20 @@ impl Tensor {
             let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
             inner.requires_grad = true;
             inner.op = Some(Op::new_tagged(inputs, tag, Box::new(backward)));
+        } else if crate::capture::is_recording() {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
+            inner.op = Some(Op::inference(inputs, Some(tag)));
         }
         self
+    }
+
+    pub(crate) fn record_fn_forward<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static {
+        let mut out = self.record_fn(inputs, backward);
+        if let Some(inner) = Arc::get_mut(&mut out.0) {
+            if let Some(op) = &mut inner.op { op.forward = Some(forward); }
+        }
+        out
     }
 
     // --- version counters ---------------------------------------------------

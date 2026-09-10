@@ -78,7 +78,7 @@ impl Tensor {
                 let out = crate::tensor::device_leaf(out, &[batch, m, n], self.device());
                 let a = self.clone();
                 let b = other.clone();
-                return Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+                return Ok(out.record_fn_forward(vec![self.clone(), other.clone()], crate::autograd::ForwardOp::Bmm, move |g| {
                     // dA[b] = dC[b] @ B[b]^T, dB[b] = A[b]^T @ dC[b]: the ta/tb
                     // flags let cuBLAS read the transposes without materializing.
                     let da = raw_bmm_t(&g, &b, false, true);
@@ -98,7 +98,7 @@ impl Tensor {
 
         let a = self.clone();
         let b = other.clone();
-        Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone(), other.clone()], crate::autograd::ForwardOp::Bmm, move |g| {
             let cpu = dispatch::backend_for(Device::Cpu).expect("cpu backend is always registered");
             let g_data = g.to_vec();
             let a_data = a.to_vec();

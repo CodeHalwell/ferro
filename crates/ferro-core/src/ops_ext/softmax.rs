@@ -22,11 +22,11 @@ impl Tensor {
         }
         let shape = self.shape().to_vec();
         if let Some(out) = raw_row_softmax(self, dim, false) {
-            if !self.requires_grad() {
+            if !self.requires_grad() && !crate::capture::is_recording() {
                 return Ok(out);
             }
             let y = out.detach_copy();
-            return Ok(out.record_fn(vec![self.clone()], move |g| {
+            return Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), move |g| {
                 // dx = y * (g - sum(g*y, dim)) with keepdim sum broadcasting.
                 let gy = g.mul(&y).unwrap();
                 let s = gy.sum_dim(dim, true).unwrap();
@@ -38,11 +38,11 @@ impl Tensor {
         // Host-composed op: return to the input's device so chained
         // device-resident ops stay on-device.
         let out = Tensor::from_vec(y_data, &shape)?.to_device(self.device())?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Ok(out);
         }
         let y = out.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), move |g| {
             let dx = softmax_backward(&g.to_vec(), &y.to_vec(), &shape, dim);
             vec![Tensor::from_vec(dx, &shape).unwrap()]
         }))

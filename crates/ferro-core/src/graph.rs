@@ -1,45 +1,12 @@
-//! Graph compiler v0: DAG analysis over the autograd tape and a pointwise
-//! fusion planner. Read-only: this module never touches `record_fn` or any op
-//! path. It walks the op graph that ordinary forward execution already
-//! recorded (the same structure `Tensor::backward` walks) and classifies each
-//! recorded node structurally, since `Op` carries no op-name tag.
+//! Graph analysis and compiled replay over recorded operation links.
 //!
-//! Classification is heuristic by design (v0):
-//!   - 0 recorded inputs            -> Leaf
-//!   - 1 input, fewer output elems  -> Reduce (fusion barrier)
-//!   - 1 input, same element count  -> Unary
-//!   - 2 inputs contracting on the inner dim -> MatMul (fusion barrier)
-//!   - other                        -> Other / Binary
-//!
-//! The planner finds maximal linear runs of Unary/Binary nodes whose
-//! intermediates have exactly one consumer; each such run of length n could be
-//! compiled to a single kernel, saving n-1 launches per pass (a backward pass
-//! roughly doubles that, since each fused forward link also fuses its VJP
-//! links). Wave 4 will consume the plan; v0 only reports it.
-//!
-//! # How nvrtc generation would consume a FusionPlan (wave 4 sketch)
-//!
-//! `ferro-cuda/src/kernels.rs` already generates CUDA C source as pure string
-//! work: `unary_expr`/`binary_expr` produce per-op expressions,
-//! `unary_source`/`binary_source`/`binary_bc_source` wrap them into one
-//! `extern "C" __global__ void ferro_kernel(...)`, compiled by nvrtc through
-//! `CudaBackend::get_kernel`, whose cache keys on source text. A fused chain
-//! compiles the same way: emit one kernel whose body threads the existing
-//! expression builders together -
-//!
-//! ```text
-//! float v0 = a[i];
-//! float v1 = <unary_expr(gelu)>(v0);        // intermediate stays in a register
-//! out[i]   = <binary_expr(add)>(v1, b[i]); // broadcast offsets from broadcast_strides
-//! ```
-//!
-//! i.e. concatenate expressions instead of launching one kernel per op,
-//! eliminating the global-memory round trip per intermediate. The generated
-//! source (hence the `get_kernel` cache key) is derived deterministically from
-//! the chain's node kinds and ranks, exactly as `binary_bc_source(kind, rank)`
-//! keys today. Barrier nodes (MatMul, Reduce, Other) keep their hand-written
-//! kernels: the planner's chain boundaries are precisely the launch boundaries
-//! of the compiled schedule.
+//! `Graph::plan_fusion` is a structural, heuristic analysis tool. Execution
+//! uses `CompiledChain`: tagged pointwise nodes and explicit forward metadata replay;
+//! unsupported operations are rejected before any replay work is performed.
+//! Compilation captures current graph leaves and schedules single-consumer,
+//! left-input chains in dependency order. Shared intermediates are evaluated
+//! once. Shape expansion is a chain boundary and uses ordinary broadcast
+//! dispatch, including resident CUDA kernels when available.
 
 use std::collections::{HashMap, HashSet};
 
@@ -122,7 +89,7 @@ fn classify(out: &Tensor, inputs: &[&Tensor]) -> NodeKind {
             let head = br.saturating_sub(2);
             let mut expected: Vec<usize> = a.shape()[..ar.saturating_sub(1)].to_vec();
             expected.extend_from_slice(&b.shape()[..head]);
-            expected.extend_from_slice(&b.shape()[br - 1..]);
+            expected.extend_from_slice(&b.shape()[br.saturating_sub(1)..]);
             if contracts && out.shape() == expected.as_slice() {
                 NodeKind::MatMul
             } else {
@@ -269,101 +236,17 @@ impl Graph {
         }
     }
 
-    /// Evaluate this captured graph through the fusion plan, sourcing every
-    /// leaf value from the tensors captured at `from_root` time (no re-run of
-    /// the original tape). Pointwise chains the planner found execute as ONE
-    /// fused `chain_dev` launch each; every other node runs its single raw
-    /// kernel. Returns a detached tensor equal to the eager root but produced
-    /// with `launches_after` launches instead of one-per-op.
-    ///
-    /// This is the eager-fusion seam: a caller that just built `y = relu(x)*a+b`
-    /// can hand the root's graph here and get the fused result, without the
-    /// `Replay::capture(build)` closure dance (whose leaves must be re-supplied).
+    /// Replay tagged operations from current leaves using the compiled schedule.
+    /// Operations without forward metadata are rejected rather than frozen.
     pub fn eval_fused(&self) -> Result<Tensor> {
-        let mut values: HashMap<usize, Tensor> = HashMap::new();
-        // Seed leaves from the captured tensors: a leaf is any node the walk
-        // recorded with no op (its value is an input, already realised).
-        for (&id, node) in &self.nodes {
-            if node.kind == NodeKind::Leaf {
-                let t = self.tensors.get(&id).ok_or_else(|| Error::Unsupported {
-                    op: "eval_fused",
-                    msg: format!("leaf {id} has no captured tensor"),
-                })?;
-                values.insert(id, t.clone());
-            }
-        }
-        let plan = self.plan_fusion();
-        let mut chain_of: HashMap<usize, usize> = HashMap::new();
-        for (ci, c) in plan.chains.iter().enumerate() {
-            for &n in &c.nodes {
-                chain_of.insert(n, ci);
-            }
-        }
-        let mut done_chains = vec![false; plan.chains.len()];
-        // `order` is roots-first; evaluate producers before consumers.
-        for &id in self.order.iter().rev() {
-            if values.contains_key(&id) {
-                continue;
-            }
-            match self.nodes[&id].kind {
-                NodeKind::Leaf => {
-                    return Err(Error::Unsupported {
-                        op: "eval_fused",
-                        msg: format!("leaf {id} was not seeded"),
-                    })
-                }
-                NodeKind::Reduce | NodeKind::MatMul | NodeKind::Other => {
-                    let out = self.eval_raw_node(id, &values)?;
-                    values.insert(id, out);
-                }
-                NodeKind::Unary | NodeKind::Binary => match chain_of.get(&id) {
-                    Some(&ci) if !done_chains[ci] => {
-                        done_chains[ci] = true;
-                        let chain = &plan.chains[ci];
-                        let exec = chain.resolve(self)?;
-                        let out = chain.run(&exec)?;
-                        values.insert(*chain.nodes.last().expect("non-empty chain"), out);
-                    }
-                    Some(_) => {}
-                    None => {
-                        let out = self.eval_raw_node(id, &values)?;
-                        values.insert(id, out);
-                    }
-                },
-            }
-        }
-        let root = *self.order.first().ok_or_else(|| Error::Unsupported {
-            op: "eval_fused",
-            msg: "empty graph".into(),
+        let id = self.order.first().ok_or_else(|| Error::Unsupported {
+            op: "eval_fused", msg: "empty graph".into(),
         })?;
-        values.get(&root).cloned().ok_or_else(|| Error::Unsupported {
-            op: "eval_fused",
-            msg: "root not evaluated".into(),
-        })
+        let root = &self.tensors[id];
+        if self.nodes[id].inputs.is_empty() { return Ok(root.detach_copy()); }
+        CompiledChain::compile(root)?.replay()
     }
 
-    /// Evaluate one tagged Unary/Binary node from already-computed inputs.
-    fn eval_raw_node(&self, id: usize, values: &HashMap<usize, Tensor>) -> Result<Tensor> {
-        let node = &self.nodes[&id];
-        let tag = node.tag.ok_or_else(|| Error::Unsupported {
-            op: "eval_fused",
-            msg: format!("node {id} has no kernel tag and cannot be replayed"),
-        })?;
-        let ins: Vec<Tensor> = node
-            .inputs
-            .iter()
-            .map(|i| {
-                values.get(i).cloned().ok_or_else(|| Error::Unsupported {
-                    op: "eval_fused",
-                    msg: format!("input {i} of node {id} not yet evaluated"),
-                })
-            })
-            .collect::<Result<_>>()?;
-        match tag {
-            OpTag::Unary(kind) => raw_unary_k(&ins[0], kind),
-            OpTag::Binary(kind) => raw_binary_k("eval_fused", &ins[0], &ins[1], kind),
-        }
-    }
 }
 
 // Separated so the DFS stack lives even when the compiler cannot prove the
@@ -497,11 +380,14 @@ impl FusedChain {
 
 /// Execute a resolved chain on its seed's device: one fused backend launch
 /// when every operand is device-resident and the backend implements
-/// `chain_dev`, else the sequential host fallback. Free-standing so a
+/// `chain_dev`, else sequential raw dispatch. Free-standing so a
 /// precompiled [`CompiledChain`] handle can replay without re-walking a tape.
 pub fn run_chain(chain: &ExecutableChain) -> Result<Tensor> {
         let seed = &chain.operands[0];
-        let all_resident = chain.operands.iter().all(|t| t.device_resident_whole());
+        // The chain ABI indexes its seed linearly and sizes output from it.
+        // Expanding seeds must use the ordinary broadcast device kernel.
+        let all_resident = seed.shape() == chain.out_shape
+            && chain.operands.iter().all(|t| t.device() == seed.device() && t.device_resident_whole());
         if all_resident {
             if let Ok(out) = (|| {
                 let backend = backend_for(seed.device())?;
@@ -551,7 +437,8 @@ pub fn run_chain(chain: &ExecutableChain) -> Result<Tensor> {
     }
 
 /// Sequential per-op fallback for a resolved chain: same math as the fused
-/// kernel through ordinary raw kernels. Used when operands are not all
+/// kernel through ordinary raw kernels (which can remain device-resident).
+/// Used when operands are not all
 /// device-resident or the backend lacks `chain_dev`.
 pub fn run_chain_host(chain: &ExecutableChain) -> Result<Tensor> {
         let mut cur = chain.operands[0].clone();
@@ -578,102 +465,147 @@ pub fn run_chain_host(chain: &ExecutableChain) -> Result<Tensor> {
         Ok(cur)
 }
 
-/// A precompiled fused chain: resolve once from a tape, then replay without
+/// A precompiled inference DAG: resolve once from a tape, then replay without
 /// re-walking or re-planning. Compilation is separate from inference timing.
 ///
 /// Captures graph leaves, not computed intermediates, and reads their current
 /// storage on every replay. Storage identity is stable; values may change.
-/// Only recorded operations can be replayed: enable grad before building the
-/// expression. Detached/no-grad computations are opaque graph input values.
+/// Build with `capture(|| expression)` to record inference without gradients.
+/// Outside capture, detached/no-grad computations are opaque graph input values.
 pub struct CompiledChain {
-    exec: ExecutableChain,
+    leaves: HashMap<usize, Tensor>,
+    schedule: Vec<CompiledRun>,
+    root: usize,
+    steps: usize,
+}
+
+struct CompiledRun {
+    forward: Option<crate::autograd::ForwardOp>,
+    output: usize,
+    inputs: Vec<usize>,
+    steps: Vec<ChainStepRef>,
+    shape: Vec<usize>,
 }
 
 impl CompiledChain {
-    /// Compile a tagged left-to-right pointwise chain from its leaf seed.
-    /// All right operands must be graph leaves; repeated leaves are allowed.
-    /// Includes the first operation. Rejects computed side branches, untagged
-    /// operations and seed-expanding broadcasts rather than freezing values.
-    /// Right-leaf broadcasts that preserve the seed shape are supported.
+    /// Compile pointwise DAG runs and explicit matmul, bmm, layout, softmax,
+    /// sum_dim and LayerNorm forwards. Shared intermediates execute once.
+    /// Operations without forward metadata are rejected, never frozen.
     pub fn compile(root: &Tensor) -> Result<CompiledChain> {
         let g = Graph::from_root(root);
-        // Unlike FusedChain::resolve's seeded-intermediate contract, compiled
-        // replay starts at the actual leaf and includes every recorded op.
-        let mut ids = Vec::new();
-        let mut seed_id = root.id();
-        while !g.nodes[&seed_id].inputs.is_empty() {
-            ids.push(seed_id);
-            seed_id = g.nodes[&seed_id].inputs[0];
+        let consumers = g.consumer_counts();
+        let mut leaves = HashMap::new();
+        for (&id, node) in &g.nodes {
+            if node.inputs.is_empty() {
+                leaves.insert(id, g.tensors[&id].clone());
+            } else if node.tag.is_none() && g.tensors[&id].0.op.as_ref().and_then(|o| o.forward.as_ref()).is_none() {
+                return Err(Error::Unsupported {
+                    op: "compile_chain", msg: format!("node {id} has no replayable kernel tag"),
+                });
+            }
         }
-        if ids.is_empty() {
+        let steps = g.nodes.len() - leaves.len();
+        if steps == 0 {
             return Err(Error::Unsupported {
                 op: "compile_chain", msg: "root has no recorded operations".into(),
             });
         }
-        let mut operands = vec![g.tensors[&seed_id].clone()];
-        let mut slots = vec![seed_id];
-        let mut steps = Vec::new();
-        for id in ids.into_iter().rev() {
-            let node = &g.nodes[&id];
-            if node.shape != operands[0].shape() {
-                return Err(Error::Unsupported {
-                    op: "compile_chain", msg: "seed-expanding broadcast is not supported".into(),
-                });
+        let metadata = |values: &[usize]| -> Result<Vec<u32>> {
+            values.iter().map(|&v| u32::try_from(v).map_err(|_| Error::Unsupported {
+                op: "compile_chain", msg: "broadcast metadata exceeds the u32 kernel ABI".into(),
+            })).collect()
+        };
+        let mut used = HashSet::new();
+        let mut runs = HashMap::new();
+        for &tail in &g.order {
+            if leaves.contains_key(&tail) || used.contains(&tail) { continue; }
+            if let Some(forward) = g.tensors[&tail].0.op.as_ref().and_then(|o| o.forward.clone()) {
+                let node = &g.nodes[&tail];
+                runs.insert(tail, CompiledRun { forward: Some(forward), output: tail, inputs: node.inputs.clone(), steps: Vec::new(), shape: node.shape.clone() });
+                used.insert(tail);
+                continue;
             }
-            match node.tag {
-                Some(OpTag::Unary(kind)) => steps.push(ChainStepRef::Unary(kind)),
-                Some(OpTag::Binary(kind)) => {
-                    let other_id = node.inputs[1];
-                    if !g.nodes[&other_id].inputs.is_empty() {
-                        return Err(Error::Unsupported {
-                            op: "compile_chain",
-                            msg: "computed right operands (side branches) are not supported; detach explicitly to freeze a value".into(),
-                        });
-                    }
+            let mut ids = vec![tail];
+            let mut first = tail;
+            loop {
+                let pred = g.nodes[&first].inputs[0];
+                if leaves.contains_key(&pred) || g.nodes[&pred].tag.is_none() || consumers.get(&pred) != Some(&1)
+                    || g.nodes[&pred].shape != g.nodes[&first].shape
+                    || g.nodes[&pred].inputs.first().is_some_and(|i| g.nodes[i].shape != g.nodes[&pred].shape) {
+                    break;
+                }
+                ids.push(pred);
+                first = pred;
+            }
+            ids.reverse();
+            let seed = g.nodes[&first].inputs[0];
 
-                    let other = match slots.iter().position(|&s| s == other_id) {
-                        Some(i) => i,
-                        None => {
-                            slots.push(other_id);
-                            operands.push(g.tensors[&other_id].clone());
-                            slots.len() - 1
+            let mut inputs = vec![seed];
+            let mut run_steps = Vec::new();
+            for id in ids {
+                used.insert(id);
+                let node = &g.nodes[&id];
+                match node.tag.unwrap() {
+                    OpTag::Unary(kind) => run_steps.push(ChainStepRef::Unary(kind)),
+                    OpTag::Binary(kind) => {
+                        let rhs = node.inputs[1];
+                        let other = match inputs.iter().position(|&i| i == rhs) {
+                            Some(i) => i,
+                            None => { inputs.push(rhs); inputs.len() - 1 }
+                        };
+                        if g.nodes[&rhs].shape == node.shape {
+                            run_steps.push(ChainStepRef::Binary { kind, other });
+                        } else {
+                            run_steps.push(ChainStepRef::BinaryBc {
+                                kind, other,
+                                dims: metadata(&node.shape)?,
+                                strides: metadata(&padded_strides(&g.nodes[&rhs].shape, &node.shape))?,
+                            });
                         }
-                    };
-                    if operands[other].shape() == operands[0].shape() {
-                        steps.push(ChainStepRef::Binary { kind, other });
-                    } else {
-                        steps.push(ChainStepRef::BinaryBc {
-                            kind, other,
-                            dims: node.shape.iter().map(|&d| d as u32).collect(),
-                            strides: padded_strides(operands[other].shape(), &node.shape)
-                                .iter().map(|&d| d as u32).collect(),
-                        });
                     }
                 }
-                None => return Err(Error::Unsupported {
-                    op: "compile_chain", msg: "untagged operations cannot be replayed".into(),
-                }),
             }
+            runs.insert(tail, CompiledRun {
+                forward: None, output: tail, inputs, steps: run_steps, shape: g.nodes[&tail].shape.clone(),
+            });
         }
-        Ok(CompiledChain { exec: ExecutableChain {
-            steps, operands, out_shape: root.shape().to_vec(),
-        } })
+        // A run executes at its tail, after every external dependency's tail.
+        let schedule = g.order.iter().rev().filter_map(|id| runs.remove(id)).collect();
+        Ok(CompiledChain { leaves, schedule, root: root.id(), steps })
     }
 
-    /// Replay the fused chain: one backend `chain_dev` launch when resident.
+    /// Replay from current leaves without walking the tape or freezing branches.
+    /// Each shape-preserving run attempts one resident backend chain launch.
+    /// Expanding nodes use ordinary broadcast dispatch, not a fused launch.
     pub fn replay(&self) -> Result<Tensor> {
-        run_chain(&self.exec)
+        crate::capture::without_recording(|| self.replay_inner())
     }
 
-    /// Number of operands (seed + distinct second operands) captured.
-    pub fn num_operands(&self) -> usize {
-        self.exec.operands.len()
+    fn replay_inner(&self) -> Result<Tensor> {
+        let mut values = self.leaves.clone();
+        for run in &self.schedule {
+            let operands: Vec<Tensor> = run.inputs.iter().map(|id| values[id].clone()).collect();
+            let out = if let Some(forward) = &run.forward {
+                let detached: Vec<_> = operands.iter().map(Tensor::detached_view).collect();
+                forward.run(&detached)?
+            } else {
+                run_chain(&ExecutableChain {
+                    steps: run.steps.clone(), operands, out_shape: run.shape.clone(),
+                })?
+            };
+            values.insert(run.output, out);
+        }
+        Ok(values[&self.root].clone())
     }
 
-    /// Number of recorded operations, including the first operation.
-    pub fn num_steps(&self) -> usize {
-        self.exec.steps.len()
-    }
+    /// Number of distinct captured graph leaves.
+    pub fn num_operands(&self) -> usize { self.leaves.len() }
+
+    /// Number of recorded operations, counting shared nodes once.
+    pub fn num_steps(&self) -> usize { self.steps }
+
+    /// Number of scheduled runs (backend fallback may issue more launches).
+    pub fn num_runs(&self) -> usize { self.schedule.len() }
 }
 
 #[doc(hidden)]

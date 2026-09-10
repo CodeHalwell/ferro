@@ -21,7 +21,7 @@ impl Tensor {
             });
         }
         if let Some(out) = raw_row_softmax(self, dim, true) {
-            if !self.requires_grad() {
+            if !self.requires_grad() && !crate::capture::is_recording() {
                 return Ok(out);
             }
             let y = out.detach_copy();
@@ -57,7 +57,7 @@ impl Tensor {
             }
         }
 
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Tensor::from_vec(y, &shape);
         }
         // Save softmax = exp(log_softmax output) for the backward; from_vec

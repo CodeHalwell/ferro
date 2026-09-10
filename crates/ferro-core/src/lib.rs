@@ -4,6 +4,7 @@
 
 pub mod amp;
 pub mod autograd;
+pub mod capture;
 pub mod checkpoint;
 pub mod data;
 pub mod ddp;
@@ -32,6 +33,7 @@ pub mod shape;
 pub mod tensor;
 pub mod testkit;
 
+pub use capture::capture;
 pub use device::Device;
 pub use dispatch::{
     register_backend, Backend, BinaryKind, ChainStepRef, CpuBackend, OpTag, UnaryKind,

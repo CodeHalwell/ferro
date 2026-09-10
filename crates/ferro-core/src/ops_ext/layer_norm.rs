@@ -8,7 +8,21 @@
 
 use crate::error::{Error, Result};
 use crate::reduce::pairwise_sum_strided;
-use crate::tensor::Tensor;
+use crate::tensor::{device_leaf, Storage, Tensor};
+
+// Unlike sum_dim's infallible raw seam, propagate a declined device kernel.
+fn resident_sum(t: &Tensor, dim: usize) -> Result<Tensor> {
+    let shape = t.shape().to_vec();
+    let mut keep = shape.clone();
+    keep[dim] = 1;
+    let backend = crate::dispatch::backend_for(t.device())?;
+    let storage = t.0.storage.read();
+    let Storage::Device(buf) = &*storage else { unreachable!() };
+    let out = device_leaf(backend.sum_dim_dev(buf.as_ref(), &shape, dim)?, &keep, t.device());
+    Ok(out.record_fn_forward(vec![t.clone()], crate::autograd::ForwardOp::SumDim(dim, true), move |g| {
+        vec![g.reshape(&keep).unwrap().broadcast_to(&shape).unwrap().detach_copy()]
+    }))
+}
 
 impl Tensor {
     pub fn layer_norm(
@@ -27,6 +41,33 @@ impl Tensor {
         }
         let shape = self.shape().to_vec();
         let d = shape[ndim - 1];
+        if d == 0 { return Err(Error::InvalidShape { op, msg: "last dimension must be nonempty".into() }); }
+        if self.device_resident_whole() {
+            for t in [weight, bias].into_iter().flatten() {
+                if t.shape() != [d] { return Err(Error::ShapeMismatch { op, lhs: vec![d], rhs: t.shape().to_vec() }); }
+                if t.device() != self.device() { return Err(Error::DeviceMismatch { op, lhs: self.device(), rhs: t.device() }); }
+            }
+            // Attempt only fallible kernels; a partial backend must take the
+            // whole host fallback, not panic or freeze a captured intermediate.
+            let resident = (|| -> Result<Tensor> {
+                let scale = Tensor::full_on(&[], 1.0 / d as f32, self.device())?;
+                let epsilon = Tensor::full_on(&[], eps, self.device())?;
+                let mean = resident_sum(self, ndim - 1)?.mul(&scale)?;
+                let centered = self.sub(&mean)?;
+                let variance = resident_sum(&centered.mul(&centered)?, ndim - 1)?.mul(&scale)?;
+                let v = variance.add(&epsilon)?;
+                let std = crate::tensor::raw_unary_k(&v, crate::dispatch::UnaryKind::Sqrt)?;
+                let saved = std.detach_copy();
+                let std = std.record_fn_tagged(vec![v], crate::OpTag::Unary(crate::dispatch::UnaryKind::Sqrt), move |g| {
+                    vec![crate::tensor::raw_binary("sqrt_bw", g, &saved, |gg, yy| gg * 0.5 / yy).unwrap()]
+                });
+                let mut out = centered.div(&std)?;
+                if let Some(w) = weight { out = out.mul(w)?; }
+                if let Some(b) = bias { out = out.add(b)?; }
+                Ok(out)
+            })();
+            if let Ok(out) = resident { return Ok(out); }
+        }
         let rows = self.numel() / d;
         let x = self.to_vec();
         let w = weight.map(|t| t.to_vec());
@@ -70,17 +111,18 @@ impl Tensor {
         let needs_grad = self.requires_grad()
             || weight.map_or(false, |t| t.requires_grad())
             || bias.map_or(false, |t| t.requires_grad());
-        if !needs_grad {
+        if !needs_grad && !crate::capture::is_recording() {
             return Ok(out);
         }
 
         let none = Tensor::zeros(&[0]);
-        Ok(out.record_fn(
+        Ok(out.record_fn_forward(
             vec![
                 self.clone(),
                 weight.cloned().unwrap_or_else(|| none.clone()),
                 bias.cloned().unwrap_or(none),
             ],
+            crate::autograd::ForwardOp::LayerNorm { weight: weight.is_some(), bias: bias.is_some(), eps },
             move |g| {
                 let gd = g.to_vec();
                 let mut dx = vec![0.0f32; gd.len()];

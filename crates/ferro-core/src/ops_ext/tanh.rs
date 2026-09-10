@@ -8,10 +8,12 @@ impl Tensor {
     pub fn tanh(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Tanh).expect("cpu backend is always registered");
         if !self.requires_grad() {
-            return out;
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Tanh), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let y = out.detach_copy();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Tanh), move |g| {
             vec![raw_binary("tanh_bw", g, &y, |gg, yy| gg * (1.0 - yy * yy)).unwrap()]
         })
     }

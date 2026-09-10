@@ -4,6 +4,27 @@ use crate::dispatch::OpTag;
 use crate::dtype::DType;
 use crate::tensor::Tensor;
 
+/// Forward executors use current operands, never autograd backward closures.
+#[derive(Clone, Debug)]
+pub(crate) enum ForwardOp {
+    MatMul, Bmm, Reshape(Vec<usize>), Transpose(usize, usize),
+    Softmax(usize), SumDim(usize, bool), LayerNorm { weight: bool, bias: bool, eps: f32 },
+}
+
+impl ForwardOp {
+    pub(crate) fn run(&self, inputs: &[Tensor]) -> crate::Result<Tensor> {
+        match self {
+            Self::MatMul => inputs[0].matmul(&inputs[1]),
+            Self::Bmm => inputs[0].bmm(&inputs[1]),
+            Self::Reshape(shape) => inputs[0].reshape(shape),
+            Self::Transpose(a, b) => inputs[0].transpose(*a, *b),
+            Self::Softmax(dim) => inputs[0].softmax(*dim),
+            Self::SumDim(dim, keep) => inputs[0].sum_dim(*dim, *keep),
+            Self::LayerNorm { weight, bias, eps } => inputs[0].layer_norm(weight.then_some(&inputs[1]), bias.then_some(&inputs[2]), *eps),
+        }
+    }
+}
+
 /// The graph node behind every autograd-recorded tensor: the op's inputs plus a
 /// vector-Jacobian-product closure returning one gradient per input, in order.
 /// Ops that need their own output for backward (exp, sigmoid, softmax) capture
@@ -18,12 +39,13 @@ use crate::tensor::Tensor;
 /// between forward and backward into a loud error instead of a silently wrong
 /// gradient.
 pub(crate) struct Op {
+    pub(crate) forward: Option<ForwardOp>,
     inputs: Vec<Tensor>,
     saved_versions: Vec<u64>,
     /// Which named kernel this op ran (kind-routed ops only); None for
     /// composite ops. Read by the graph compiler to plan fused execution.
     pub(crate) tag: Option<OpTag>,
-    backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
+    backward: Option<Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>>,
 }
 
 impl Op {
@@ -35,8 +57,9 @@ impl Op {
         Op {
             inputs,
             saved_versions,
+            forward: None,
             tag: None,
-            backward,
+            backward: Some(backward),
         }
     }
 
@@ -50,9 +73,14 @@ impl Op {
         Op {
             inputs,
             saved_versions,
+            forward: None,
             tag: Some(tag),
-            backward,
+            backward: Some(backward),
         }
+    }
+
+    pub(crate) fn inference(inputs: Vec<Tensor>, tag: Option<OpTag>) -> Op {
+        Op { inputs, saved_versions: Vec::new(), tag, forward: None, backward: None }
     }
 
     pub(crate) fn inputs(&self) -> &[Tensor] {
@@ -64,7 +92,7 @@ impl Op {
     }
 
     pub(crate) fn backward(&self, g: &Tensor) -> Vec<Tensor> {
-        (self.backward)(g)
+        (self.backward.as_ref().expect("inference-only node has no backward"))(g)
     }
 
     /// Consume the op, yielding its input tensors. Used by TensorInner's
@@ -151,6 +179,7 @@ impl Tensor {
         self.accumulate_grad(cotangent.detach_copy());
         for t in topo.iter().rev() {
             let Some(op) = &t.0.op else { continue };
+            if op.backward.is_none() { continue; }
             let g = t
                 .grad()
                 .expect("every op node on the path receives a gradient");

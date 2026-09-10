@@ -51,10 +51,9 @@ struct PyTensor {
     inner: CoreTensor,
 }
 
-/// A precompiled fused pointwise chain (see `Tensor.compile_fused`). Holds a
-/// resolved fusion plan; `replay()` re-runs the single fused kernel with no
-/// tape walk or re-planning, so the fused-kernel throughput win is not eaten
-/// by per-call host overhead.
+/// A precompiled pointwise graph (see `Tensor.compile_fused`). The historical
+/// FusedChain name is retained; graphs may contain branches and shared nodes.
+/// Replay executes the compiled schedule without a tape walk or re-planning.
 #[pyclass(name = "FusedChain")]
 struct PyCompiledChain {
     inner: ferro_core::graph::CompiledChain,
@@ -62,19 +61,25 @@ struct PyCompiledChain {
 
 #[pymethods]
 impl PyCompiledChain {
-    /// Re-run the fused chain: one backend `chain_dev` launch when the
-    /// operands are device-resident. Returns a new detached tensor.
+    /// Re-run the scheduled graph from current leaf values. Shape-preserving
+    /// runs attempt fused backend launches. Returns a new detached tensor.
     fn replay(&self) -> PyResult<PyTensor> {
         self.inner.replay().map(PyTensor::wrap).map_err(map_err)
     }
 
-    /// Number of operands captured (seed + distinct second operands).
+    /// Number of distinct graph leaves retained by the compiled handle.
     #[getter]
     fn num_operands(&self) -> usize {
         self.inner.num_operands()
     }
 
-    /// Number of fused operations, including the first operation.
+    /// Number of scheduled runs; backend fallback may issue more launches.
+    #[getter]
+    fn num_runs(&self) -> usize {
+        self.inner.num_runs()
+    }
+
+    /// Number of recorded operations, counting shared nodes once.
     #[getter]
     fn num_steps(&self) -> usize {
         self.inner.num_steps()
@@ -440,16 +445,18 @@ impl PyTensor {
         (p.launches_before, p.launches_after)
     }
 
-    /// Compile the pointwise expression that produced this tensor into a
+    /// Compile the supported inference DAG that produced this tensor into a
     /// reusable fused handle, resolved once here. `FusedChain.replay()` runs
-    /// the fused kernel without a tape walk or re-planning. Benchmark
+    /// the compiled schedule without a tape walk or re-planning. Benchmark
     /// compilation separately from replay; replay outputs are detached.
     ///
     /// Replay includes every recorded operation over current graph-leaf values.
-    /// Enable requires_grad before building the expression; detached/no-grad
-    /// computations are opaque input values, not replayable upstream graphs.
-    /// Only left-to-right tagged chains with leaf right operands are supported.
-    /// Computed side branches and seed-expanding broadcasts raise ValueError.
+    /// Build with `ferro.capture(lambda: expression)`; gradients are not needed.
+    /// Outside capture, detached/no-grad computations are opaque input values.
+    /// Tagged pointwise branches, shared nodes and broadcasts are supported.
+    /// Matmul, bmm, reshape, transpose, softmax, sum_dim and LayerNorm have
+    /// forward replay metadata; other untagged operations raise ValueError.
+    /// FusedChain.num_runs reports scheduled runs, not kernel launches.
     fn compile_fused(&self) -> PyResult<PyCompiledChain> {
         ferro_core::graph::CompiledChain::compile(&self.inner)
             .map(|c| PyCompiledChain { inner: c })
@@ -579,6 +586,15 @@ impl PyTensor {
         self.inner.unsqueeze(d as usize).map(PyTensor::wrap).map_err(map_err)
     }
 
+    fn reshape(&self, shape: Vec<usize>) -> PyResult<PyTensor> {
+        self.inner.reshape(&shape).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    #[pyo3(signature = (weight=None, bias=None, eps=1e-5))]
+    fn layer_norm(&self, weight: Option<&PyTensor>, bias: Option<&PyTensor>, eps: f32) -> PyResult<PyTensor> {
+        self.inner.layer_norm(weight.map(|t| &t.inner), bias.map(|t| &t.inner), eps).map(PyTensor::wrap).map_err(map_err)
+    }
+
     fn transpose(&self, d0: isize, d1: isize) -> PyResult<PyTensor> {
         let ndim = self.inner.ndim();
         self.inner.transpose(norm_dim(d0, ndim)?, norm_dim(d1, ndim)?)
@@ -679,6 +695,15 @@ impl PyTensor {
         }
         self.inner.backward();
         Ok(())
+    }
+
+    /// Copy values into this tensor's existing storage and return self.
+    /// Shape must match. Uses core's checked in-place API: whole-contiguous f32
+    /// destinations only, no autograd history or shared device snapshots.
+    /// Captured leaf handles observe the new values on their next replay.
+    fn copy_<'py>(slf: PyRef<'py, Self>, src: &PyTensor) -> PyResult<PyRef<'py, Self>> {
+        slf.inner.copy_from(&src.inner).map_err(map_err)?;
+        Ok(slf)
     }
 
     fn zero_grad(&self) {
@@ -809,11 +834,26 @@ fn cuda_synchronize() -> PyResult<()> {
     ferro_cuda::device_synchronize().map_err(PyValueError::new_err)
 }
 
+/// Execute a zero-argument callable eagerly while recording op inputs and tags.
+/// Returns its Tensor result without enabling requires_grad. Use
+/// `ferro.capture(lambda: (x.relu() * w + b)).compile_fused()` then `replay()`.
+/// Recording is thread-local, nestable, and restored even if the callable raises.
+/// This is synchronous (not an async context); spawned threads do not inherit it.
+/// Inputs are retained by the recorded graph; existing autograd behavior is
+/// preserved. Capture-only nodes do not retain backward closures. Compilation
+/// rejects unsupported graphs; replay returns detached outputs from current
+/// leaf storage values. Python variable rebinding does not replace those leaves.
+#[pyfunction]
+fn capture(build: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
+    ferro_core::capture(|| build.call0()?.extract::<PyTensor>())
+}
+
 #[pymodule]
 fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
     ferro_fastcpu::install();
     m.add_class::<PyTensor>()?;
+    m.add_function(wrap_pyfunction!(capture, m)?)?;
     m.add_class::<PyCompiledChain>()?;
     m.add_class::<Generator>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;

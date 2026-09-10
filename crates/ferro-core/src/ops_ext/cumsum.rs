@@ -33,7 +33,7 @@ impl Tensor {
             }
         }
         let out = Tensor::from_vec(y, &shape)?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Ok(out);
         }
         Ok(out.record_fn(vec![self.clone()], move |g| {

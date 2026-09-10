@@ -39,7 +39,7 @@ fn masked_tri(t: &Tensor, diagonal: i64, upper: bool) -> Result<Tensor> {
         .map(|(k, &v)| if keep(k / c, k % c) { v } else { 0.0 })
         .collect();
     let out = Tensor::from_vec(y, &shape)?;
-    if !t.requires_grad() {
+    if !t.requires_grad() && !crate::capture::is_recording() {
         return Ok(out);
     }
     Ok(out.record_fn(vec![t.clone()], move |g| {

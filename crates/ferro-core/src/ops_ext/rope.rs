@@ -135,7 +135,7 @@ impl Tensor {
         // RoPE is host-composed; return to the input's device so chained
         // device-resident ops (attention, matmul) stay on-device.
         let out = Tensor::from_vec(y, &shape)?.to_device(self.device())?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::capture::is_recording() {
             return Ok(out);
         }
         Ok(out.record_fn(vec![self.clone()], move |g| {

@@ -125,7 +125,7 @@ impl Tensor {
         } else {
             Tensor::from_vec(y, &in_shape)?.to_device(self.device())?
         };
-        if !self.requires_grad() && !src.requires_grad() {
+        if !self.requires_grad() && !src.requires_grad() && !crate::capture::is_recording() {
             return Ok(out);
         }
 

@@ -42,13 +42,11 @@ def check(device):
     for expr in (x * y + z, x * x - x, x.relu() * y + z):
         close(expr.compile_fused().replay(), expr)
     assert (x * x - x).compile_fused().num_operands == 1
-    reject(y.relu() * x + z, "seed-expanding")
-    reject(x.relu() * y.relu() + z, "side branches")
-    reject(x - x.relu(), "side branches")
-    reject(x / x.relu(), "side branches")
     u = x.relu()
-    reject(u * u, "side branches")
-    reject(x.sum().relu(), "not supported")
+    for expr in (y.relu() * x + z, x.relu() * y.relu() + z,
+                 x - x.relu(), x / (x.relu() + z), u * u):
+        close(expr.compile_fused().replay(), expr)
+    reject(x.sum().relu(), "no replayable kernel tag")
     reject(x, "no recorded operations")
 
     if device != "cpu":
