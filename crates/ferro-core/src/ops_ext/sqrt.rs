@@ -7,8 +7,10 @@ use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 impl Tensor {
     pub fn sqrt(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::Sqrt).expect("cpu backend is always registered");
-        if !self.requires_grad() && !crate::capture::is_recording() {
-            return out;
+        if !self.requires_grad() {
+            return if crate::capture::is_recording() {
+                out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Sqrt), |_| unreachable!("inference node has no backward"))
+            } else { out };
         }
         let y = out.detach_copy();
         out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Sqrt), move |g| {

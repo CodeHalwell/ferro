@@ -6,7 +6,15 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-PY = str(ROOT / 'crates/ferro-py/.venv/Scripts/python.exe') if os.name == 'nt' else sys.executable
+
+
+def select_python(root, platform, fallback):
+    relative = 'Scripts/python.exe' if platform == 'nt' else 'bin/python'
+    candidate = root / 'crates/ferro-py/.venv' / relative
+    return str(candidate) if candidate.is_file() else fallback
+
+
+PY = select_python(ROOT, os.name, sys.executable)
 COMMANDS = [
     ('core', ['cargo', 'test', '-j2', '-p', 'ferro-core']),
     ('cpu-tokenizer', ['cargo', 'test', '-j2', '-p', 'ferro-fastcpu', '-p', 'ferro-tokenizer']),
