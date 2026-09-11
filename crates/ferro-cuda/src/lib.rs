@@ -298,6 +298,7 @@ pub struct CudaBackend {
     funcs: Mutex<HashMap<String, CudaFunction>>,
     pointwise_launches: [AtomicUsize; 3],
     layout_counters: [AtomicUsize; 3],
+    layer_norm_counters: [AtomicUsize; 3],
     // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
     // carries a clone and returns its slice here on drop.
     alloc: crate::alloc::CachingAllocator,
@@ -359,6 +360,7 @@ impl CudaBackend {
             funcs: Mutex::new(HashMap::new()),
             pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
             layout_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
+            layer_norm_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             alloc,
         })
     }
@@ -446,6 +448,14 @@ impl CudaBackend {
     /// Kernel parameter metadata is not an index-buffer upload.
     pub fn layout_counts(&self) -> (usize, usize, usize) {
         let c = &self.layout_counters;
+        (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
+    }
+
+    /// Successful LayerNorm enqueues, f32 host uploads, f32 host downloads.
+    /// Capture counts enqueues, not later CUDA graph executions. Copies via
+    /// external DLPack or in-place copy_into are outside these helper counters.
+    pub fn layer_norm_counts(&self) -> (usize, usize, usize) {
+        let c = &self.layer_norm_counters;
         (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
     }
 
@@ -579,11 +589,14 @@ impl CudaBackend {
         self.stream
             .memcpy_htod(data, &mut slice)
             .map_err(|e| cuda_err(op, e))?;
+        self.layer_norm_counters[1].fetch_add(1, Ordering::Relaxed);
         Ok(slice)
     }
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
-        self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
+        let out = self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))?;
+        self.layer_norm_counters[2].fetch_add(1, Ordering::Relaxed);
+        Ok(out)
     }
 
     /// Block until all work on this backend's stream retires. Pure stream
@@ -1320,6 +1333,62 @@ impl Backend for CudaBackend {
             unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
                 .map_err(|e| cuda_err(OP, e))?;
         }
+        Ok(self.wrap(out))
+    }
+
+    fn layer_norm_dev(&self, x: &dyn DeviceBuffer, weight: Option<&dyn DeviceBuffer>,
+        bias: Option<&dyn DeviceBuffer>, rows: usize, cols: usize, eps: f32,
+    ) -> Result<(Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>)> {
+        const OP: &str = "layer_norm_dev";
+        let invalid = || Error::InvalidShape { op: OP, msg: "invalid row or affine buffer dimensions".into() };
+        let n = rows.checked_mul(cols).ok_or_else(invalid)?;
+        if cols == 0 || x.len() != n || weight.is_some_and(|w| w.len() != cols) || bias.is_some_and(|b| b.len() != cols) { return Err(invalid()); }
+        as_u32(OP, n)?;
+        let rows_arg = as_u32(OP, rows)?;
+        let cols_arg = as_u32(OP, cols)?;
+        let x = self.resident(OP, x)?;
+        let w = weight.map(|w| self.resident(OP, w)).transpose()?.unwrap_or(x);
+        let b = bias.map(|b| self.resident(OP, b)).transpose()?.unwrap_or(x);
+        let mut out = unsafe { self.alloc_uninit(OP, n)? };
+        let mut h = unsafe { self.alloc_uninit(OP, n)? };
+        let mut stds = unsafe { self.alloc_uninit(OP, rows)? };
+        if rows != 0 {
+            let f = self.get_kernel(OP, include_str!("layer_norm.cu"))?;
+            let has_w = weight.is_some() as u32;
+            let has_b = bias.is_some() as u32;
+            let mut launch = self.stream.launch_builder(&f);
+            launch.arg(&*x.data).arg(&*w.data).arg(&*b.data).arg(&mut out).arg(&mut h).arg(&mut stds)
+                .arg(&cols_arg).arg(&eps).arg(&has_w).arg(&has_b);
+            unsafe { launch.launch(LaunchConfig { grid_dim: (rows_arg, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 }) }.map_err(|e| cuda_err(OP, e))?;
+        }
+        if rows != 0 { self.layer_norm_counters[0].fetch_add(1, Ordering::Relaxed); }
+        Ok((self.wrap(out), self.wrap(h), self.wrap(stds)))
+    }
+
+    fn layer_norm_output_dev(&self, x: &dyn DeviceBuffer, weight: Option<&dyn DeviceBuffer>,
+        bias: Option<&dyn DeviceBuffer>, rows: usize, cols: usize, eps: f32,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        const OP: &str = "layer_norm_output_dev";
+        let invalid = || Error::InvalidShape { op: OP, msg: "invalid row or affine buffer dimensions".into() };
+        let n = rows.checked_mul(cols).ok_or_else(invalid)?;
+        if cols == 0 || x.len() != n || weight.is_some_and(|w| w.len() != cols) || bias.is_some_and(|b| b.len() != cols) { return Err(invalid()); }
+        as_u32(OP, n)?;
+        let rows_arg = as_u32(OP, rows)?;
+        let cols_arg = as_u32(OP, cols)?;
+        let x = self.resident(OP, x)?;
+        let w = weight.map(|w| self.resident(OP, w)).transpose()?.unwrap_or(x);
+        let b = bias.map(|b| self.resident(OP, b)).transpose()?.unwrap_or(x);
+        let mut out = unsafe { self.alloc_uninit(OP, n)? };
+        if rows != 0 {
+            let f = self.get_kernel(OP, concat!("#define OUTPUT_ONLY\n", include_str!("layer_norm.cu")))?;
+            let has_w = weight.is_some() as u32;
+            let has_b = bias.is_some() as u32;
+            let mut launch = self.stream.launch_builder(&f);
+            launch.arg(&*x.data).arg(&*w.data).arg(&*b.data).arg(&mut out)
+                .arg(&cols_arg).arg(&eps).arg(&has_w).arg(&has_b);
+            unsafe { launch.launch(LaunchConfig { grid_dim: (rows_arg, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 }) }.map_err(|e| cuda_err(OP, e))?;
+        }
+        if rows != 0 { self.layer_norm_counters[0].fetch_add(1, Ordering::Relaxed); }
         Ok(self.wrap(out))
     }
 

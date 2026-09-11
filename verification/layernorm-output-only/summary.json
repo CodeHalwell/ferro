@@ -1,0 +1,74 @@
+{
+  "comparison_kind": "historical, not same-session causal A/B",
+  "full_model_median_us": {
+    "ferro_eager": {
+      "historical1": 284.65,
+      "historical2": 280.3,
+      "output_only1": 280.6,
+      "output_only2": 484.65,
+      "historical_paired_reduction_percent": [
+        1.422799929738261,
+        -72.90403139493398
+      ]
+    },
+    "ferro_compiled": {
+      "historical1": 267.75,
+      "historical2": 269.75,
+      "output_only1": 267.4,
+      "output_only2": 270.5,
+      "historical_paired_reduction_percent": [
+        0.13071895424837665,
+        -0.2780352177942591
+      ]
+    },
+    "torch_eager": {
+      "historical1": 282.95000000000005,
+      "historical2": 262.35,
+      "output_only1": 267.25,
+      "output_only2": 506.8,
+      "historical_paired_reduction_percent": [
+        5.548683512988173,
+        -93.17705355441204
+      ]
+    }
+  },
+  "test_totals": {
+    "core": {
+      "passed": 630,
+      "failed": 0,
+      "ignored": 2
+    },
+    "cuda": {
+      "passed": 59,
+      "failed": 0,
+      "ignored": 0
+    },
+    "capture-layout-gpu": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "profile_statuses": {
+    "historical1": {
+      "passed": 45,
+      "blocked": 1,
+      "failed": 0
+    },
+    "historical2": {
+      "passed": 45,
+      "blocked": 1,
+      "failed": 0
+    },
+    "output_only1": {
+      "passed": 45,
+      "blocked": 1,
+      "failed": 0
+    },
+    "output_only2": {
+      "passed": 45,
+      "blocked": 1,
+      "failed": 0
+    }
+  }
+}

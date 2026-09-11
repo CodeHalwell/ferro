@@ -113,8 +113,12 @@ def prepare_ferro_compiled(case, ferro):
     path = prepare_ferro_eager(case, ferro)
     root = ferro.capture(path["run"])
     graph = root.compile_fused()
-    minimum = {"mlp": 5, "residual_mlp": 6, "transformer": 35}[case["name"]]
-    assert graph.num_steps >= minimum, "model work omitted from replay"
+    # Two fused LayerNorm nodes replace two eleven-operation decompositions.
+    # Exact topology plus mutation parity protects against omitted model work.
+    expected_steps = {"mlp": 5, "residual_mlp": 6, "transformer": 34}[case["name"]]
+    assert graph.num_steps == expected_steps, "unexpected full-model replay topology"
+    if case["name"] == "transformer":
+        assert graph.num_operands == 18, "expected current input, weights, and attention scale"
     path["run"] = graph.replay
     path["structure"] = dict(operations=graph.num_steps, leaves=graph.num_operands, runs=graph.num_runs)
     return path
