@@ -1,0 +1,480 @@
+{
+  "runs": {
+    "baseline1": [
+      {
+        "scope": "full_model",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 0.0,
+          "changed_input": 0.0,
+          "restored_input": 0.0,
+          "changed_weight": 0.0,
+          "restored_weight": 0.0
+        },
+        "median_us": 270.75
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 1.430511474609375e-06,
+          "changed_input": 1.430511474609375e-06,
+          "restored_input": 1.430511474609375e-06,
+          "changed_weight": 1.1920928955078125e-06,
+          "restored_weight": 1.430511474609375e-06
+        },
+        "median_us": 437.3
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 54,
+          "leaves": 22,
+          "runs": 44
+        },
+        "max_abs_errors": {
+          "original": 1.1920928955078125e-06,
+          "changed_input": 1.1920928955078125e-06,
+          "restored_input": 1.1920928955078125e-06,
+          "changed_weight": 1.0728836059570312e-06,
+          "restored_weight": 1.1920928955078125e-06
+        },
+        "median_us": 364.5
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_compile",
+        "status": "blocked",
+        "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n"
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 22.25
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 90.25
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 11,
+          "runs": 7
+        },
+        "median_us": 73.75
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 19.9
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 90.0
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 11,
+          "runs": 7
+        },
+        "median_us": 73.8
+      }
+    ],
+    "baseline2": [
+      {
+        "scope": "full_model",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 54,
+          "leaves": 22,
+          "runs": 44
+        },
+        "max_abs_errors": {
+          "original": 1.1920928955078125e-06,
+          "changed_input": 1.1920928955078125e-06,
+          "restored_input": 1.1920928955078125e-06,
+          "changed_weight": 1.0728836059570312e-06,
+          "restored_weight": 1.1920928955078125e-06
+        },
+        "median_us": 357.85
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 1.430511474609375e-06,
+          "changed_input": 1.430511474609375e-06,
+          "restored_input": 1.430511474609375e-06,
+          "changed_weight": 1.1920928955078125e-06,
+          "restored_weight": 1.430511474609375e-06
+        },
+        "median_us": 417.95
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 0.0,
+          "changed_input": 0.0,
+          "restored_input": 0.0,
+          "changed_weight": 0.0,
+          "restored_weight": 0.0
+        },
+        "median_us": 275.1
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_compile",
+        "status": "blocked",
+        "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n"
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 11,
+          "runs": 7
+        },
+        "median_us": 112.4
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 154.0
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 20.3
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 11,
+          "runs": 7
+        },
+        "median_us": 73.75
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 89.5
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 22.35
+      }
+    ],
+    "post1": [
+      {
+        "scope": "full_model",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 0.0,
+          "changed_input": 0.0,
+          "restored_input": 0.0,
+          "changed_weight": 0.0,
+          "restored_weight": 0.0
+        },
+        "median_us": 282.95000000000005
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 8.344650268554688e-07,
+          "changed_input": 9.5367431640625e-07,
+          "restored_input": 8.344650268554688e-07,
+          "changed_weight": 9.5367431640625e-07,
+          "restored_weight": 8.344650268554688e-07
+        },
+        "median_us": 284.65
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 34,
+          "leaves": 18,
+          "runs": 32
+        },
+        "max_abs_errors": {
+          "original": 8.344650268554688e-07,
+          "changed_input": 9.5367431640625e-07,
+          "restored_input": 8.344650268554688e-07,
+          "changed_weight": 9.5367431640625e-07,
+          "restored_weight": 8.344650268554688e-07
+        },
+        "median_us": 267.75
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_compile",
+        "status": "blocked",
+        "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n"
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 19.5
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 20.0
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 1,
+          "runs": 1
+        },
+        "median_us": 20.0
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 19.6
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 20.0
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 1,
+          "runs": 1
+        },
+        "median_us": 19.9
+      }
+    ],
+    "post2": [
+      {
+        "scope": "full_model",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 34,
+          "leaves": 18,
+          "runs": 32
+        },
+        "max_abs_errors": {
+          "original": 8.344650268554688e-07,
+          "changed_input": 9.5367431640625e-07,
+          "restored_input": 8.344650268554688e-07,
+          "changed_weight": 9.5367431640625e-07,
+          "restored_weight": 8.344650268554688e-07
+        },
+        "median_us": 269.75
+      },
+      {
+        "scope": "full_model",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 8.344650268554688e-07,
+          "changed_input": 9.5367431640625e-07,
+          "restored_input": 8.344650268554688e-07,
+          "changed_weight": 9.5367431640625e-07,
+          "restored_weight": 8.344650268554688e-07
+        },
+        "median_us": 280.3
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "max_abs_errors": {
+          "original": 0.0,
+          "changed_input": 0.0,
+          "restored_input": 0.0,
+          "changed_weight": 0.0,
+          "restored_weight": 0.0
+        },
+        "median_us": 262.35
+      },
+      {
+        "scope": "full_model",
+        "backend": "torch_compile",
+        "status": "blocked",
+        "error": "backend='inductor' raised:\nRuntimeError: Cannot find a working triton installation. Either the package is not installed or it is too old. More information on installing Triton can be found at https://github.com/openai/triton\n\nSet TORCH_LOGS=\"+dynamo\" and TORCHDYNAMO_VERBOSE=1 for more information\n\n\nYou can suppress this exception and fall back to eager by setting:\n    import torch._dynamo\n    torch._dynamo.config.suppress_errors = True\n"
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 1,
+          "runs": 1
+        },
+        "median_us": 28.5
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 20.3
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln1",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 20.1
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_compiled",
+        "status": "passed",
+        "structure": {
+          "operations": 1,
+          "runs": 1
+        },
+        "median_us": 34.95
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "ferro_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 32.2
+      },
+      {
+        "scope": "isolated_component",
+        "component": "ln2",
+        "backend": "torch_eager",
+        "status": "passed",
+        "structure": null,
+        "median_us": 41.2
+      }
+    ]
+  },
+  "full_model_comparison": {
+    "ferro_eager": {
+      "baseline1": 437.3,
+      "baseline2": 417.95,
+      "post1": 284.65,
+      "post2": 280.3,
+      "paired_speedups": [
+        1.5362726154927104,
+        1.4910809846592936
+      ],
+      "paired_reduction_percent": [
+        34.90738623370685,
+        32.93456155042469
+      ]
+    },
+    "ferro_compiled": {
+      "baseline1": 364.5,
+      "baseline2": 357.85,
+      "post1": 267.75,
+      "post2": 269.75,
+      "paired_speedups": [
+        1.361344537815126,
+        1.3265987025023172
+      ],
+      "paired_reduction_percent": [
+        26.543209876543205,
+        24.61925387732291
+      ]
+    },
+    "torch_eager": {
+      "baseline1": 270.75,
+      "baseline2": 275.1,
+      "post1": 282.95000000000005,
+      "post2": 262.35,
+      "paired_speedups": [
+        0.9568828414914294,
+        1.0485991995425958
+      ],
+      "paired_reduction_percent": [
+        -4.506001846722074,
+        4.6346782988004325
+      ]
+    }
+  }
+}

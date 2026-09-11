@@ -293,6 +293,22 @@ pub trait Backend: Send + Sync {
         not_resident("reduce_dev")
     }
 
+    /// Fused row-wise LayerNorm. Returns (output, normalized input, row stddev).
+    /// Optional affine buffers independently have `cols` elements. All outputs
+    /// are whole contiguous buffers; unsupported backends may decline.
+    fn layer_norm_dev(&self, _x: &dyn DeviceBuffer, _weight: Option<&dyn DeviceBuffer>,
+        _bias: Option<&dyn DeviceBuffer>, _rows: usize, _cols: usize, _eps: f32,
+    ) -> Result<(Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>)> {
+        not_resident("layer_norm_dev")
+    }
+
+    /// Output-only inference seam; older fused backends retain a fallible fallback.
+    fn layer_norm_output_dev(&self, x: &dyn DeviceBuffer, weight: Option<&dyn DeviceBuffer>,
+        bias: Option<&dyn DeviceBuffer>, rows: usize, cols: usize, eps: f32,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        self.layer_norm_dev(x, weight, bias, rows, cols, eps).map(|(y, _, _)| y)
+    }
+
     /// Row-wise softmax over the last dim of a whole contiguous device buffer
     /// of `rows` x `cols` elements; output has the same layout.
     fn softmax_dev(
