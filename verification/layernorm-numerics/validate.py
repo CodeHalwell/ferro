@@ -106,8 +106,11 @@ def main():
     parser.add_argument("--trials", type=int, default=3, help="three trials cover ranks 1, 2, 3")
     parser.add_argument("--output", type=Path, default=Path(__file__).with_name("results.jsonl"))
     args = parser.parse_args()
+    # Validate the f32 values actually passed to both libraries, not Python floats.
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        args.eps = [float(np.float32(e)) for e in args.eps]
     if args.trials < 1 or min(args.widths) < 1 or min(args.seeds) < 0 or any(not np.isfinite(e) or e <= 0 for e in args.eps):
-        parser.error("positive widths/trials/finite eps and nonnegative seeds required")
+        parser.error("positive widths/trials and finite positive eps after f32 rounding, and nonnegative seeds required")
     import torch
     import ferro
     if args.device.startswith("cuda") and not torch.cuda.is_available():
