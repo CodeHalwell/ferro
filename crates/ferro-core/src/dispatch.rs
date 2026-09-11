@@ -153,7 +153,33 @@ fn not_resident<T>(op: &'static str) -> Result<T> {
 /// The `*_dev` methods operate on backend-owned `DeviceBuffer`s so chained ops
 /// stay resident on the device; they have host-rejecting defaults so a
 /// host-only backend is still a valid `Backend`.
+pub enum StaticOp {
+    Pointwise(Vec<ChainStepRef>),
+    MatMul { m: usize, k: usize, n: usize },
+    Bmm { batch: usize, m: usize, k: usize, n: usize },
+    Layout { strides: Vec<usize> },
+    Softmax { rows: usize, cols: usize },
+    Sum { red: usize, inner: usize },
+    LayerNorm { rows: usize, cols: usize, eps: f32, weight: bool, bias: bool },
+}
+
+pub struct StaticRun {
+    pub inputs: Vec<usize>,
+    pub op: StaticOp,
+    pub shape: Vec<usize>,
+}
+
+/// Backend-owned stable execution; snapshots must never alias reusable output.
+pub trait StaticExecution {
+    fn replay(&mut self) -> Result<()>;
+    fn snapshot(&self) -> Result<Box<dyn DeviceBuffer>>;
+    fn replay_count(&self) -> usize;
+}
+
 pub trait Backend: Send + Sync {
+    fn prepare_static(self: Arc<Self>, _runs: &[StaticRun], _leaves: Vec<Arc<dyn DeviceBuffer>>) -> Result<Box<dyn StaticExecution>> {
+        Err(Error::Unsupported { op: "prepare_static", msg: "backend has no prepared static execution".into() })
+    }
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32>;
     /// a and b are same-length, already-broadcast contiguous buffers.
     fn binary(&self, kind: BinaryKind, a: &[f32], b: &[f32]) -> Vec<f32>;

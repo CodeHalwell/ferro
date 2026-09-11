@@ -30,7 +30,7 @@ pub enum Storage {
     F16(Vec<u16>),
     /// bfloat16, raw bit patterns (f32's top half).
     BF16(Vec<u16>),
-    Device(Box<dyn DeviceBuffer>),
+    Device(Arc<dyn DeviceBuffer>),
     /// Device-resident i64 indices. Kept as its own variant so the f32
     /// compute paths can never pick one up by mistake; produced/consumed
     /// only through `Backend::alloc_i64_from_host`/`copy_i64_to_host`/
@@ -705,7 +705,7 @@ impl Tensor {
                 }
                 let buf = backend_for(device)?.alloc_from_host(&host)?;
                 Ok(Tensor::from_parts(
-                    Arc::new(StorageCell::new(Storage::Device(buf))),
+                    Arc::new(StorageCell::new(Storage::Device(Arc::from(buf)))),
                     shape.clone(),
                     default_strides(&shape),
                     0,
@@ -976,7 +976,7 @@ impl Tensor {
         let Storage::Device(buf) = &*storage else { return Ok(out.clone()); };
         let copy = backend_for(out.device())?.copy_dev(buf.as_ref())?;
         Ok(Tensor::from_parts(
-            Arc::new(StorageCell::new(Storage::Device(copy))),
+            Arc::new(StorageCell::new(Storage::Device(Arc::from(copy)))),
             out.0.shape.clone(), out.0.stride.clone(), out.0.offset, out.device(), false, None,
         ))
     }
@@ -1120,7 +1120,8 @@ impl Tensor {
             Storage::F64(v) => v.len(),
             Storage::I64(v) => v.len(),
             Storage::F16(v) | Storage::BF16(v) => v.len(),
-            Storage::Device(b) | Storage::DeviceI64(b) => b.len(),
+            Storage::Device(b) => b.len(),
+            Storage::DeviceI64(b) => b.len(),
         }
     }
 
@@ -1227,7 +1228,7 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
 pub(crate) fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: Device) -> Tensor {
     Tensor::from_parts(
-        Arc::new(StorageCell::new(Storage::Device(buf))),
+        Arc::new(StorageCell::new(Storage::Device(Arc::from(buf)))),
         shape.to_vec(),
         default_strides(shape),
         0,

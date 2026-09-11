@@ -61,6 +61,10 @@ struct PyCompiledChain {
 
 #[pymethods]
 impl PyCompiledChain {
+    fn prepare_static(&self) -> PyResult<PyStaticGraph> {
+        self.inner.prepare_static().map(|inner| PyStaticGraph { inner }).map_err(map_err)
+    }
+
     /// Re-run the scheduled graph from current leaf values. Shape-preserving
     /// runs attempt fused backend launches. Returns a new detached tensor.
     fn replay(&self) -> PyResult<PyTensor> {
@@ -84,6 +88,18 @@ impl PyCompiledChain {
     fn num_steps(&self) -> usize {
         self.inner.num_steps()
     }
+}
+
+/// Thread-confined CUDA graph. Replay returns no alias to reusable storage.
+#[pyclass(name = "StaticGraph", unsendable)]
+struct PyStaticGraph { inner: ferro_core::graph::PreparedChain }
+
+#[pymethods]
+impl PyStaticGraph {
+    fn replay(&mut self) -> PyResult<()> { self.inner.replay().map_err(map_err) }
+    fn snapshot(&self) -> PyResult<PyTensor> { self.inner.snapshot().map(PyTensor::wrap).map_err(map_err) }
+    #[getter]
+    fn replay_count(&self) -> usize { self.inner.replay_count() }
 }
 
 impl PyTensor {
@@ -855,6 +871,7 @@ fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensor>()?;
     m.add_function(wrap_pyfunction!(capture, m)?)?;
     m.add_class::<PyCompiledChain>()?;
+    m.add_class::<PyStaticGraph>()?;
     m.add_class::<Generator>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;

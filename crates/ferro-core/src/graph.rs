@@ -487,7 +487,112 @@ struct CompiledRun {
     shape: Vec<usize>,
 }
 
+/// Static replay is exclusive; only explicitly copied snapshots escape.
+pub struct PreparedChain {
+    execution: Box<dyn crate::dispatch::StaticExecution>,
+    leaves: Vec<Tensor>,
+    shape: Vec<usize>,
+    device: crate::Device,
+}
+
+impl PreparedChain {
+    pub fn replay(&mut self) -> Result<()> {
+        // Device mutation uses shared storage guards. Exclusive guards here
+        // prevent updates interleaving individual boundary enqueues.
+        let guards: Vec<_> = self.leaves.iter().map(|t| t.0.storage.write()).collect();
+        let result = self.execution.replay();
+        drop(guards);
+        result
+    }
+    pub fn snapshot(&self) -> Result<Tensor> {
+        Ok(device_leaf(self.execution.snapshot()?, &self.shape, self.device))
+    }
+    pub fn replay_count(&self) -> usize { self.execution.replay_count() }
+}
+
 impl CompiledChain {
+    pub fn prepare_static(&self) -> Result<PreparedChain> {
+        use crate::dispatch::StaticRun;
+        use crate::tensor::Storage;
+        use std::sync::Arc;
+        let unsupported = |msg: &str| Error::Unsupported { op: "prepare_static", msg: msg.into() };
+        let effective_inputs = |run: &CompiledRun| {
+            let mut inputs = run.inputs.clone();
+            if let Some(crate::autograd::ForwardOp::LayerNorm {weight,bias,..}) = &run.forward {
+                if !weight { inputs[1] = inputs[0]; }
+                if !bias { inputs[2] = inputs[0]; }
+            }
+            inputs
+        };
+        let used: HashSet<_> = self.schedule.iter().flat_map(effective_inputs).collect();
+        let mut ids: Vec<_> = self.leaves.keys().filter(|id| used.contains(id)).copied().collect();
+        ids.sort_unstable();
+        let leaves: Vec<_> = ids.iter().map(|id| self.leaves[id].clone()).collect();
+        let device = leaves[0].device();
+        if leaves.iter().any(|t| t.device() != device || !t.device_resident_whole() || t.requires_grad()) {
+            return Err(unsupported("requires whole resident inference leaves on one device"));
+        }
+        let mut slots: HashMap<_, _> = ids.into_iter().enumerate().map(|(i,id)| (id,i)).collect();
+        let mut shapes: Vec<_> = leaves.iter().map(|t| t.shape().to_vec()).collect();
+        let mut runs = Vec::new();
+        for run in &self.schedule {
+            let inputs: Vec<_> = effective_inputs(run).iter().map(|id| slots[id]).collect();
+            let op = match &run.forward {
+                Some(crate::autograd::ForwardOp::MatMul) => {
+                    let a = &shapes[inputs[0]];
+                    let b = &shapes[inputs[1]];
+                    if a.len() != 2 || b.len() != 2 || a[1] != b[0] { return Err(unsupported("invalid static matmul shape")); }
+                    crate::dispatch::StaticOp::MatMul { m: a[0], k: a[1], n: b[1] }
+                },
+                Some(crate::autograd::ForwardOp::Bmm) => {
+                    let a = &shapes[inputs[0]]; let b = &shapes[inputs[1]];
+                    if a.len()!=3 || b.len()!=3 || a[0]!=b[0] || a[2]!=b[1] { return Err(unsupported("invalid static bmm shape")); }
+                    crate::dispatch::StaticOp::Bmm { batch:a[0],m:a[1],k:a[2],n:b[2] }
+                },
+                Some(crate::autograd::ForwardOp::Reshape(_)) => crate::dispatch::StaticOp::Layout { strides: crate::shape::default_strides(&run.shape) },
+                Some(crate::autograd::ForwardOp::Transpose(a,b)) => {
+                    let mut strides = crate::shape::default_strides(&shapes[inputs[0]]);
+                    strides.swap(*a,*b);
+                    crate::dispatch::StaticOp::Layout { strides }
+                },
+                Some(crate::autograd::ForwardOp::Softmax(dim)) => {
+                    let shape = &shapes[inputs[0]];
+                    if *dim+1 != shape.len() { return Err(unsupported("static softmax requires last dimension")); }
+                    crate::dispatch::StaticOp::Softmax { rows:shape[..*dim].iter().product(),cols:shape[*dim] }
+                },
+                Some(crate::autograd::ForwardOp::SumDim(dim,_)) => {
+                    let shape = &shapes[inputs[0]];
+                    crate::dispatch::StaticOp::Sum { red:shape[*dim],inner:shape[*dim+1..].iter().product() }
+                },
+                Some(crate::autograd::ForwardOp::LayerNorm {weight,bias,eps}) => {
+
+                    let shape = &shapes[inputs[0]];
+                    let cols = *shape.last().unwrap();
+                    crate::dispatch::StaticOp::LayerNorm { rows:shape.iter().product::<usize>()/cols,cols,eps:*eps,weight:*weight,bias:*bias }
+                },
+                None => {
+                    if shapes[inputs[0]] != run.shape { return Err(unsupported("expanding static seed is not implemented")); }
+                    crate::dispatch::StaticOp::Pointwise(run.steps.clone())
+                },
+            };
+            runs.push(StaticRun { inputs, op, shape: run.shape.clone() });
+            slots.insert(run.output, shapes.len());
+            shapes.push(run.shape.clone());
+        }
+        if slots[&self.root] != shapes.len()-1 { return Err(unsupported("root is not final static destination")); }
+        let mut owners = leaves.clone();
+        owners.sort_unstable_by_key(|t| Arc::as_ptr(&t.0.storage));
+        owners.dedup_by_key(|t| Arc::as_ptr(&t.0.storage));
+        let guards: Vec<_> = owners.iter().map(|t| t.0.storage.write()).collect();
+        let buffers = leaves.iter().map(|t| {
+            let i = owners.iter().position(|o| Arc::ptr_eq(&o.0.storage, &t.0.storage)).unwrap();
+            match &*guards[i] { Storage::Device(b) => b.clone(), _ => unreachable!() }
+        }).collect();
+        let execution = backend_for(device)?.prepare_static(&runs, buffers)?;
+        drop(guards);
+        Ok(PreparedChain { execution, leaves: owners, shape: shapes.last().unwrap().clone(), device })
+    }
+
     /// Compile pointwise DAG runs and explicit matmul, bmm, layout, softmax,
     /// sum_dim and LayerNorm forwards. Shared intermediates execute once.
     /// Operations without forward metadata are rejected, never frozen.

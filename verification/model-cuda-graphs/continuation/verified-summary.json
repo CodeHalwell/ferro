@@ -1,0 +1,445 @@
+{
+  "integration_commands": 13,
+  "rust_passes": {
+    "core": 630,
+    "cpu-tokenizer": 20,
+    "cuda": 73,
+    "capture-layout-gpu": 1
+  },
+  "runs": [
+    {
+      "run": 3,
+      "passed": [
+        {
+          "case": "mlp",
+          "mode": "torch_eager",
+          "median_us": 64.8,
+          "prepare_ms": 0.0031,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_eager",
+          "median_us": 52.0,
+          "prepare_ms": 41.2965,
+          "freshness_max_abs_errors": [
+            2.384185791015625e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            2.384185791015625e-07
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_compiled",
+          "median_us": 48.9,
+          "prepare_ms": 2.9559,
+          "freshness_max_abs_errors": [
+            2.384185791015625e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            2.384185791015625e-07
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_static",
+          "median_us": 40.8,
+          "prepare_ms": 3.8963,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_static_snapshot",
+          "median_us": 43.2,
+          "prepare_ms": 3.4883,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_eager",
+          "median_us": 66.4,
+          "prepare_ms": 0.004,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_eager",
+          "median_us": 61.3,
+          "prepare_ms": 27.522,
+          "freshness_max_abs_errors": [
+            4.76837158203125e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            4.76837158203125e-07
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_compiled",
+          "median_us": 71.25,
+          "prepare_ms": 3.7094,
+          "freshness_max_abs_errors": [
+            4.76837158203125e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            4.76837158203125e-07
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_static",
+          "median_us": 41.9,
+          "prepare_ms": 4.1493,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_static_snapshot",
+          "median_us": 54.5,
+          "prepare_ms": 3.6954,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_eager",
+          "median_us": 278.95,
+          "prepare_ms": 0.0026,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_eager",
+          "median_us": 295.1,
+          "prepare_ms": 134.4876,
+          "freshness_max_abs_errors": [
+            8.344650268554688e-07,
+            9.5367431640625e-07,
+            7.152557373046875e-07,
+            8.344650268554688e-07
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_compiled",
+          "median_us": 272.9,
+          "prepare_ms": 5.6714,
+          "freshness_max_abs_errors": [
+            8.344650268554688e-07,
+            9.5367431640625e-07,
+            7.152557373046875e-07,
+            8.344650268554688e-07
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_static",
+          "median_us": 432.70000000000005,
+          "prepare_ms": 6.0161,
+          "freshness_max_abs_errors": [
+            1.4901161193847656e-06,
+            1.6093254089355469e-06,
+            1.1920928955078125e-06,
+            1.4901161193847656e-06
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_static_snapshot",
+          "median_us": 335.7,
+          "prepare_ms": 7.1125,
+          "freshness_max_abs_errors": [
+            1.4901161193847656e-06,
+            1.6093254089355469e-06,
+            1.1920928955078125e-06,
+            1.4901161193847656e-06
+          ]
+        }
+      ],
+      "blocked": [
+        {
+          "case": "mlp",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "mlp",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "passed": [
+        {
+          "case": "mlp",
+          "mode": "ferro_static_snapshot",
+          "median_us": 43.2,
+          "prepare_ms": 95.2328,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_static",
+          "median_us": 40.7,
+          "prepare_ms": 3.6896,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_compiled",
+          "median_us": 49.8,
+          "prepare_ms": 3.9479,
+          "freshness_max_abs_errors": [
+            2.384185791015625e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            2.384185791015625e-07
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "ferro_eager",
+          "median_us": 51.6,
+          "prepare_ms": 2.9695,
+          "freshness_max_abs_errors": [
+            2.384185791015625e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            2.384185791015625e-07
+          ]
+        },
+        {
+          "case": "mlp",
+          "mode": "torch_eager",
+          "median_us": 85.8,
+          "prepare_ms": 0.0026,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_static_snapshot",
+          "median_us": 44.4,
+          "prepare_ms": 27.0874,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_static",
+          "median_us": 41.9,
+          "prepare_ms": 3.8574,
+          "freshness_max_abs_errors": [
+            1.430511474609375e-06,
+            9.5367431640625e-07,
+            1.5497207641601562e-06,
+            1.430511474609375e-06
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_compiled",
+          "median_us": 50.0,
+          "prepare_ms": 3.0173,
+          "freshness_max_abs_errors": [
+            4.76837158203125e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            4.76837158203125e-07
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "ferro_eager",
+          "median_us": 51.650000000000006,
+          "prepare_ms": 3.0035,
+          "freshness_max_abs_errors": [
+            4.76837158203125e-07,
+            2.384185791015625e-07,
+            4.76837158203125e-07,
+            4.76837158203125e-07
+          ]
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_eager",
+          "median_us": 94.7,
+          "prepare_ms": 0.0022,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_static_snapshot",
+          "median_us": 371.6,
+          "prepare_ms": 127.8138,
+          "freshness_max_abs_errors": [
+            1.4901161193847656e-06,
+            1.6093254089355469e-06,
+            1.1920928955078125e-06,
+            1.4901161193847656e-06
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_static",
+          "median_us": 339.6,
+          "prepare_ms": 11.5508,
+          "freshness_max_abs_errors": [
+            1.4901161193847656e-06,
+            1.6093254089355469e-06,
+            1.1920928955078125e-06,
+            1.4901161193847656e-06
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_compiled",
+          "median_us": 298.9,
+          "prepare_ms": 4.8498,
+          "freshness_max_abs_errors": [
+            8.344650268554688e-07,
+            9.5367431640625e-07,
+            7.152557373046875e-07,
+            8.344650268554688e-07
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "ferro_eager",
+          "median_us": 279.65,
+          "prepare_ms": 4.6157,
+          "freshness_max_abs_errors": [
+            8.344650268554688e-07,
+            9.5367431640625e-07,
+            7.152557373046875e-07,
+            8.344650268554688e-07
+          ]
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_eager",
+          "median_us": 280.95,
+          "prepare_ms": 0.0021,
+          "freshness_max_abs_errors": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "blocked": [
+        {
+          "case": "mlp",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "mlp",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "residual_mlp",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_reduce_overhead",
+          "reason": "Triton unavailable"
+        },
+        {
+          "case": "transformer",
+          "mode": "torch_inductor_no_graphs",
+          "reason": "Triton unavailable"
+        }
+      ]
+    }
+  ]
+}
