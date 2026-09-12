@@ -158,6 +158,7 @@ pub enum StaticOp {
     MatMul { m: usize, k: usize, n: usize },
     Bmm { batch: usize, m: usize, k: usize, n: usize },
     Layout { strides: Vec<usize> },
+    Broadcast { strides: Vec<usize> },
     Softmax { rows: usize, cols: usize },
     Sum { red: usize, inner: usize },
     LayerNorm { rows: usize, cols: usize, eps: f32, weight: bool, bias: bool },

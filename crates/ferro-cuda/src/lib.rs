@@ -544,12 +544,13 @@ impl CudaBackend {
         // the cuBLAS call below is skipped, so the buffer must be zeroed rather
         // than an uninitialised (possibly recycled) slice. Only take the
         // alloc_uninit fast path when the GEMM will actually write every cell.
-        let mut c = if k > 0 {
+        let full = k > 0 && m > 0 && n > 0;
+        let mut c = if full {
             unsafe { self.alloc_uninit(op, m * n)? }
         } else {
             self.alloc_zeros(op, m * n)?
         };
-        if k > 0 {
+        if full {
             let cfg = row_major_sgemm_cfg(m, k, n, ta, tb);
             // Swapped operands: b is cuBLAS "A", a is cuBLAS "B".
             unsafe { self.blas.gemm(cfg, b, a, &mut c) }.map_err(|e| cuda_err(op, e))?;
@@ -1935,6 +1936,14 @@ pub fn exported_view(buf: &dyn DeviceBuffer) -> std::result::Result<(usize, u32)
 }
 
 #[cfg(test)]
+pub(crate) static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn registry_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    REGISTRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ferro_core::dispatch::naive_matmul;
@@ -2028,6 +2037,7 @@ mod tests {
 
     #[test]
     fn install_never_panics_without_gpu() {
+        let _registry = registry_test_guard();
         if is_available() {
             return; // exercised by gpu_end_to_end on GPU boxes
         }
@@ -2375,12 +2385,14 @@ mod tests {
 
     #[test]
     fn gpu_end_to_end() {
-        if !is_available() {
-            return;
-        }
+        let _registry = registry_test_guard();
         let backend = match CudaBackend::new(0) {
             Ok(b) => Arc::new(b),
-            Err(_) => return, // driver present but no usable device
+            Err(e) => {
+                assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+                eprintln!("SKIP gpu_end_to_end: {e}");
+                return;
+            }
         };
 
         // Host-slice fallback path.
@@ -2536,12 +2548,14 @@ mod tests {
     // keepdim sum_dim used by norms are both exercised.
     #[test]
     fn gpu_softmax_gelu_activations_match_cpu_forward_and_grad() {
-        if !is_available() {
-            return;
-        }
+        let _registry = registry_test_guard();
         let backend = match CudaBackend::new(0) {
             Ok(b) => Arc::new(b),
-            Err(_) => return,
+            Err(e) => {
+                assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+                eprintln!("SKIP gpu_softmax_gelu_activations_match_cpu_forward_and_grad: {e}");
+                return;
+            }
         };
         let dev = Device::Cuda(0);
         register_backend(dev, backend);
@@ -2654,12 +2668,14 @@ mod tests {
     // gradient, and parameter stays on Device::Cuda(0) and the loss converges.
     #[test]
     fn gpu_mini_block_forward_backward_fully_resident_converges() {
-        if !is_available() {
-            return;
-        }
+        let _registry = registry_test_guard();
         let backend = match CudaBackend::new(0) {
             Ok(b) => Arc::new(b),
-            Err(_) => return,
+            Err(e) => {
+                assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+                eprintln!("SKIP gpu_mini_block_forward_backward_fully_resident_converges: {e}");
+                return;
+            }
         };
         let dev = Device::Cuda(0);
         register_backend(dev, backend);

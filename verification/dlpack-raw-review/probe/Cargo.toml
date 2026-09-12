@@ -1,0 +1,9 @@
+[package]
+name = "dlpack-raw-stream-probe"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+cudarc = { version = "=0.19.9", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12080"] }

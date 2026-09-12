@@ -202,6 +202,8 @@ pub fn export_capsule<'py>(
 /// Build a "dltensor" capsule that ZERO-COPY exports a device-resident
 /// contiguous f32 tensor as kDLCUDA. The capsule borrows the tensor's Arc
 /// storage; see the module docs for the ownership contract.
+/// This raw builder does not fence GPU work. Callers must establish producer
+/// readiness before consumption; the Python `__dlpack__` method does so.
 pub fn export_device_capsule<'py>(
     py: Python<'py>,
     inner: &CoreTensor,
@@ -209,7 +211,8 @@ pub fn export_device_capsule<'py>(
     let view = inner.dlpack_device_view().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let (ptr, ordinal) =
         ferro_cuda::exported_view(view.device_buffer()).map_err(PyValueError::new_err)?;
-    if ptr == 0 {
+    // CUDA zero-length allocations legitimately have no device address.
+    if ptr == 0 && inner.numel() != 0 {
         return Err(PyValueError::new_err("CUDA buffer has null device pointer"));
     }
     let byte_offset = view_byte_offset(view.offset_elems())?;
@@ -265,6 +268,7 @@ fn finish_capsule<'py>(
 
 /// `__dlpack__` dispatch: zero-copy kDLCUDA for device-resident tensors,
 /// owned host copy otherwise.
+/// Raw capsule construction only; CUDA readiness is the caller's responsibility.
 pub fn export_for<'py>(py: Python<'py>, inner: &CoreTensor) -> PyResult<Bound<'py, PyAny>> {
     if inner.device() != Device::Cpu {
         return export_device_capsule(py, inner);
@@ -351,20 +355,17 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
         }
         shape.push(d as usize);
     }
-    let numel: usize = if ndim == 0 {
-        1
-    } else {
-        shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d)).ok_or_else(|| {
-            PyValueError::new_err("DLPack tensor element count overflows usize")
-        })?
-    };
+    // Check nonzero products even when a zero axis would mask overflow.
+    let nonzero_numel = shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d.max(1)))
+        .ok_or_else(|| PyValueError::new_err("DLPack tensor element count overflows usize"))?;
+    let numel = if shape.contains(&0) { 0 } else { nonzero_numel };
     // Validate strides (in elements) by bounding every gatherable offset:
     // the min and max element offset over all index combinations must stay
     // within [0, numel) relative to base, or pointer arithmetic below could
     // read outside the producer's buffer.
     let mut lo: i128 = 0;
     let mut hi: i128 = numel.saturating_sub(1) as i128;
-    if !t.strides.is_null() {
+    if numel != 0 && !t.strides.is_null() {
         lo = 0;
         hi = 0;
         for i in 0..ndim {
@@ -379,13 +380,7 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
             ));
         }
     }
-    // Zero-element tensors may carry a null data pointer; never touch it
-    // (pointer arithmetic and from_raw_parts require non-null even for len 0).
-    if numel == 0 {
-        return CoreTensor::from_contiguous(&[], &shape)
-            .map_err(|e| PyValueError::new_err(e.to_string()));
-    }
-    if t.data.is_null() {
+    if numel != 0 && t.data.is_null() {
         return Err(PyValueError::new_err("DLPack tensor has null data pointer"));
     }
 
@@ -395,6 +390,13 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
 
     if t.device.device_type == K_DL_CUDA {
         return import_cuda(t, ndim, &shape, numel, lo, hi);
+    }
+
+    // No address is reachable in an empty tensor, regardless of strides.
+    // Never do pointer arithmetic or construct a slice from its null data.
+    if numel == 0 {
+        return CoreTensor::from_contiguous(&[], &shape)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
     }
 
     let base = (t.data as *const u8).add(t.byte_offset as usize) as *const f32;
@@ -442,16 +444,16 @@ unsafe fn import_cuda(
     lo: i128,
     hi: i128,
 ) -> PyResult<CoreTensor> {
-    if numel == 0 {
-        // Empty tensors never touch the pointer; keep them off-device.
-        return CoreTensor::from_contiguous(&[], shape)
-            .map_err(|e| PyValueError::new_err(e.to_string()));
-    }
     let ordinal = t.device.device_id;
     if ordinal < 0 {
         return Err(PyValueError::new_err("DLPack tensor has negative device_id"));
     }
     ensure_backend(ordinal)?;
+    if numel == 0 {
+        return CoreTensor::from_contiguous(&[], shape)
+            .and_then(|host| host.to_device(Device::Cuda(ordinal as u32)))
+            .map_err(|e| PyValueError::new_err(e.to_string()));
+    }
     let ctx = cudarc::driver::CudaContext::new(ordinal as usize)
         .map_err(|e| PyValueError::new_err(format!("failed to open CUDA context: {e}")))?;
     ctx.bind_to_thread()
@@ -635,6 +637,63 @@ mod tests {
     }
 
     #[test]
+    fn empty_explicit_strides_have_no_reachable_address() {
+        for (shape, strides) in [
+            (vec![0, 3], vec![3, 1]),
+            (vec![2, 0, 4], vec![4, 4, 1]),
+            (vec![0, 3], vec![i64::MIN, i64::MAX]),
+        ] {
+            assert!(ok(&mut fixture(shape, Some(strides), vec![])).is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_descriptor_validation_is_not_short_circuited() {
+        let big = 1i64 << 62;
+        for shape in [vec![0, big, big], vec![big, big, 0]] {
+            assert!(err(&mut fixture(shape, None, vec![])).contains("overflows"));
+        }
+        let mut f = fixture(vec![0], None, vec![]);
+        f.managed.dl_tensor.byte_offset = 1;
+        assert!(err(&mut f).contains("aligned"));
+    }
+
+    #[test]
+    fn empty_capsule_deleter_runs_once_on_success_and_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        unsafe extern "C" fn count_delete(managed: *mut DLManagedTensor) {
+            let count = &*((*managed).manager_ctx as *const AtomicUsize);
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+        init_python();
+        Python::with_gil(|py| {
+            for invalid in [false, true] {
+                let count = AtomicUsize::new(0);
+                let mut f = fixture(vec![0, 3], Some(vec![3, 1]), vec![]);
+                f.managed.dl_tensor.shape = f.shape.as_mut_ptr();
+                f.managed.dl_tensor.strides = f.strides.as_mut_ptr();
+                f.managed.dl_tensor.dtype.bits = if invalid { 64 } else { 32 };
+                f.managed.manager_ctx = &count as *const AtomicUsize as *mut c_void;
+                f.managed.deleter = Some(count_delete);
+                let cap = unsafe {
+                    Bound::from_owned_ptr(py, ffi::PyCapsule_New(
+                        f.managed.as_mut() as *mut DLManagedTensor as *mut c_void,
+                        c"dltensor".as_ptr(), Some(capsule_destructor)))
+                };
+                let factory = py.eval(c"lambda cap: __import__('types').SimpleNamespace(__dlpack__=lambda: cap)", None, None).unwrap();
+                let producer = factory.call1((&cap,)).unwrap();
+                let result = import_from_dlpack(&producer);
+                assert_eq!(result.is_err(), invalid);
+                assert_eq!(count.load(Ordering::SeqCst), usize::from(!invalid));
+                drop(result);
+                drop(producer);
+                drop(cap);
+                assert_eq!(count.load(Ordering::SeqCst), 1);
+            }
+        });
+    }
+
+    #[test]
     fn contiguous_round_trip() {
         let mut f = fixture(vec![2, 3], None, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(ok(&mut f), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
@@ -728,7 +787,14 @@ mod tests {
 
     fn gpu_ok() -> bool {
         init_python();
-        ferro_cuda::install(0).is_ok()
+        match ferro_cuda::install(0) {
+            Ok(()) => true,
+            Err(e) => {
+                assert_ne!(std::env::var("FERRO_REQUIRE_CUDA").as_deref(), Ok("1"), "CUDA required: {e}");
+                eprintln!("skipping raw DLPack GPU test: {e}");
+                false
+            }
+        }
     }
 
     // Structural GPU test: export a device-resident tensor zero-copy, pin
@@ -749,6 +815,14 @@ mod tests {
         });
 
         Python::with_gil(|py| {
+            // This test bypasses __dlpack__ to inspect the raw capsule builder.
+            // Its upload uses a non-blocking stream: cuMemcpyDtoH is not a
+            // producer fence. Fulfil the raw builder's readiness precondition.
+            {
+                let view = t.dlpack_device_view().unwrap();
+                let buffer = view.device_buffer().as_any().downcast_ref::<ferro_cuda::CudaBuf>().unwrap();
+                buffer.stream().synchronize().unwrap();
+            }
             let cap = export_for(py, &t).unwrap();
             let ptr = unsafe {
                 ffi::PyCapsule_GetPointer(cap.as_ptr(), c"dltensor".as_ptr())

@@ -44,7 +44,24 @@ fn data(buf: &dyn DeviceBuffer) -> &[f32] {
         .0
 }
 
+static STATIC_PLAN: Mutex<Vec<(Vec<usize>, Vec<usize>, String)>> = Mutex::new(Vec::new());
+
 impl Backend for FakeDevice {
+    fn prepare_static(self: Arc<Self>, runs: &[ferro_core::dispatch::StaticRun], _leaves: Vec<Arc<dyn DeviceBuffer>>) -> Result<Box<dyn ferro_core::dispatch::StaticExecution>> {
+        use ferro_core::dispatch::StaticOp;
+        *STATIC_PLAN.lock().unwrap_or_else(|e|e.into_inner()) = runs.iter().map(|r| {
+            let op=match &r.op {
+                StaticOp::Layout {strides} => format!("layout {strides:?}"),
+                StaticOp::Broadcast {strides} => format!("broadcast {strides:?}"),
+                StaticOp::Softmax {rows,cols} => format!("softmax {rows} {cols}"),
+                StaticOp::Pointwise(_) => "pointwise".into(),
+                StaticOp::MatMul {m,k,n} => format!("matmul {m} {k} {n}"),
+                _ => "other".into(),
+            };
+            (r.inputs.clone(),r.shape.clone(),op)
+        }).collect();
+        Err(ferro_core::Error::Unsupported {op:"test_plan_inspection",msg:"no execution on fake backend".into()})
+    }
     fn unary(&self, _kind: UnaryKind, _x: &[f32]) -> Vec<f32> {
         panic!("host-slice path must not run for device-resident tensors");
     }
@@ -225,6 +242,34 @@ fn counts() -> (usize, usize, usize, usize, usize) {
         BINARY.load(Ordering::SeqCst),
         MATMUL.load(Ordering::SeqCst),
     )
+}
+
+#[test]
+fn static_lowering_covers_axis_permutation_expanding_seed_and_zero_reduction() {
+    let _serial=setup();
+    use ferro_core::{capture,graph::CompiledChain};
+    let x=Tensor::full(&[2,3,4],1.).to_device(DEV).unwrap();
+    let root=capture(||x.softmax(1).unwrap());
+    let before=counts();
+    assert!(CompiledChain::compile(&root).unwrap().prepare_static().is_err());
+    assert_eq!(counts(),before,"static lowering must not transfer or execute");
+    assert_eq!(*STATIC_PLAN.lock().unwrap_or_else(|e|e.into_inner()),vec![
+        (vec![0],vec![2,4,3],"layout [12, 1, 4]".into()),
+        (vec![1],vec![2,4,3],"softmax 8 3".into()),
+        (vec![2],vec![2,3,4],"layout [12, 1, 3]".into()),
+    ]);
+    let a=Tensor::full(&[3],2.).to_device(DEV).unwrap();
+    let b=Tensor::full(&[2,3],3.).to_device(DEV).unwrap();
+    let root=capture(||a.sub(&b).unwrap());
+    assert!(CompiledChain::compile(&root).unwrap().prepare_static().is_err());
+    let plan=STATIC_PLAN.lock().unwrap_or_else(|e|e.into_inner());
+    assert_eq!(plan.len(),2);assert_eq!(plan[0].1,vec![2,3]);
+    assert_eq!(plan[0].2,"broadcast [0, 1]");assert_eq!(plan[1].0[0],2);assert_eq!(plan[1].2,"pointwise");
+    drop(plan);
+    let a=Tensor::zeros(&[2,0]).to_device(DEV).unwrap();let b=Tensor::zeros(&[0,3]).to_device(DEV).unwrap();
+    let root=capture(||a.matmul(&b).unwrap());
+    assert!(CompiledChain::compile(&root).unwrap().prepare_static().is_err());
+    assert_eq!(STATIC_PLAN.lock().unwrap_or_else(|e|e.into_inner())[0].2,"matmul 2 0 3");
 }
 
 #[test]

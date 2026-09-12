@@ -1,0 +1,98 @@
+[
+  {
+    "model": "mlp",
+    "mode": "ferro_static",
+    "order": 1,
+    "baseline_us": 59.7,
+    "final_us": 47.2,
+    "reduction_percent": 20.938023450586265
+  },
+  {
+    "model": "mlp",
+    "mode": "ferro_static",
+    "order": 2,
+    "baseline_us": 47.4,
+    "final_us": 47.1,
+    "reduction_percent": 0.6329113924050573
+  },
+  {
+    "model": "mlp",
+    "mode": "ferro_static_snapshot",
+    "order": 1,
+    "baseline_us": 62.0,
+    "final_us": 43.2,
+    "reduction_percent": 30.32258064516129
+  },
+  {
+    "model": "mlp",
+    "mode": "ferro_static_snapshot",
+    "order": 2,
+    "baseline_us": 43.3,
+    "final_us": 61.5,
+    "reduction_percent": -42.0323325635104
+  },
+  {
+    "model": "residual_mlp",
+    "mode": "ferro_static",
+    "order": 1,
+    "baseline_us": 48.9,
+    "final_us": 41.9,
+    "reduction_percent": 14.314928425357873
+  },
+  {
+    "model": "residual_mlp",
+    "mode": "ferro_static",
+    "order": 2,
+    "baseline_us": 48.8,
+    "final_us": 48.2,
+    "reduction_percent": 1.2295081967213
+  },
+  {
+    "model": "residual_mlp",
+    "mode": "ferro_static_snapshot",
+    "order": 1,
+    "baseline_us": 44.5,
+    "final_us": 70.1,
+    "reduction_percent": -57.52808988764044
+  },
+  {
+    "model": "residual_mlp",
+    "mode": "ferro_static_snapshot",
+    "order": 2,
+    "baseline_us": 44.4,
+    "final_us": 44.4,
+    "reduction_percent": 0.0
+  },
+  {
+    "model": "transformer",
+    "mode": "ferro_static",
+    "order": 1,
+    "baseline_us": 333.4,
+    "final_us": 245.25,
+    "reduction_percent": 26.43971205758848
+  },
+  {
+    "model": "transformer",
+    "mode": "ferro_static",
+    "order": 2,
+    "baseline_us": 343.45,
+    "final_us": 281.95,
+    "reduction_percent": 17.90653661377202
+  },
+  {
+    "model": "transformer",
+    "mode": "ferro_static_snapshot",
+    "order": 1,
+    "baseline_us": 344.85,
+    "final_us": 238.6,
+    "reduction_percent": 30.81049731767436
+  },
+  {
+    "model": "transformer",
+    "mode": "ferro_static_snapshot",
+    "order": 2,
+    "baseline_us": 337.45,
+    "final_us": 229.75,
+    "reduction_percent": 31.915839383612383
+  }
+]

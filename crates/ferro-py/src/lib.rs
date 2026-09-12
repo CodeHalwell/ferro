@@ -1,5 +1,9 @@
 mod dlpack;
 
+#[cfg(test)]
+#[path = "../tests/support/dlpack_recorded_error.rs"]
+mod dlpack_error_tests;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ferro_core::{Device, Rng, Tensor as CoreTensor};
@@ -9,6 +13,22 @@ use pyo3::types::{PyDict, PyEllipsis, PyList, PySlice, PyTuple};
 
 fn map_err(e: ferro_core::Error) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+fn validate_dlpack_stream(device: Device, stream: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
+    let Some(stream) = stream.filter(|s| !s.is_none()) else { return Ok(()); };
+    if device == Device::Cpu {
+        return Err(PyValueError::new_err("CPU DLPack export requires stream=None"));
+    }
+    if stream.is_instance_of::<pyo3::types::PyBool>() || !stream.is_instance_of::<pyo3::types::PyInt>() {
+        return Err(PyTypeError::new_err("CUDA DLPack stream must be None or an integer"));
+    }
+    let token = stream.extract::<usize>().map_err(|_| PyValueError::new_err(
+        "CUDA DLPack stream must be a positive pointer-sized integer; no-sync (-1) is unsupported"))?;
+    if token == 0 {
+        return Err(PyValueError::new_err("CUDA DLPack stream 0 is ambiguous; use None, 1, or 2"));
+    }
+    Ok(())
 }
 
 fn default_seed() -> u64 {
@@ -766,15 +786,37 @@ impl PyTensor {
         )
     }
 
-    /// DLPack producer. `stream` is accepted for protocol compatibility but
-    /// ignored: transfers are synchronous.
+    /// DLPack producer. CUDA None/1 (legacy), 2 (per-thread), and positive
+    /// stream handles use a conservative allocation-stream fence. The optional
+    /// -1 no-sync extension is not supported; no consumer handle is dereferenced.
     #[pyo3(signature = (stream=None))]
     fn __dlpack__<'py>(
         &self,
         py: Python<'py>,
         stream: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let _ = stream;
+        validate_dlpack_stream(self.inner.device(), stream.as_ref())?;
+        if self.inner.device() != Device::Cpu {
+            let view = self.inner.dlpack_device_view().map_err(map_err)?;
+            let buffer = view.device_buffer().as_any().downcast_ref::<ferro_cuda::CudaBuf>()
+                .ok_or_else(|| PyValueError::new_err("device buffer was not allocated by CUDA"))?;
+            // Use allocation ownership, not the replaceable registry/LAST_BACKEND.
+            // DevicePtr joins tracked foreign writes onto this stream before the fence.
+            let producer = buffer.stream();
+            let (_ptr, usage) = cudarc::driver::DevicePtr::device_ptr(&**buffer, producer);
+            #[cfg(test)]
+            dlpack_error_tests::inject(1, producer.context());
+            let ctx = producer.context();
+            // Infallible dependency/Drop APIs record errors on the allocation context.
+            let ready = ctx.check_err().and_then(|()| producer.synchronize());
+            drop(usage);
+            #[cfg(test)]
+            dlpack_error_tests::inject(2, ctx);
+            let released = ctx.check_err();
+            ready.and(released).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        }
+        #[cfg(test)]
+        dlpack_error_tests::EXPORT_CALLS.with(|n| n.set(n.get() + 1));
         dlpack::export_for(py, &self.inner)
     }
 
