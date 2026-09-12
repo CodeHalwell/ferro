@@ -297,7 +297,7 @@ impl CudaBackend {
             commands.push(command);
         }
         let resources = Resources { blas, _workspace: workspace, stream, commands };
-        let mut flight = native::Flight { streams: vec![self.stream.cu_stream(), resources.stream.cu_stream()], calls: Arc::new(native::Driver(resources.stream.clone())), data: Some((outputs, leaves, resources, self.clone())), users: &mut users };
+        let mut flight = native::Flight { graph: None, streams: vec![self.stream.cu_stream(), resources.stream.cu_stream()], calls: Arc::new(native::Driver::new(resources.stream.clone())), data: Some((outputs, leaves, resources, self.clone())), users: &mut users };
         let (outputs, leaves, resources, _) = flight.data.as_mut().unwrap();
         let mut pointers = Vec::new();
         let mut guards = Vec::new();
@@ -313,9 +313,9 @@ impl CudaBackend {
         self.stream.synchronize().map_err(|e| bad(e.to_string()))?;
         for command in &resources.commands { command.enqueue(&resources.stream, &resources.blas, &pointers)?; }
         #[cfg(test)] injected("warm")?;
-        native::Driver(resources.stream.clone()).warm_fence().map_err(|e| bad(e.to_string()))?;
+        flight.calls.warm_fence().map_err(|e| bad(e.to_string()))?;
         drop(guards);
-        let capture = CaptureSession::begin(resources.stream.clone())?;
+        let capture = CaptureSession::begin(flight.calls.clone())?;
         for command in &resources.commands { command.enqueue(&resources.stream, &resources.blas, &pointers)?; }
         #[cfg(test)] injected("enqueue")?;
         let graph = capture.finish()?;

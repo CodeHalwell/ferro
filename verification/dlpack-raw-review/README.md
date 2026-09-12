@@ -23,15 +23,20 @@ The unfenced result is diagnostic, not a guaranteed value: the probe asserts onl
 - Ferro `CudaBackend::new` uses `ctx.new_stream`; `htod` enqueues `memcpy_htod`; `exported_view` returns DevicePtr raw parts without synchronizing. The only production `dlpack::export_for` caller is the public `__dlpack__` method, which already establishes readiness. Thus adding another production fence to the raw builder would duplicate the public fence rather than repair this test's missing precondition.
 - Corrected focused test: `green.log`, exit 0, 1 passed. The public error-drain implementation was present throughout this review's RED/GREEN.
 
-## Final verification (actually executed)
+## Historical verification (executed at this stage)
 
-From repository root:
+Current-source reproduction from repository root (not a historical RED rerun):
+`red`/`green` aliases were duplicates and are replaced by `current-test`. Archived
+RED failures above require their original pre-fix state; this runner neither
+recreates nor validates them. They have not been overwritten. Every invocation
+requires an empty output directory; `all` puts each phase in its own subdirectory.
+Integration now uses the fresh-output static-perf runner instead of overwriting
+continuation evidence. The historical results below remain stage-specific.
 
 ```
-python verification/dlpack-raw-review/run.py red    # historical original-test RED; current source is fixed
-python verification/dlpack-raw-review/run.py probe
-python verification/dlpack-raw-review/run.py green
-python verification/dlpack-raw-review/run.py all
+python verification/dlpack-raw-review/run.py current-test --output-dir verification/dlpack-raw-review/new-focused
+python verification/dlpack-raw-review/run.py probe --output-dir verification/dlpack-raw-review/new-probe
+python verification/dlpack-raw-review/run.py all --output-dir verification/dlpack-raw-review/new-all
 ```
 
 `all` runs every phase even if a preceding phase fails, records each real exit code, and exits nonzero if any phase fails. It explicitly includes the standalone Rust binding suite omitted by the original 13-command runner:

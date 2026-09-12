@@ -165,9 +165,11 @@ impl Drop for StaticPointwiseGraph {
         *users -= 1;
         // Flight fences before tuple destruction (exec, graph, then addresses).
         // If completion remains unknown it retains the tuple and exclusion slot.
-        drop(native::Flight {
-            data: Some((self.graph.take(), std::mem::take(&mut self.outputs), std::mem::take(&mut self.leaves), std::mem::take(&mut self._commands), self._model.take(), self.backend.clone())),
-            calls: Arc::new(native::Driver(self.backend.stream.clone())), streams, users: &mut users,
+        let graph = self.graph.take();
+        let calls = graph.as_ref().unwrap().calls.clone();
+        drop(native::Flight { graph,
+            data: Some((std::mem::take(&mut self.outputs), std::mem::take(&mut self.leaves), std::mem::take(&mut self._commands), self._model.take(), self.backend.clone())),
+            calls, streams, users: &mut users,
         });
     }
 }
@@ -210,7 +212,7 @@ impl CudaBackend {
             commands.push(Command { function, inputs: run.inputs.clone(), output: leaves.len() + i, n: n as u32 });
         }
         let capture_stream = self.ctx.new_stream().map_err(|e| cuda_err("prepare_static_graph", e))?;
-        let mut flight = native::Flight { data: Some((outputs, leaves, commands, self.clone())), calls: Arc::new(native::Driver(capture_stream.clone())), streams: vec![self.stream.cu_stream(), capture_stream.cu_stream()], users: &mut users };
+        let mut flight = native::Flight { graph: None, data: Some((outputs, leaves, commands, self.clone())), calls: Arc::new(native::Driver::new(capture_stream.clone())), streams: vec![self.stream.cu_stream(), capture_stream.cu_stream()], users: &mut users };
         let (outputs, leaves, commands, _) = flight.data.as_mut().unwrap();
         let mut pointers = Vec::new();
         let mut guards = Vec::new();
@@ -226,7 +228,7 @@ impl CudaBackend {
         for command in commands.iter() { command.enqueue(&self.stream, &pointers)?; }
         drop(guards);
         self.stream.synchronize().map_err(|e| cuda_err("prepare_static_graph", e))?;
-        let capture = CaptureSession::begin(capture_stream.clone())?;
+        let capture = CaptureSession::begin(flight.calls.clone())?;
         for command in commands.iter() { command.enqueue(&capture_stream, &pointers)?; }
         let graph = capture.finish()?;
         let mut nodes = 0;
@@ -316,9 +318,9 @@ mod tests {
         let stream = b.ctx.new_stream().unwrap();
         assert!(b.ctx.is_event_tracking());
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _capture = CaptureSession::begin(stream.clone()).unwrap();
+            let _capture = CaptureSession::begin(Arc::new(native::Driver::new(stream.clone()))).unwrap();
             assert!(b.ctx.is_event_tracking());
-            assert!(CaptureSession::begin(stream.clone()).is_err());
+            assert!(CaptureSession::begin(Arc::new(native::Driver::new(stream.clone()))).is_err());
             panic!("injected failure after begin");
         }));
         assert!(unwind.is_err());

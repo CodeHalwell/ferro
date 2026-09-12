@@ -12,6 +12,7 @@ mod gpu_tests;
 // owned live handle, including injected Err/panic after successful creation.
 // Fake opaque handles never enter Driver methods.
 pub(super) trait Calls {
+    fn quarantine(&self) -> &Quarantine;
     fn upload(&self, exec: sys::CUgraphExec, stream: sys::CUstream) -> DriverResult<()>;
     fn fence(&self, stream: sys::CUstream) -> DriverResult<()>;
     fn capturing(&self) -> DriverResult<bool>;
@@ -23,11 +24,20 @@ pub(super) trait Calls {
     fn record(&self, error: DriverResult<()>);
 }
 
+// Sticky shared state: raw owned handles are retained, never retried after a
+// destroy error (CUDA may report a deferred error). No recursive Drop owners.
+#[derive(Default)]
+pub(super) struct Quarantine {
+    owners: std::sync::Mutex<Vec<(sys::CUgraph, sys::CUgraphExec, Option<sys::CUstream>)>>,
+    uncertain: std::cell::Cell<bool>,
+}
+
 // Temporary preparation ownership, including private warmup work. Persistent
 // fence errors retain the complete resource tuple until process exit and retain
 // a legacy-capture exclusion slot. There is no claimed fatal-context recovery.
 pub(super) struct Flight<'a, T, C: Calls = Driver> {
     pub(super) data: Option<T>,
+    pub(super) graph: Option<GraphOwner<C>>,
     pub(super) calls: Arc<C>,
     pub(super) streams: Vec<sys::CUstream>,
     pub(super) users: &'a mut usize,
@@ -47,23 +57,27 @@ impl<T, C: Calls> Drop for Flight<'_, T, C> {
                     complete &= retry.is_ok();
                 }
             }
-            if !complete {
-                std::mem::forget(self.data.take());
-                std::mem::forget(self.calls.clone());
+            if complete { drop(self.graph.take()); }
+            if !complete || self.calls.quarantine().uncertain.get() {
+                // Leak one complete tuple, including still-owned native handles,
+                // address owners, stream/context and sticky cleanup state.
+                Box::leak(Box::new((self.graph.take(), self.data.take(), self.calls.clone(), std::mem::take(&mut self.streams))));
                 *self.users += 1;
             }
         }
     }
 }
 
-pub(super) struct Driver(pub Arc<CudaStream>);
+pub(super) struct Driver(pub Arc<CudaStream>, Quarantine);
 impl Driver {
+    pub(super) fn new(stream: Arc<CudaStream>) -> Self { Self(stream, Quarantine::default()) }
     pub(super) fn warm_fence(&self) -> DriverResult<()> {
         #[cfg(test)] if gpu_tests::take("warm-fence-skip") { return Err(gpu_tests::error()); }
         self.0.synchronize()
     }
 }
 impl Calls for Driver {
+    fn quarantine(&self) -> &Quarantine { &self.1 }
     fn upload(&self, exec: sys::CUgraphExec, stream: sys::CUstream) -> DriverResult<()> {
         #[cfg(test)] { gpu_tests::event("upload"); if gpu_tests::take("upload-skip") { return Err(gpu_tests::error()); } }
         unsafe { result::graph::upload(exec, stream) }?;
@@ -76,7 +90,9 @@ impl Calls for Driver {
         #[cfg(test)] { gpu_tests::event("fence"); if gpu_tests::take("fence-skip") { return Err(gpu_tests::error()); } }
         self.bind()?; unsafe { result::stream::synchronize(stream) }
     }
-    fn capturing(&self) -> DriverResult<bool> { self.0.capture_status().map(|s| s != sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE) }
+    fn capturing(&self) -> DriverResult<bool> {
+        #[cfg(test)] if gpu_tests::take("status-skip") { return Err(gpu_tests::error()); }
+        self.0.capture_status().map(|s| s != sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE) }
     fn end(&self, graph: &mut sys::CUgraph) -> DriverResult<()> {
         #[cfg(test)] { gpu_tests::event("end"); if gpu_tests::take("end-skip") { return Err(gpu_tests::error()); } }
         let mut output = std::ptr::null_mut();
@@ -98,13 +114,16 @@ impl Calls for Driver {
         #[cfg(test)] if gpu_tests::take("instantiate-error") { return Err(gpu_tests::error()); }
         Ok(())
     }
-    fn bind(&self) -> DriverResult<()> { self.0.context().bind_to_thread() }
+    fn bind(&self) -> DriverResult<()> {
+        #[cfg(test)] if gpu_tests::take("bind-skip") { return Err(gpu_tests::error()); }
+        self.0.context().bind_to_thread()
+    }
     fn destroy_exec(&self, exec: sys::CUgraphExec) -> DriverResult<()> {
-        #[cfg(test)] gpu_tests::event("exec");
+        #[cfg(test)] { gpu_tests::event("exec"); if gpu_tests::take("exec-skip") { return Err(gpu_tests::error()); } }
         unsafe { result::graph::exec_destroy(exec) }
     }
     fn destroy_graph(&self, graph: sys::CUgraph) -> DriverResult<()> {
-        #[cfg(test)] gpu_tests::event("graph");
+        #[cfg(test)] { gpu_tests::event("graph"); if gpu_tests::take("graph-skip") { return Err(gpu_tests::error()); } }
         unsafe { result::graph::destroy(graph) }
     }
     fn record(&self, error: DriverResult<()>) { self.0.context().record_err(error); }
@@ -113,10 +132,18 @@ impl Calls for Driver {
 pub(super) struct GraphOwner<C: Calls = Driver> {
     pub(super) graph: sys::CUgraph,
     pub(super) exec: sys::CUgraphExec,
-    calls: Arc<C>,
+    pub(super) calls: Arc<C>,
     pending: std::cell::Cell<Option<sys::CUstream>>,
 }
 impl<C: Calls> GraphOwner<C> {
+    fn retain(&mut self) {
+        let state = self.calls.quarantine();
+        state.uncertain.set(true);
+        state.owners.lock().unwrap_or_else(|e| e.into_inner()).push((self.graph, self.exec, self.pending.take()));
+        self.graph = std::ptr::null_mut(); self.exec = std::ptr::null_mut();
+        // Also retain context for a standalone owner; Flight retains addresses.
+        std::mem::forget(self.calls.clone());
+    }
     pub(super) fn upload(&self, stream: sys::CUstream) -> Result<()> {
         self.pending.set(Some(stream));
         let upload = self.calls.upload(self.exec, stream);
@@ -128,25 +155,38 @@ impl<C: Calls> GraphOwner<C> {
 }
 impl<C: Calls> Drop for GraphOwner<C> {
     fn drop(&mut self) {
-        if let Some(stream) = self.pending.take() {
+        if self.graph.is_null() && self.exec.is_null() { return; }
+        if let Some(stream) = self.pending.get() {
             let fence = self.calls.fence(stream);
             self.calls.record(fence);
             if fence.is_err() {
-                // Completion is unknown. Keep native handles/context alive until
-                // process exit; callers quarantine their address owners too.
-                std::mem::forget(self.calls.clone());
+                self.retain();
                 return;
             }
         }
-        self.calls.record(self.calls.bind());
-        if !self.exec.is_null() { self.calls.record(self.calls.destroy_exec(self.exec)); }
-        if !self.graph.is_null() { self.calls.record(self.calls.destroy_graph(self.graph)); }
+        self.pending.set(None);
+        let bound = self.calls.bind();
+        self.calls.record(bound);
+        if bound.is_err() { self.retain(); return; }
+        if !self.exec.is_null() {
+            let destroyed = self.calls.destroy_exec(self.exec);
+            self.calls.record(destroyed);
+            if destroyed.is_err() { self.retain(); return; }
+            self.exec = std::ptr::null_mut();
+        }
+        if !self.graph.is_null() {
+            let destroyed = self.calls.destroy_graph(self.graph);
+            self.calls.record(destroyed);
+            if destroyed.is_err() { self.retain(); return; }
+            self.graph = std::ptr::null_mut();
+        }
     }
 }
 
 pub(super) struct CaptureSession<C: Calls = Driver> { calls: Arc<C>, active: bool }
 impl CaptureSession {
-    pub(super) fn begin(stream: Arc<CudaStream>) -> Result<Self> {
+    pub(super) fn begin(calls: Arc<Driver>) -> Result<Self> {
+        let stream = &calls.0;
         if stream.capture_status().map_err(|e| cuda_err("static_capture", e))? != sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE {
             return Err(cuda_err("static_capture", "stream is already capturing"));
         }
@@ -156,7 +196,7 @@ impl CaptureSession {
             stream.begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
         };
         begin().map_err(|e| cuda_err("static_capture", e))?;
-        Ok(Self { calls: Arc::new(Driver(stream)), active: true })
+        Ok(Self { calls, active: true })
     }
 }
 impl<C: Calls> CaptureSession<C> {
@@ -180,14 +220,39 @@ impl<C: Calls> Drop for CaptureSession<C> {
                 Ok(true) => {},
                 Err(error) => {
                     self.calls.record(Err(error));
+                    self.calls.quarantine().uncertain.set(true);
                     std::mem::forget(self.calls.clone());
                     return;
                 },
             }
-            self.calls.record(self.calls.bind());
-            let mut graph = std::ptr::null_mut();
-            self.calls.record(self.calls.end(&mut graph));
-            if !graph.is_null() { self.calls.record(self.calls.destroy_graph(graph)); }
+            let bound = self.calls.bind();
+            self.calls.record(bound);
+            if bound.is_err() {
+                self.calls.quarantine().uncertain.set(true);
+                std::mem::forget(self.calls.clone());
+                return;
+            }
+            let mut owner = GraphOwner { graph: std::ptr::null_mut(), exec: std::ptr::null_mut(), calls: self.calls.clone(), pending: std::cell::Cell::new(None) };
+            let ended = self.calls.end(&mut owner.graph);
+            self.calls.record(ended);
+            if ended.is_err() {
+                match self.calls.capturing() {
+                    Ok(false) => {},
+                    status => {
+                        if let Err(error) = status { self.calls.record(Err(error)); }
+                        owner.retain();
+                    },
+                }
+            }
+            // The context is already bound. Never retry an ambiguous destroy.
+            if !owner.graph.is_null() {
+                let destroyed = self.calls.destroy_graph(owner.graph);
+                self.calls.record(destroyed);
+                if destroyed.is_err() { owner.retain(); }
+                else { owner.graph = std::ptr::null_mut(); }
+            }
+            // Slots were explicitly released or moved into quarantine.
+            drop(owner);
         }
     }
 }

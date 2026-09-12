@@ -35,10 +35,8 @@ class StaticCoverageTests(unittest.TestCase):
         self.assertLessEqual(distance.max().item(), max_ulp, f"maximum f32 ULP distance: {distance.max().item()}")
 
     def eager_values(self, values, leaves, forward, shape):
-        # Legacy eager CUDA has empty-softmax/zero-column-GEMM failures.
-        # CPU eager is the independent Ferro oracle for degenerate inputs.
-        oracle_leaves = [ferro.Tensor(value.flatten().tolist(), list(value.shape)) for value in values] if any(value.numel() == 0 for value in values) else leaves
-        result = forward(*oracle_leaves)
+        result = forward(*leaves)
+        self.assertEqual(result.__dlpack_device__(), (2, 0))
         self.assertEqual(tuple(result.shape), tuple(shape))
         return torch.tensor(result.tolist(), dtype=torch.float32).reshape(shape)
 

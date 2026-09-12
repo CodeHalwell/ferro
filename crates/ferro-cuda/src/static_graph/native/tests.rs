@@ -2,8 +2,9 @@ use super::*;
 use std::cell::{Cell, RefCell};
 fn error() -> DriverError { DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE) }
 #[derive(Default)]
-struct Fake { events: RefCell<Vec<&'static str>>, end_error: Cell<bool>, partial: Cell<bool>, skip: Cell<bool>, active: Cell<bool>, upload_error: Cell<bool>, null_exec: Cell<bool>, instantiate_error: Cell<bool>, null_graph: Cell<bool>, cleanup_error: Cell<bool>, fence_error: Cell<bool>, panic_end: Cell<bool>, ended: Cell<bool>, persistent_fence: Cell<bool>, status_error: Cell<bool> }
+struct Fake { quarantine: Quarantine, exec_error: Cell<bool>, graph_error: Cell<bool>, events: RefCell<Vec<&'static str>>, end_error: Cell<bool>, partial: Cell<bool>, skip: Cell<bool>, active: Cell<bool>, upload_error: Cell<bool>, null_exec: Cell<bool>, instantiate_error: Cell<bool>, null_graph: Cell<bool>, cleanup_error: Cell<bool>, fence_error: Cell<bool>, panic_end: Cell<bool>, ended: Cell<bool>, persistent_fence: Cell<bool>, status_error: Cell<bool> }
 impl Calls for Fake {
+    fn quarantine(&self) -> &Quarantine { &self.quarantine }
     fn upload(&self, _: sys::CUgraphExec, _: sys::CUstream) -> DriverResult<()> { self.events.borrow_mut().push("upload"); if self.upload_error.get() { Err(error()) } else { Ok(()) } }
     fn fence(&self, _: sys::CUstream) -> DriverResult<()> { self.events.borrow_mut().push("fence"); if self.persistent_fence.get() || self.fence_error.replace(false) { Err(error()) } else { Ok(()) } }
     fn capturing(&self) -> DriverResult<bool> { if self.status_error.get() { Err(error()) } else { Ok(!self.ended.get() || self.active.get()) } }
@@ -17,9 +18,106 @@ impl Calls for Fake {
     }
     fn instantiate(&self, _: sys::CUgraph, exec: &mut sys::CUgraphExec) -> DriverResult<()> { self.events.borrow_mut().push("instantiate"); if !self.null_exec.get() { *exec = 2usize as _; } if self.instantiate_error.get() { Err(error()) } else { Ok(()) } }
     fn bind(&self) -> DriverResult<()> { self.events.borrow_mut().push("bind"); if self.cleanup_error.get() { Err(error()) } else { Ok(()) } }
-    fn destroy_exec(&self, exec: sys::CUgraphExec) -> DriverResult<()> { assert_eq!(exec as usize, 2); self.events.borrow_mut().push("exec"); if self.cleanup_error.get() { Err(error()) } else { Ok(()) } }
-    fn destroy_graph(&self, graph: sys::CUgraph) -> DriverResult<()> { assert_eq!(graph as usize, 1); self.events.borrow_mut().push("graph"); if self.cleanup_error.get() { Err(error()) } else { Ok(()) } }
+    fn destroy_exec(&self, exec: sys::CUgraphExec) -> DriverResult<()> { assert_eq!(exec as usize, 2); self.events.borrow_mut().push("exec"); if self.exec_error.get() || self.cleanup_error.get() { Err(error()) } else { Ok(()) } }
+    fn destroy_graph(&self, graph: sys::CUgraph) -> DriverResult<()> { assert_eq!(graph as usize, 1); self.events.borrow_mut().push("graph"); if self.graph_error.get() || self.cleanup_error.get() { Err(error()) } else { Ok(()) } }
     fn record(&self, result: DriverResult<()>) { if result.is_err() { self.events.borrow_mut().push("error"); } }
+}
+#[test]
+fn inner_cleanup_failure_cannot_be_erased_by_outer_fence_success() {
+    let calls=Arc::new(Fake::default());
+    let mut users=3;
+    let flight=Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users};
+    let graph=CaptureSession {calls:calls.clone(),active:true}.finish().unwrap();
+    calls.persistent_fence.set(true);
+    assert!(graph.upload(std::ptr::null_mut()).is_err());
+    drop(graph);
+    calls.persistent_fence.set(false);
+    drop(flight);
+    assert_eq!(users,4,"outer success erased unresolved native ownership");
+    assert_eq!(*calls.events.borrow(),["end","instantiate","upload","fence","fence","error","fence"]);
+    let owners=calls.quarantine.owners.lock().unwrap();
+    assert_eq!(owners.len(),1);
+    assert_eq!((owners[0].0 as usize,owners[0].1 as usize,owners[0].2),(1,2,Some(std::ptr::null_mut())));
+    assert!(!calls.events.borrow().contains(&"buffers"));
+}
+#[test]
+fn unknown_status_retains_capture_stream_addresses_and_exclusion() {
+    let calls=Arc::new(Fake::default());
+    let mut users=3;
+    let flight=Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users};
+    calls.status_error.set(true);
+    drop(CaptureSession {calls:calls.clone(),active:true});
+    drop(flight);
+    assert_eq!(users,4,"unknown capture state must survive a successful outer fence");
+    assert_eq!(*calls.events.borrow(),["error","fence"]);
+    assert!(!calls.events.borrow().contains(&"end"));
+}
+#[test]
+fn native_cleanup_bind_retains_handles() { check_cleanup_failure("bind"); }
+#[test]
+fn native_cleanup_exec_retains_handles() { check_cleanup_failure("exec"); }
+#[test]
+fn native_cleanup_graph_retains_only_remaining_handle() { check_cleanup_failure("graph"); }
+fn check_cleanup_failure(stage: &str) {
+        let calls=Arc::new(Fake::default());
+        let graph=CaptureSession {calls:calls.clone(),active:true}.finish().unwrap();
+        calls.events.borrow_mut().clear();
+        calls.cleanup_error.set(stage=="bind");
+        calls.exec_error.set(stage=="exec");
+        calls.graph_error.set(stage=="graph");
+        let mut users=3;
+        drop(Flight {graph:Some(graph),data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users});
+        assert_eq!(users,4,"{stage}: graph cleanup inside Flight lost exclusion");
+        assert!(!calls.events.borrow().contains(&"buffers"));
+        let owners=calls.quarantine.owners.lock().unwrap();
+        assert_eq!(owners.len(),1);
+        assert_eq!((owners[0].0 as usize,owners[0].1 as usize),(1,if stage=="graph" {0} else {2}));
+        assert_eq!(*calls.events.borrow(),match stage {
+            "bind"=>vec!["fence","bind","error"],
+            "exec"=>vec!["fence","bind","exec","error"],
+            _=>vec!["fence","bind","exec","graph","error"],
+        });
+}
+#[test]
+fn capture_cleanup_bind_failure_cannot_release_addresses_after_outer_success() {
+    let calls=Arc::new(Fake::default()); calls.cleanup_error.set(true);
+    let mut users=0;
+    let flight=Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users};
+    drop(CaptureSession {calls:calls.clone(),active:true});
+    calls.cleanup_error.set(false);
+    drop(flight);
+    assert_eq!(users,1);
+    assert_eq!(*calls.events.borrow(),["bind","error","fence"]);
+}
+#[test]
+fn cleanup_end_still_active_or_partial_destroy_failure_stays_quarantined() {
+    for active in [false,true] {
+        let calls=Arc::new(Fake::default());
+        calls.skip.set(active); calls.graph_error.set(!active);
+        let mut users=2;
+        let flight=Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users};
+        drop(CaptureSession {calls:calls.clone(),active:true});
+        drop(flight);
+        assert_eq!(users,3);
+        assert_eq!(*calls.events.borrow(),if active {vec!["bind","end","error","fence"]} else {vec!["bind","end","graph","error","fence"]});
+        let owners=calls.quarantine.owners.lock().unwrap();
+        assert_eq!(owners.len(),1);
+        assert_eq!((owners[0].0 as usize,owners[0].1 as usize),(if active {0} else {1},0));
+    }
+}
+#[test]
+fn poisoned_quarantine_registry_still_retains_owned_handles() {
+    let calls=Arc::new(Fake::default());
+    let caught=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _lock=calls.quarantine.owners.lock().unwrap(); panic!("poison quarantine registry");
+    }));
+    assert!(caught.is_err());
+    let graph=CaptureSession {calls:calls.clone(),active:true}.finish().unwrap();
+    calls.exec_error.set(true);
+    drop(graph);
+    let owners=calls.quarantine.owners.lock().unwrap_or_else(|e|e.into_inner());
+    assert_eq!(owners.len(),1);
+    assert_eq!((owners[0].0 as usize,owners[0].1 as usize),(1,2));
 }
 #[test]
 fn null_graph_error_is_distinct_from_a_valid_zero_node_graph() {
@@ -31,7 +129,7 @@ fn null_graph_error_is_distinct_from_a_valid_zero_node_graph() {
 fn unknown_capture_status_does_not_blindly_end_twice() {
     let calls=Arc::new(Fake::default()); calls.end_error.set(true); calls.status_error.set(true);
     assert!(CaptureSession {calls:calls.clone(),active:true}.finish().is_err());
-    assert_eq!(*calls.events.borrow(),["end","bind","error"]);
+    assert_eq!(*calls.events.borrow(),["end","error"]);
 }
 struct Probe(Arc<Fake>);
 impl Drop for Probe { fn drop(&mut self) { self.0.events.borrow_mut().push("buffers"); } }
@@ -40,7 +138,7 @@ fn preparation_fences_before_buffers_and_releases_only_its_exclusion() {
     for fail_once in [false,true] {
         let calls=Arc::new(Fake::default()); calls.fence_error.set(fail_once);
         let mut users=3;
-        drop(Flight {data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users});
+        drop(Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users});
         assert_eq!(*calls.events.borrow(),if fail_once {vec!["fence","fence","error","buffers"]} else {vec!["fence","buffers"]});
         assert_eq!(users,3);
     }
@@ -49,7 +147,7 @@ fn preparation_fences_before_buffers_and_releases_only_its_exclusion() {
 fn uncertain_preparation_completion_retains_buffers_and_exclusion() {
     let calls=Arc::new(Fake::default()); calls.persistent_fence.set(true);
     let mut users=0;
-    drop(Flight {data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users});
+    drop(Flight {graph:None,data:Some(Probe(calls.clone())),calls:calls.clone(),streams:vec![std::ptr::null_mut()],users:&mut users});
     assert!(!calls.events.borrow().contains(&"buffers"),"released unfenced addresses");
     assert_eq!(users,1,"quarantine must continue excluding legacy capture");
 }
@@ -80,13 +178,16 @@ fn existing_null_and_partial_failure_ownership_matrix() {
         let calls=Arc::new(Fake::default()); calls.instantiate_error.set(true); calls.null_exec.set(!partial); calls.cleanup_error.set(true);
         let err=CaptureSession {calls:calls.clone(),active:true}.finish().err().unwrap().to_string();
         assert!(err.contains("static_graph_instantiate"));
-        let expected=if partial {vec!["end","instantiate","bind","error","exec","error","graph","error"]} else {vec!["end","instantiate","bind","error","graph","error"]};
+        let expected=vec!["end","instantiate","bind","error"];
+        let owners=calls.quarantine.owners.lock().unwrap();
+        assert_eq!(owners.len(),1);
+        assert_eq!((owners[0].0 as usize,owners[0].1 as usize),(1,if partial {2} else {0}));
         assert_eq!(*calls.events.borrow(),expected);
     }
     for end_error in [false,true] {
         let calls=Arc::new(Fake::default()); calls.null_graph.set(true); calls.end_error.set(end_error);
         assert!(CaptureSession {calls:calls.clone(),active:true}.finish().is_err());
-        assert_eq!(*calls.events.borrow(),["end","bind"]);
+        assert_eq!(*calls.events.borrow(),["end"]);
     }
 }
 #[test]

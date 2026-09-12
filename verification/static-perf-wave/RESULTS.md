@@ -1,6 +1,11 @@
 # Static replay performance wave (2026-09-12)
 
-## Outcome
+## Historical stage outcome
+
+These samples belong to the layout/guard performance stage, before later PR24
+core, DLPack and native-ownership changes. They are not final-tree performance
+or a benchmark of the review fixes. Archived timing JSON and metadata are kept
+unchanged; no historical build provenance has been backfilled.
 
 Transformer static+snapshot improved from fresh pre-edit medians of
 344.85 / 337.45 us to 238.60 / 229.75 us (30.81% / 31.92% lower).
@@ -48,7 +53,7 @@ for 128x256x256, medians were 32.00/31.90 us then 15.10/15.10 us;
 **GEMM production selection is unchanged.** Component wall times are
 non-additive and are not a driver timeline or proof of equal native algorithms.
 
-## Full-model evidence
+## Historical full-model evidence
 
 All float32 workloads use 128 tokens, width 256, eight transformer heads,
 TF32 off, Torch one CPU thread, inference mode, transfer-free fences and
@@ -64,16 +69,16 @@ Median us; run 2 reverses comparator order:
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | Baseline 1 | MLP | 95.55 | 72.85 | 69.10 | 59.70 | 62.00 |
 | Baseline 2 | MLP | 92.15 | 51.00 | 68.75 | 47.40 | 43.30 |
-| Final 1 | MLP | 64.55 | 51.20 | 71.90 | 47.20 | 43.20 |
-| Final 2 | MLP | 94.65 | 72.70 | 69.85 | 47.10 | 61.50 |
+| Stage final 1 | MLP | 64.55 | 51.20 | 71.90 | 47.20 | 43.20 |
+| Stage final 2 | MLP | 94.65 | 72.70 | 69.85 | 47.10 | 61.50 |
 | Baseline 1 | Residual | 60.55 | 53.45 | 86.15 | 48.90 | 44.50 |
 | Baseline 2 | Residual | 56.85 | 91.10 | 82.55 | 48.80 | 44.40 |
-| Final 1 | Residual | 67.90 | 90.45 | 85.75 | 41.90 | 70.10 |
-| Final 2 | Residual | 121.05 | 90.75 | 83.15 | 48.20 | 44.40 |
+| Stage final 1 | Residual | 67.90 | 90.45 | 85.75 | 41.90 | 70.10 |
+| Stage final 2 | Residual | 121.05 | 90.75 | 83.15 | 48.20 | 44.40 |
 | Baseline 1 | Transformer | 267.60 | 495.65 | 267.80 | 333.40 | 344.85 |
 | Baseline 2 | Transformer | 499.60 | 471.45 | 469.05 | 343.45 | 337.45 |
-| Final 1 | Transformer | 531.80 | 291.40 | 267.30 | 245.25 | 238.60 |
-| Final 2 | Transformer | 685.30 | 480.50 | 271.05 | 281.95 | 229.75 |
+| Stage final 1 | Transformer | 531.80 | 291.40 | 267.30 | 245.25 | 238.60 |
+| Stage final 2 | Transformer | 685.30 | 480.50 | 271.05 | 281.95 | 229.75 |
 
 Disclosed adverse rows: MLP snapshot 43.30 -> 61.50 us in reverse order
 (+42.03%); residual snapshot 44.50 -> 70.10 us in normal order (+57.53%).
@@ -87,10 +92,19 @@ result was replaced by eager and no missing metadata was retrofitted.
 `final-summary.json` validates the explicit final input paths and integration.
 `baseline-summary.json` validates only the two pre-edit benchmark reports.
 Initial baselines used the already-installed release binding; subsequent
-layout, guard and final trials explicitly rebuilt release bindings. The final
-source, binding, harness and evidence SHA256 values are in `metadata.json`.
+layout, guard and stage-final trials explicitly rebuilt release bindings.
+`metadata.json` is a historical, incomplete snapshot: its source allowlist omitted
+core lowering and other dependencies, and its binding lookup could silently be
+empty on another installation. It does not establish final PR24 tree provenance
+or prove which source produced any binary. A current snapshot cannot repair this
+retroactively. Fresh summarization now requires an active or explicit native
+binding and hashes tracked/non-ignored untracked crate, bench and verification
+source dependencies, root Cargo manifests/lockfile and Cargo/toolchain config.
+That snapshot is explicitly labeled current-at-summarization, NOT historical
+run/build attestation. Third-party installed libraries and build environment are
+not a hermetic build manifest.
 
-## Verification
+## Historical stage verification
 
 - Required-GPU RED/GREEN: identity layouts requested three buffers before and
   one after; chained/shared aliases add zero captured nodes relative to direct
@@ -118,19 +132,35 @@ source, binding, harness and evidence SHA256 values are in `metadata.json`.
 
 ## Reproduction
 
-From the repository root, with unused output names:
+From the repository root in Windows Git Bash, with unused output names.
+These commands verify/measure the current source, not historical RED states.
+Prerequisites: a working CUDA driver/GPU, installed NVRTC/cuBLAS runtime and a
+release binding rebuilt from the intended tree. `run_checks.py` prepends and
+validates the documented runtime directories; `--runtime-root` overrides their
+parent nvidia directory. Directory existence is not CUDA execution proof.
+`--plan` only prints validated paths/commands; real checks retain
+`FERRO_REQUIRE_CUDA=1` and fail rather than treat required GPU absence as success.
+On POSIX use `$(pwd)/crates/ferro-py/.venv`, its `bin` directory and your system
+CUDA loader setup instead of the Windows DLL prefix.
+
+The summarizer is a separate historical comparison utility. Invoke it with
+`--input-dir` containing all six stage-named reports, `--output-dir` naming a new
+directory, and optionally `--binding path/to/ferro.pyd` (or native `.so`). Without
+that flag it resolves the active interpreter installation without loading CUDA.
+It refuses missing/ambiguous native bindings and existing output directories.
+Do not write new snapshots into archived `metadata.json`.
 
 ```bash
-export VIRTUAL_ENV="C:/Users/DanielHalwell/PythonProjects/ferro/crates/ferro-py/.venv"
+export VIRTUAL_ENV="$(pwd -W)/crates/ferro-py/.venv"
 export PATH="$VIRTUAL_ENV/Scripts:$LOCALAPPDATA/Temp/cuda-rt/nvidia/cuda_nvrtc/bin:$LOCALAPPDATA/Temp/cuda-rt/nvidia/cublas/bin:$PATH"
 python -m maturin develop --release -j2 --manifest-path crates/ferro-py/Cargo.toml
-python verification/static-perf-wave/run_checks.py
+python verification/static-perf-wave/run_checks.py --output-dir verification/static-perf-wave/new-checks
 FERRO_REQUIRE_CUDA=1 cargo test -j2 -p ferro-cuda --lib static_graph
 FERRO_REQUIRE_CUDA=1 cargo test -j2 -p ferro-cuda --test model_static_graph --test static_graph_safety
 cargo run --release -j2 -p ferro-cuda --example static_gemm_probe
 python verification/model-cuda-graphs/continuation/benchmark.py --json verification/static-perf-wave/new1.json
 python verification/model-cuda-graphs/continuation/benchmark.py --reverse --json verification/static-perf-wave/new2.json
-python verification/model-cuda-graphs/continuation/verify_results.py --runs verification/static-perf-wave/new1.json verification/static-perf-wave/new2.json --summary verification/static-perf-wave/new-summary.json --integration-dir verification/static-perf-wave
+python verification/model-cuda-graphs/continuation/verify_results.py --runs verification/static-perf-wave/new1.json verification/static-perf-wave/new2.json --summary verification/static-perf-wave/new-summary.json --integration-dir verification/static-perf-wave/new-checks
 ```
 
 Raw logs include the expected RED failures, first missing-VIRTUAL_ENV build

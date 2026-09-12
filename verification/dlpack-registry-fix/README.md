@@ -25,7 +25,7 @@ FERRO_REQUIRE_CUDA is set. Inspection found no other src unit tests using the
 core CUDA registry; static graph context tests use direct backends. Integration
 executables retain their separate process-local locks and intentional concurrency.
 
-## RED
+## Historical RED
 
 - eager-red.log: both immediate default and non-default Torch consumers failed
   numerical equality (2,162,688 / 4,194,304 elements mismatched on each).
@@ -39,7 +39,7 @@ executables retain their separate process-local locks and intentional concurrenc
 - registry-source-red.log: strengthened lifetime source check failed before
   the common guard was added. This is source evidence, not runtime proof.
 
-## GREEN
+## Historical GREEN
 
 All run.py commands have a 480-second subprocess timeout, required CUDA and the
 specified NVRTC/cuBLAS DLL PATH. RUST_TEST_THREADS is explicitly unset; no Rust
@@ -66,6 +66,22 @@ run uses --test-threads=1. Logs include exact commands and exit codes.
 - final-source.log: all 8 audited source checks pass, no expected failures.
   Only the two fulfilled source contracts were promoted; native failure-injection
   gaps remain untouched. git diff --check passed (existing CRLF notices only).
+
+## Current-source runner semantics
+
+`run.py` is a generic `LABEL COMMAND...` wrapper, not a RED/GREEN phase
+implementation. The review description of duplicate built-in phases does not
+match this file; nevertheless labels never select or restore pre-fix sources.
+Use a new `current-...` label for reruns, for example:
+
+```bash
+python verification/dlpack-registry-fix/run.py current-registry cargo test -j2 -p ferro-cuda --lib
+```
+
+The exclusive-create log mode refuses existing names. Archived RED/GREEN logs
+above were collected at their respective source stages; rerunning the same
+command on current source cannot recreate or validate historical failures. No
+historical log, timing sample, or metadata has been regenerated for this review.
 
 ## Limits
 
