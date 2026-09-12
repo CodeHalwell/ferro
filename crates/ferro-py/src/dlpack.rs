@@ -202,6 +202,8 @@ pub fn export_capsule<'py>(
 /// Build a "dltensor" capsule that ZERO-COPY exports a device-resident
 /// contiguous f32 tensor as kDLCUDA. The capsule borrows the tensor's Arc
 /// storage; see the module docs for the ownership contract.
+/// This raw builder does not fence GPU work. Callers must establish producer
+/// readiness before consumption; the Python `__dlpack__` method does so.
 pub fn export_device_capsule<'py>(
     py: Python<'py>,
     inner: &CoreTensor,
@@ -209,7 +211,8 @@ pub fn export_device_capsule<'py>(
     let view = inner.dlpack_device_view().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let (ptr, ordinal) =
         ferro_cuda::exported_view(view.device_buffer()).map_err(PyValueError::new_err)?;
-    if ptr == 0 {
+    // CUDA zero-length allocations legitimately have no device address.
+    if ptr == 0 && inner.numel() != 0 {
         return Err(PyValueError::new_err("CUDA buffer has null device pointer"));
     }
     let byte_offset = view_byte_offset(view.offset_elems())?;
@@ -265,6 +268,7 @@ fn finish_capsule<'py>(
 
 /// `__dlpack__` dispatch: zero-copy kDLCUDA for device-resident tensors,
 /// owned host copy otherwise.
+/// Raw capsule construction only; CUDA readiness is the caller's responsibility.
 pub fn export_for<'py>(py: Python<'py>, inner: &CoreTensor) -> PyResult<Bound<'py, PyAny>> {
     if inner.device() != Device::Cpu {
         return export_device_capsule(py, inner);
@@ -728,7 +732,14 @@ mod tests {
 
     fn gpu_ok() -> bool {
         init_python();
-        ferro_cuda::install(0).is_ok()
+        match ferro_cuda::install(0) {
+            Ok(()) => true,
+            Err(e) => {
+                assert_ne!(std::env::var("FERRO_REQUIRE_CUDA").as_deref(), Ok("1"), "CUDA required: {e}");
+                eprintln!("skipping raw DLPack GPU test: {e}");
+                false
+            }
+        }
     }
 
     // Structural GPU test: export a device-resident tensor zero-copy, pin
@@ -749,6 +760,14 @@ mod tests {
         });
 
         Python::with_gil(|py| {
+            // This test bypasses __dlpack__ to inspect the raw capsule builder.
+            // Its upload uses a non-blocking stream: cuMemcpyDtoH is not a
+            // producer fence. Fulfil the raw builder's readiness precondition.
+            {
+                let view = t.dlpack_device_view().unwrap();
+                let buffer = view.device_buffer().as_any().downcast_ref::<ferro_cuda::CudaBuf>().unwrap();
+                buffer.stream().synchronize().unwrap();
+            }
             let cap = export_for(py, &t).unwrap();
             let ptr = unsafe {
                 ffi::PyCapsule_GetPointer(cap.as_ptr(), c"dltensor".as_ptr())

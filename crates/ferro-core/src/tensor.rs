@@ -1537,7 +1537,7 @@ pub(crate) fn raw_row_softmax(t: &Tensor, dim: usize, log: bool) -> Option<Tenso
         unreachable!()
     };
     let cols = t.0.shape[dim];
-    let rows = t.numel() / cols;
+    let rows = t.0.shape[..dim].iter().product();
     // A backend without the row kernels (or a launch failure) keeps the
     // documented fallback: ops_ext computes on the host and re-uploads.
     let out = if log {

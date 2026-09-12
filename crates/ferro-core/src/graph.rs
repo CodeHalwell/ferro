@@ -536,7 +536,8 @@ impl CompiledChain {
         let mut shapes: Vec<_> = leaves.iter().map(|t| t.shape().to_vec()).collect();
         let mut runs = Vec::new();
         for run in &self.schedule {
-            let inputs: Vec<_> = effective_inputs(run).iter().map(|id| slots[id]).collect();
+            let mut inputs: Vec<_> = effective_inputs(run).iter().map(|id| slots[id]).collect();
+            let mut static_shape = run.shape.clone();
             let op = match &run.forward {
                 Some(crate::autograd::ForwardOp::MatMul) => {
                     let a = &shapes[inputs[0]];
@@ -556,9 +557,24 @@ impl CompiledChain {
                     crate::dispatch::StaticOp::Layout { strides }
                 },
                 Some(crate::autograd::ForwardOp::Softmax(dim)) => {
-                    let shape = &shapes[inputs[0]];
-                    if *dim+1 != shape.len() { return Err(unsupported("static softmax requires last dimension")); }
-                    crate::dispatch::StaticOp::Softmax { rows:shape[..*dim].iter().product(),cols:shape[*dim] }
+                    let shape = shapes[inputs[0]].clone();
+                    let product = |s: &[usize]| s.iter().try_fold(1usize, |a,&b|a.checked_mul(b)).ok_or_else(||unsupported("static softmax shape overflow"));
+                    let (outer,cols,inner) = (product(&shape[..*dim])?,shape[*dim],product(&shape[*dim+1..])?);
+                    if *dim+1 == shape.len() {
+                        crate::dispatch::StaticOp::Softmax { rows:outer,cols }
+                    } else {
+                        let rows = outer.checked_mul(inner).ok_or_else(||unsupported("static softmax shape overflow"))?;
+                        let width = cols.checked_mul(inner).ok_or_else(||unsupported("static softmax shape overflow"))?;
+                        let permuted = vec![outer,inner,cols];
+                        runs.push(StaticRun { inputs:inputs.clone(),op:crate::dispatch::StaticOp::Layout { strides:vec![width,1,inner] },shape:permuted.clone() });
+                        inputs[0] = shapes.len();
+                        shapes.push(permuted.clone());
+                        runs.push(StaticRun { inputs:inputs.clone(),op:crate::dispatch::StaticOp::Softmax { rows,cols },shape:permuted.clone() });
+                        inputs[0] = shapes.len();
+                        shapes.push(permuted);
+                        static_shape = vec![outer,cols,inner];
+                        crate::dispatch::StaticOp::Layout { strides:vec![width,1,cols] }
+                    }
                 },
                 Some(crate::autograd::ForwardOp::SumDim(dim,_)) => {
                     let shape = &shapes[inputs[0]];
@@ -571,11 +587,16 @@ impl CompiledChain {
                     crate::dispatch::StaticOp::LayerNorm { rows:shape.iter().product::<usize>()/cols,cols,eps:*eps,weight:*weight,bias:*bias }
                 },
                 None => {
-                    if shapes[inputs[0]] != run.shape { return Err(unsupported("expanding static seed is not implemented")); }
+                    if shapes[inputs[0]] != run.shape {
+                        let strides = padded_strides(&shapes[inputs[0]], &run.shape);
+                        runs.push(StaticRun { inputs:vec![inputs[0]],op:crate::dispatch::StaticOp::Broadcast { strides },shape:run.shape.clone() });
+                        inputs[0] = shapes.len();
+                        shapes.push(run.shape.clone());
+                    }
                     crate::dispatch::StaticOp::Pointwise(run.steps.clone())
                 },
             };
-            runs.push(StaticRun { inputs, op, shape: run.shape.clone() });
+            runs.push(StaticRun { inputs, op, shape: static_shape });
             slots.insert(run.output, shapes.len());
             shapes.push(run.shape.clone());
         }

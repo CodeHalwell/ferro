@@ -2,6 +2,11 @@
 use super::*;
 use cudarc::driver::{result, sys, DevicePtrMut};
 mod model;
+// These capture/failure tests share CUDA primary-context native state.
+#[cfg(test)]
+static TEST_CONTEXT: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+thread_local! { static REPLAY_GUARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Slots 0..leaves.len() are owned leaves; each run appends one output slot.
 /// Only shape-preserving pointwise runs are supported by this first primitive.
@@ -30,64 +35,8 @@ impl Command {
     }
 }
 
-struct GraphOwner {
-    graph: sys::CUgraph,
-    exec: sys::CUgraphExec,
-    ctx: Arc<CudaContext>,
-}
-
-impl Drop for GraphOwner {
-    fn drop(&mut self) {
-        self.ctx.record_err(self.ctx.bind_to_thread());
-        if !self.exec.is_null() { self.ctx.record_err(unsafe { result::graph::exec_destroy(self.exec) }); }
-        if !self.graph.is_null() { self.ctx.record_err(unsafe { result::graph::destroy(self.graph) }); }
-    }
-}
-
-// Every successful begin is paired with end, including unwinding. The private
-// capture stream cannot receive unrelated backend work while the window is open.
-struct CaptureSession {
-    stream: Arc<CudaStream>,
-    active: bool,
-}
-
-impl CaptureSession {
-    fn begin(stream: Arc<CudaStream>) -> Result<Self> {
-        if stream.capture_status().map_err(|e| cuda_err("static_capture", e))? != sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE {
-            return Err(cuda_err("static_capture", "stream is already capturing"));
-        }
-        stream.begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
-            .map_err(|e| cuda_err("static_capture", e))?;
-        Ok(Self { stream, active: true })
-    }
-
-    fn finish(mut self) -> Result<GraphOwner> {
-        let graph = unsafe { result::stream::end_capture(self.stream.cu_stream()) };
-        self.active = false;
-        let graph = graph.map_err(|e| cuda_err("static_capture_end", e))?;
-        let mut owner = GraphOwner { graph, exec: std::ptr::null_mut(), ctx: self.stream.context().clone() };
-        if graph.is_null() { return Err(cuda_err("static_capture_end", "empty graph")); }
-        // Own the raw graph BEFORE fallible instantiation (cudarc 0.19.9's
-        // CudaStream::end_capture leaks it on this failure branch).
-        unsafe { sys::cuGraphInstantiateWithFlags(&mut owner.exec, graph, 0).result() }
-            .map_err(|e| cuda_err("static_graph_instantiate", e))?;
-        Ok(owner)
-    }
-}
-
-impl Drop for CaptureSession {
-    fn drop(&mut self) {
-        if self.active {
-            let ctx = self.stream.context();
-            ctx.record_err(ctx.bind_to_thread());
-            match unsafe { result::stream::end_capture(self.stream.cu_stream()) } {
-                Ok(graph) if !graph.is_null() => ctx.record_err(unsafe { result::graph::destroy(graph) }),
-                Ok(_) => {},
-                Err(e) => ctx.record_err(Err::<(), _>(e)),
-            }
-        }
-    }
-}
+mod native;
+use native::{CaptureSession, GraphOwner};
 
 /// A CUDA graph owner shared by pointwise DAG and static model preparation.
 /// The model path lowers supported pointwise, matrix, layout, normalization,
@@ -118,11 +67,17 @@ impl StaticPointwiseGraph {
         self.poisoned = true;
         let b = &self.backend;
         b.ctx.bind_to_thread().map_err(|e| cuda_err("static_graph_replay", e))?;
-        let mut guards = Vec::with_capacity(self.leaves.len() + self.outputs.len());
+        let mut guards = Vec::with_capacity(self.leaves.len() + 1);
         for leaf in &self.leaves {
             guards.push(b.resident("static_graph_replay", leaf.as_ref())?.data.device_ptr(&b.stream).1);
         }
-        for output in &mut self.outputs { guards.push(output.device_ptr_mut(&b.stream).1); }
+        // Scratch never escapes this !Send/!Sync owner. Preparation fences private
+        // warmup; all replays use this one backend stream; Drop fences it before
+        // freeing scratch. Stream order therefore covers private accesses. Keep
+        // guards for ALL original leaves and the output lease (which can be read
+        // on a foreign stream); context-wide tracking remains enabled.
+        guards.push(self.outputs[self.output_index].device_ptr_mut(&b.stream).1);
+        #[cfg(test)] REPLAY_GUARDS.with(|n|n.set(guards.len()));
         b.ctx.check_err().map_err(|e| cuda_err("static_graph_dependencies", e))?;
         let launch = unsafe { result::graph::launch(self.graph.as_ref().unwrap().exec, b.stream.cu_stream()) };
         drop(guards);
@@ -170,6 +125,7 @@ mod snapshot_tests {
 
     #[test]
     fn snapshot_completes_copy_before_returning_to_an_untracked_consumer() {
+        let _context = TEST_CONTEXT.lock().unwrap_or_else(|e|e.into_inner());
         let b = match CudaBackend::new(0) {
             Ok(b) => Arc::new(b),
             Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required CUDA: {e}"),
@@ -203,16 +159,16 @@ impl ferro_core::dispatch::StaticExecution for StaticPointwiseGraph {
 
 impl Drop for StaticPointwiseGraph {
     fn drop(&mut self) {
-        // Fence before destroying exec and releasing any captured address. This
-        // conservative drop fence is deliberately outside steady-state replay.
-        self.backend.ctx.record_err(self.backend.stream.synchronize());
-        drop(self.graph.take());
-        self.outputs.clear();
-        self.leaves.clear();
-        self._commands.clear();
-        drop(self._model.take());
+        let mut streams = vec![self.backend.stream.cu_stream()];
+        if let Some(model) = &self._model { streams.push(model.stream.cu_stream()); }
         let mut users = self.backend.static_graphs.lock().unwrap_or_else(|e| e.into_inner());
         *users -= 1;
+        // Flight fences before tuple destruction (exec, graph, then addresses).
+        // If completion remains unknown it retains the tuple and exclusion slot.
+        drop(native::Flight {
+            data: Some((self.graph.take(), std::mem::take(&mut self.outputs), std::mem::take(&mut self.leaves), std::mem::take(&mut self._commands), self._model.take(), self.backend.clone())),
+            calls: Arc::new(native::Driver(self.backend.stream.clone())), streams, users: &mut users,
+        });
     }
 }
 
@@ -253,31 +209,32 @@ impl CudaBackend {
             outputs.push(self.alloc_zeros("prepare_static_graph", n)?);
             commands.push(Command { function, inputs: run.inputs.clone(), output: leaves.len() + i, n: n as u32 });
         }
+        let capture_stream = self.ctx.new_stream().map_err(|e| cuda_err("prepare_static_graph", e))?;
+        let mut flight = native::Flight { data: Some((outputs, leaves, commands, self.clone())), calls: Arc::new(native::Driver(capture_stream.clone())), streams: vec![self.stream.cu_stream(), capture_stream.cu_stream()], users: &mut users };
+        let (outputs, leaves, commands, _) = flight.data.as_mut().unwrap();
         let mut pointers = Vec::new();
         let mut guards = Vec::new();
-        for leaf in &leaves {
+        for leaf in leaves.iter() {
             let (p, g) = self.resident("prepare_static_graph", leaf.as_ref())?.data.device_ptr(&self.stream);
             pointers.push(p); guards.push(g);
         }
-        for output in &mut outputs {
+        for output in outputs.iter_mut() {
             let (p, g) = output.device_ptr_mut(&self.stream);
             pointers.push(p); guards.push(g);
         }
         self.ctx.check_err().map_err(|e| cuda_err("prepare_static_graph", e))?;
-        for command in &commands { command.enqueue(&self.stream, &pointers)?; }
+        for command in commands.iter() { command.enqueue(&self.stream, &pointers)?; }
         drop(guards);
         self.stream.synchronize().map_err(|e| cuda_err("prepare_static_graph", e))?;
-        let capture_stream = self.ctx.new_stream().map_err(|e| cuda_err("prepare_static_graph", e))?;
         let capture = CaptureSession::begin(capture_stream.clone())?;
-        for command in &commands { command.enqueue(&capture_stream, &pointers)?; }
+        for command in commands.iter() { command.enqueue(&capture_stream, &pointers)?; }
         let graph = capture.finish()?;
         let mut nodes = 0;
         unsafe { sys::cuGraphGetNodes(graph.graph, std::ptr::null_mut(), &mut nodes).result() }
             .map_err(|e| cuda_err("static_graph_nodes", e))?;
-        unsafe { result::graph::upload(graph.exec, self.stream.cu_stream()) }
-            .map_err(|e| cuda_err("static_graph_upload", e))?;
-        self.stream.synchronize().map_err(|e| cuda_err("static_graph_upload", e))?;
+        graph.upload(self.stream.cu_stream())?;
         self.ctx.check_err().map_err(|e| cuda_err("prepare_static_graph", e))?;
+        let (outputs, leaves, commands, _) = flight.take();
         *users += 1;
         Ok(StaticPointwiseGraph { graph: Some(graph), backend: self.clone(), leaves, output_index: outputs.len()-1, outputs, _commands: commands, _model: None, nodes, replays: 0, poisoned: false })
     }
@@ -288,7 +245,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn replay_tracks_leaves_and_exported_output_not_private_scratch() {
+        let _context = TEST_CONTEXT.lock().unwrap_or_else(|e|e.into_inner());
+        let b = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required GPU: {e}"),
+            Err(_) => return,
+        };
+        let x: Arc<dyn DeviceBuffer> = Arc::from(b.alloc_from_host(&[1.0,2.0]).unwrap());
+        let runs: Vec<_> = (0..3).map(|i|StaticPointwiseRun {inputs:vec![i],steps:vec![ChainStep::Unary(UnaryKind::Relu)]}).collect();
+        let mut graph = b.prepare_pointwise_graph(&runs, vec![x]).unwrap();
+        graph.replay().unwrap();
+        assert_eq!(REPLAY_GUARDS.with(|n|n.get()),2);
+        assert!(b.ctx.is_event_tracking());
+        assert_eq!(graph.copy_output_to_host().unwrap(),vec![1.0,2.0]);
+    }
+
+    #[test]
+    fn private_scratch_replay_preserves_foreign_stream_output_read_dependencies() {
+        let _context = TEST_CONTEXT.lock().unwrap_or_else(|e|e.into_inner());
+        let b = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required GPU: {e}"),
+            Err(_) => return,
+        };
+        let x: Arc<dyn DeviceBuffer> = Arc::from(b.alloc_from_host(&[1.0;1024]).unwrap());
+        let runs: Vec<_> = (0..3).map(|i|StaticPointwiseRun {inputs:vec![i],steps:vec![ChainStep::Unary(UnaryKind::Relu)]}).collect();
+        let mut graph=b.prepare_pointwise_graph(&runs,vec![x.clone()]).unwrap();
+        graph.replay().unwrap();
+        b.stream.synchronize().unwrap();
+        let foreign=b.ctx.new_stream().unwrap();
+        let mut saved=foreign.alloc_zeros::<f32>(1024).unwrap();
+        let module=b.ctx.load_module(compile_ptx("extern \"C\" __global__ void delay() { unsigned long long start=clock64(); while(clock64()-start<200000000ULL) {} }").unwrap()).unwrap();
+        let delay=module.load_function("delay").unwrap();
+        unsafe { foreign.launch_builder(&delay).launch(LaunchConfig {grid_dim:(1,1,1),block_dim:(1,1,1),shared_mem_bytes:0}).unwrap(); }
+        foreign.memcpy_dtod(graph.output().unwrap(),&mut saved).unwrap();
+        b.copy_into(x.as_ref(),&[2.0;1024]).unwrap();
+        graph.replay().unwrap();
+        assert_eq!(foreign.clone_dtoh(&saved).unwrap(),vec![1.0;1024]);
+        assert_eq!(graph.copy_output_to_host().unwrap(),vec![2.0;1024]);
+    }
+
+    #[test]
     fn failed_graph_boundary_poison_is_sticky() {
+        let _context = TEST_CONTEXT.lock().unwrap_or_else(|e|e.into_inner());
         let b = match CudaBackend::new(0) {
             Ok(b) => Arc::new(b),
             Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required GPU unavailable: {e}"),
@@ -305,6 +305,7 @@ mod tests {
 
     #[test]
     fn private_capture_unwind_restores_stream_with_tracking_enabled() {
+        let _context = TEST_CONTEXT.lock().unwrap_or_else(|e|e.into_inner());
         let b = match CudaBackend::new(0) {
             Ok(b) => b,
             Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required GPU unavailable: {e}"),
