@@ -137,12 +137,25 @@ parity metadata: it cannot retrospectively prove the elementwise tolerance
 from maximum absolute errors alone. Run two fresh benchmarks after integration;
 the historical measurements below remain unchanged, not revalidated evidence.
 
-## Full-model benchmark results
+## Final fenced benchmark evidence
 
-Final evidence is `run3.json` and `run4.json` (second reverses comparator order).
-Each report has 15 parity-passing timed rows and 6 explicit blocked compiler
-rows. Forty samples follow ten warmups. `verify_results.py` validates counts,
-reversed order, four freshness checks per timed row and medians from raw samples.
+Final validated evidence is `review-run1.json` and `review-run2.json`, with
+`review-summary.json`; the second run reverses comparator order. These reports
+include synchronous snapshot completion and the required parity metadata.
+The hardened verifier validated 15 passing timed rows and 6 explicitly blocked
+compiler rows per run, all four finite bounded freshness gates, and timing
+statistics recomputed from 40 samples per row. Transformer static+snapshot
+medians are 336.60 / 338.50 microseconds. Results remain order-sensitive; no
+stable overall speedup is established. Full final timings and commands are in
+`verification/pr23-lock-review/APPROVED-RESULTS.md`.
+
+## Historical pre-fence benchmark results
+
+The table and measurements below describe archived `run3.json` and `run4.json`,
+not the final synchronous-snapshot implementation. These archives lack the new
+parity metadata and cannot pass the current verifier; do not cite this table
+as final validated performance evidence. They originally recorded 15 timed
+rows and 6 blocked compiler rows, with 40 samples following 10 warmups.
 Initial run1/run2 evidence is retained but superseded: their compiler probes
 hit a harness module-registration error. After fixing that harness error,
 actual Inductor attempts reach the missing-Triton failure below.
@@ -174,7 +187,7 @@ Median call latency in microseconds:
 
 Static replay returns no public output alias; static+snapshot includes the
 explicit result copy and is the closer output-semantics comparator to eager.
-MLP static+snapshot is faster in both final runs, but transformer static replay
+MLP static+snapshot was faster in both archived runs, but transformer static replay
 is slower than eager and host-compiled execution. Run/order noise is visible;
 no general transformer speedup is claimed. Full per-buffer event boundaries,
 materialized reshape buffers and cuBLAS selection are possible optimization
