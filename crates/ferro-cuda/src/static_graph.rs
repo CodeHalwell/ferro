@@ -1,4 +1,4 @@
-//! Prepared pointwise DAG primitive. Not whole-model lowering or training capture.
+//! Owned CUDA graphs for prepared pointwise DAGs and supported static model inference.
 use super::*;
 use cudarc::driver::{result, sys, DevicePtrMut};
 mod model;
@@ -89,8 +89,11 @@ impl Drop for CaptureSession {
     }
 }
 
-/// A real CUDA graph over multiple prepared pointwise runs. Owns original leaves,
-/// every destination, functions and backend. This is NOT a whole-model compiler.
+/// A CUDA graph owner shared by pointwise DAG and static model preparation.
+/// The model path lowers supported pointwise, matrix, layout, normalization,
+/// softmax and reduction runs; this is inference-only, not training capture.
+/// Owns original leaves, every destination, functions and backend, plus the
+/// private cuBLAS handle, workspace and capture stream used by model commands.
 /// It intentionally does not expose Tensor mutation or autograd entry points.
 ///
 /// Replay requires exclusive host access. `output()` borrows the reusable output;
@@ -146,13 +149,49 @@ impl StaticPointwiseGraph {
     pub fn replay_count(&self) -> usize { self.replays }
     pub fn copy_output_to_host(&self) -> Result<Vec<f32>> { self.backend.dtoh("static_graph_output", self.output()?) }
 
-    /// Explicit copy-out: one allocation and device copy, outside graph replay.
+    /// Independent copy-out: one allocation, device copy and producer-stream fence.
+    /// The copy is complete on return, including for untracked DLPack consumers.
+    /// Synchronization is outside graph replay; no consumer stream handoff is required.
     pub fn snapshot(&self) -> Result<Box<dyn DeviceBuffer>> {
         let b = &self.backend;
         let output = self.output()?;
         let mut out = unsafe { b.alloc_uninit("static_graph_snapshot", output.len())? };
         b.stream.memcpy_dtod(output, &mut out).map_err(|e| cuda_err("static_graph_snapshot", e))?;
+        // DLPack export currently has no consumer-stream handoff. Finish the copy
+        // before publishing its pointer; keep cudarc dependency tracking enabled.
+        b.stream.synchronize().map_err(|e| cuda_err("static_graph_snapshot", e))?;
         Ok(b.wrap(out))
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_completes_copy_before_returning_to_an_untracked_consumer() {
+        let b = match CudaBackend::new(0) {
+            Ok(b) => Arc::new(b),
+            Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required CUDA: {e}"),
+            Err(_) => return,
+        };
+        let leaf: Arc<dyn DeviceBuffer> = Arc::from(b.alloc_from_host(&[7.0; 1024]).unwrap());
+        let runs = [StaticPointwiseRun { inputs: vec![0], steps: vec![ChainStep::Unary(UnaryKind::Relu)] }];
+        let mut graph = b.prepare_pointwise_graph(&runs, vec![leaf]).unwrap();
+        let ptx = compile_ptx("extern \"C\" __global__ void delay() { unsigned long long start = clock64(); while (clock64() - start < 200000000ULL) {} }").unwrap();
+        let module = b.ctx.load_module(ptx).unwrap();
+        let delay = module.load_function("delay").unwrap();
+        b.stream.synchronize().unwrap();
+        // Keep the producer busy so an asynchronous snapshot cannot pass by luck.
+        unsafe { b.stream.launch_builder(&delay).launch(LaunchConfig { grid_dim: (1,1,1), block_dim: (1,1,1), shared_mem_bytes: 0 }).unwrap(); }
+        graph.replay().unwrap();
+        assert_eq!(unsafe { sys::cuStreamQuery(b.stream.cu_stream()) }, sys::CUresult::CUDA_ERROR_NOT_READY);
+        let snapshot = graph.snapshot().unwrap();
+        let ready = unsafe { sys::cuStreamQuery(b.stream.cu_stream()) };
+        // Clean up even on RED; the assertion observes readiness before this fence.
+        b.stream.synchronize().unwrap();
+        assert_eq!(ready, sys::CUresult::CUDA_SUCCESS, "snapshot returned with producer work pending");
+        assert_eq!(b.copy_to_host(snapshot.as_ref()).unwrap(), vec![7.0; 1024]);
     }
 }
 

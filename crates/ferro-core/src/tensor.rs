@@ -105,6 +105,10 @@ impl Drop for StorageCell {
     }
 }
 
+#[cfg(test)]
+#[path = "concurrent_copy_tests.rs"]
+mod concurrent_copy_tests;
+
 impl StorageCell {
     fn new(data: Storage) -> StorageCell {
         StorageCell {
@@ -117,6 +121,8 @@ impl StorageCell {
     /// but never a torn structure (the variant/allocation invariant above),
     /// and the panicking test conventions here require poison tolerance.
     pub(crate) fn read(&self) -> RwLockReadGuard<'_, Storage> {
+        #[cfg(test)]
+        crate::tensor::concurrent_copy_tests::before_read(self);
         self.data.read().unwrap_or_else(PoisonError::into_inner)
     }
 

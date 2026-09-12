@@ -30,7 +30,7 @@ use crate::device::Device;
 use crate::dispatch::{backend_for, AdamWStep, BinaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
-use crate::tensor::{Storage, Tensor};
+use crate::tensor::{PairGuard, Storage, Tensor};
 
 /// The destination contract every in-place mutation requires: f32 elements
 /// in a whole contiguous buffer (offset 0, row-major, view covers the whole
@@ -147,14 +147,8 @@ fn with_dst_src(
         // One guard when aliased (same cell may not be read-locked twice on
         // one thread); the kernels only combine same-index elements, so an
         // aliased dst/src pair is well-defined.
-        let gd = dst.0.storage.read();
-        let gs = if Arc::ptr_eq(&dst.0.storage, &src.0.storage) {
-            None
-        } else {
-            Some(src.0.storage.read())
-        };
-        let Storage::Device(bd) = &*gd else { unreachable!() };
-        let Storage::Device(bs) = gs.as_deref().unwrap_or(&gd) else {
+        let guards = PairGuard::new(dst, src);
+        let (Storage::Device(bd), Storage::Device(bs)) = guards.get() else {
             unreachable!()
         };
         dev(bd.as_ref(), bs.as_ref())?;
@@ -253,14 +247,8 @@ pub(crate) fn raw_copy_(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<
     let backend = backend_for(dst.0.device)?;
     if is_device(dst) {
         if src.0.device == dst.0.device && src.device_resident_whole() {
-            let gd = dst.0.storage.read();
-            let gs = if Arc::ptr_eq(&dst.0.storage, &src.0.storage) {
-                None
-            } else {
-                Some(src.0.storage.read())
-            };
-            let Storage::Device(bd) = &*gd else { unreachable!() };
-            let Storage::Device(bs) = gs.as_deref().unwrap_or(&gd) else {
+            let guards = PairGuard::new(dst, src);
+            let (Storage::Device(bd), Storage::Device(bs)) = guards.get() else {
                 unreachable!()
             };
             backend.copy_into_dev(bd.as_ref(), bs.as_ref())?;
@@ -278,6 +266,24 @@ pub(crate) fn raw_copy_(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<
     }
     dst.bump_version();
     Ok(())
+}
+
+// Match PreparedChain's exclusive sweep even though device mutations use
+// read guards. Deduplication also prevents recursive reads behind a writer.
+fn with_device_buffers<const N: usize>(
+    ts: [&Tensor; N],
+    f: impl FnOnce([&dyn crate::dispatch::DeviceBuffer; N]) -> Result<()>,
+) -> Result<()> {
+    let mut cells: Vec<_> = ts.iter().map(|t| &t.0.storage).collect();
+    cells.sort_unstable_by_key(|s| Arc::as_ptr(s));
+    cells.dedup_by_key(|s| Arc::as_ptr(s));
+    let guards: Vec<_> = cells.iter().map(|s| s.read()).collect();
+    let buffers = std::array::from_fn(|i| {
+        let index = cells.iter().position(|s| Arc::ptr_eq(s, &ts[i].0.storage)).unwrap();
+        let Storage::Device(b) = &*guards[index] else { unreachable!() };
+        b.as_ref()
+    });
+    f(buffers)
 }
 
 /// One fused SGD-with-momentum step over a parameter, its velocity buffer,
@@ -299,13 +305,9 @@ pub(crate) fn raw_sgd_step_(
     check_step_operands(OP, &[p, v, g])?;
     let backend = backend_for(p.0.device)?;
     if is_device(p) {
-        let (gp, gv, gg) = (p.0.storage.read(), v.0.storage.read(), g.0.storage.read());
-        let (Storage::Device(bp), Storage::Device(bv), Storage::Device(bg)) =
-            (&*gp, &*gv, &*gg)
-        else {
-            unreachable!()
-        };
-        backend.sgd_step_dev(bp.as_ref(), bv.as_ref(), bg.as_ref(), lr, momentum, nesterov)?;
+        with_device_buffers([p, v, g], |[bp, bv, bg]| {
+            backend.sgd_step_dev(bp, bv, bg, lr, momentum, nesterov)
+        })?;
     } else {
         // Write guards in address order (see module docs); the grad is
         // read-only and locked in the same sweep.
@@ -347,18 +349,9 @@ pub(crate) fn raw_adamw_step_(
     check_step_operands(OP, &[p, m, v, g])?;
     let backend = backend_for(p.0.device)?;
     if is_device(p) {
-        let (gp, gm, gv, gg) = (
-            p.0.storage.read(),
-            m.0.storage.read(),
-            v.0.storage.read(),
-            g.0.storage.read(),
-        );
-        let (Storage::Device(bp), Storage::Device(bm), Storage::Device(bv), Storage::Device(bg)) =
-            (&*gp, &*gm, &*gv, &*gg)
-        else {
-            unreachable!()
-        };
-        backend.adamw_step_dev(bp.as_ref(), bm.as_ref(), bv.as_ref(), bg.as_ref(), hp)?;
+        with_device_buffers([p, m, v, g], |[bp, bm, bv, bg]| {
+            backend.adamw_step_dev(bp, bm, bv, bg, hp)
+        })?;
     } else {
         let mut cells: Vec<(usize, &Tensor)> = vec![(0, p), (1, m), (2, v), (3, g)];
         cells.sort_by_key(|(_, t)| Arc::as_ptr(&t.0.storage) as usize);
@@ -414,35 +407,9 @@ pub(crate) fn raw_adamw_step_capturable_(
         });
     }
     let backend = backend_for(p.0.device)?;
-    let (gp, gm, gv, gg, gt) = (
-        p.0.storage.read(),
-        m.0.storage.read(),
-        v.0.storage.read(),
-        g.0.storage.read(),
-        t.0.storage.read(),
-    );
-    let (
-        Storage::Device(bp),
-        Storage::Device(bm),
-        Storage::Device(bv),
-        Storage::Device(bg),
-        Storage::Device(bt),
-    ) = (&*gp, &*gm, &*gv, &*gg, &*gt)
-    else {
-        unreachable!()
-    };
-    backend.adamw_step_capturable_dev(
-        bp.as_ref(),
-        bm.as_ref(),
-        bv.as_ref(),
-        bg.as_ref(),
-        bt.as_ref(),
-        lr,
-        beta1,
-        beta2,
-        eps,
-        weight_decay,
-    )?;
+    with_device_buffers([p, m, v, g, t], |[bp, bm, bv, bg, bt]| {
+        backend.adamw_step_capturable_dev(bp, bm, bv, bg, bt, lr, beta1, beta2, eps, weight_decay)
+    })?;
     p.bump_version();
     m.bump_version();
     v.bump_version();

@@ -1,7 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+// Backend registration is process-global; hold this through all tensor drops.
+static REGISTRY: Mutex<()> = Mutex::new(());
 
 #[test]
 fn malformed_static_plan_is_rejected_without_panicking_or_allocating() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     use ferro_core::dispatch::{Backend,StaticRun,StaticOp,ChainStepRef,DeviceBuffer,BinaryKind};
     let b=match CudaBackend::new(0) { Ok(b)=>Arc::new(b), Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some()=>panic!("required CUDA: {e}"), Err(_)=>return };
     let x:Arc<dyn DeviceBuffer>=Arc::from(b.alloc_from_host(&[1.,2.]).unwrap());
@@ -16,6 +20,7 @@ fn malformed_static_plan_is_rejected_without_panicking_or_allocating() {
 
 #[test]
 fn static_replay_orders_concurrent_whole_tensor_updates() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let b=match CudaBackend::new(0) { Ok(b)=>Arc::new(b), Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some()=>panic!("required CUDA: {e}"), Err(_)=>return };
     register_backend(Device::Cuda(0),b);
     let x=Tensor::full(&[1024],1.).to_device(Device::Cuda(0)).unwrap();
@@ -42,6 +47,7 @@ fn static_replay_orders_concurrent_whole_tensor_updates() {
 
 #[test]
 fn static_layer_norm_supports_each_affine_combination() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let b=match CudaBackend::new(0) { Ok(b)=>Arc::new(b), Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some()=>panic!("required CUDA: {e}"), Err(_)=>return };
     register_backend(Device::Cuda(0),b);
     let x=Tensor::from_vec(vec![-1.,2.,3.,4.],&[2,2]).unwrap().to_device(Device::Cuda(0)).unwrap();
@@ -60,6 +66,7 @@ fn static_layer_norm_supports_each_affine_combination() {
 
 #[test]
 fn compiled_static_attention_mlp_updates_input_and_weights() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let b = match CudaBackend::new(0) {
         Ok(b) => Arc::new(b),
         Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required CUDA: {e}"),
@@ -101,6 +108,7 @@ fn compiled_static_attention_mlp_updates_input_and_weights() {
 
 #[test]
 fn compiled_static_matmul_reads_current_weights() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let b = match CudaBackend::new(0) {
         Ok(b) => Arc::new(b),
         Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required CUDA: {e}"),
@@ -112,11 +120,17 @@ fn compiled_static_matmul_reads_current_weights() {
     let root = capture(|| x.matmul(&w).unwrap().relu());
     let compiled = CompiledChain::compile(&root).unwrap();
     let mut graph = compiled.prepare_static().unwrap();
-    for value in [1.,2.,-1.] {
+    for value in [1.,-1.,2.] {
         w.copy_from(&Tensor::full(&[3,2], value).to_device(Device::Cuda(0)).unwrap()).unwrap();
         graph.replay().unwrap();
         assert_eq!(graph.snapshot().unwrap().to_vec(), compiled.replay().unwrap().to_vec());
     }
+    let old = graph.snapshot().unwrap();
+    drop(compiled); drop(root); drop(x); drop(w);
+    graph.replay().unwrap();
+    assert_eq!(graph.snapshot().unwrap().to_vec(), vec![12.,12.,30.,30.]);
+    drop(graph);
+    assert_eq!(old.to_vec(), vec![12.,12.,30.,30.]);
 }
 
 use ferro_core::{capture, Device, Tensor};
@@ -126,6 +140,7 @@ use ferro_cuda::CudaBackend;
 
 #[test]
 fn compiled_static_pointwise_reads_current_leaves_and_retains_snapshots() {
+    let _registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let b = match CudaBackend::new(0) {
         Ok(b) => Arc::new(b),
         Err(e) if std::env::var_os("FERRO_REQUIRE_CUDA").is_some() => panic!("required CUDA: {e}"),
@@ -147,4 +162,9 @@ fn compiled_static_pointwise_reads_current_leaves_and_retains_snapshots() {
     assert_eq!(graph.snapshot().unwrap().to_vec(), compiled.replay().unwrap().to_vec());
     assert_eq!(old.to_vec(), vec![-2.,8.,-12.,24.]);
     assert_eq!(graph.replay_count(), 2);
+    drop(compiled); drop(root); drop(x); drop(w);
+    graph.replay().unwrap();
+    assert_eq!(graph.snapshot().unwrap().to_vec(), vec![4.,-8.,18.,-24.]);
+    drop(graph);
+    assert_eq!(old.to_vec(), vec![-2.,8.,-12.,24.]);
 }

@@ -97,14 +97,45 @@ Reproduce with the runtime DLL directories prepended to PATH:
 ```bash
 export PATH="$LOCALAPPDATA/Temp/cuda-rt/nvidia/cuda_nvrtc/bin:$LOCALAPPDATA/Temp/cuda-rt/nvidia/cublas/bin:$PATH"
 PY=crates/ferro-py/.venv/Scripts/python.exe
+python -m unittest discover -s verification/model-cuda-graphs/continuation -p test_verify_results.py -v
 "$PY" verification/model-cuda-graphs/continuation/run_checks.py
 "$PY" verification/model-cuda-graphs/continuation/benchmark.py --json verification/model-cuda-graphs/continuation/new-run1.json
 "$PY" verification/model-cuda-graphs/continuation/benchmark.py --reverse --json verification/model-cuda-graphs/continuation/new-run2.json
-python verification/model-cuda-graphs/continuation/verify_results.py
+python verification/model-cuda-graphs/continuation/verify_results.py \
+  --runs verification/model-cuda-graphs/continuation/new-run1.json verification/model-cuda-graphs/continuation/new-run2.json \
+  --summary verification/model-cuda-graphs/continuation/new-verified-summary.json \
+  --integration-dir verification/model-cuda-graphs/continuation
 ```
 
 The integration runner sets FERRO_REQUIRE_CUDA=1 and RUST_TEST_THREADS=1 and
 uses cargo -j2. Benchmarks must remain serial and run after builds/tests.
+Run these commands from the repository root. Choose unused run/summary names
+for each new measurement; preserve archived `run3.json`, `run4.json` and
+`verified-summary.json`. The verifier requires two explicit input paths,
+resolves them relative to the current working directory, records their absolute
+paths, and refuses to overwrite an existing summary. Omit `--integration-dir`
+for benchmark-only validation; that does not claim integration was verified.
+The CPU regression fixtures are synthetic test data, not performance evidence,
+and import neither Torch nor Ferro.
+
+Fresh reports declare the original rtol=2e-4 and atol=2e-5 and record four
+maximum absolute errors, reference absolute maxima and maximum elementwise
+ratios `abs(actual-expected)/(atol+rtol*abs(expected))`. The verifier requires
+finite nonnegative values at every gate, ratios <=1, and absolute errors within
+`atol+rtol*max(abs(expected))`; the ratio gate preserves the elementwise relative
+criterion rather than mistaking a global absolute bound for parity. Timings
+must have 40 finite positive samples, exact recomputed median/min/max, and a
+complete model/comparator grid in declared order. Failed/unknown statuses and
+unrelated compiler/runtime exceptions fail verification. Only the two actual
+Inductor modes may be blocked by explicit missing-working-Triton diagnostics
+(`Cannot find a working triton installation` or `No module named 'triton'`).
+Working compiler rows are accepted and validated, not forced into historical
+15-passed/6-blocked counts.
+
+The hardened verifier intentionally rejects archived reports lacking the new
+parity metadata: it cannot retrospectively prove the elementwise tolerance
+from maximum absolute errors alone. Run two fresh benchmarks after integration;
+the historical measurements below remain unchanged, not revalidated evidence.
 
 ## Full-model benchmark results
 
