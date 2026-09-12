@@ -1,11 +1,31 @@
 # Independent LayerNorm numerical validation
 
-Run from the repository root, **after the combined binding rebuild**:
+Run from the repository root. These commands use the existing bindings venv
+under Windows Git Bash; on POSIX replace `Scripts/python.exe` with `bin/python`.
+CPU-only helper, oracle, and CLI regression tests do not require a binding rebuild:
 
 ```bash
-crates/ferro-py/.venv/Scripts/python.exe verification/layernorm-numerics/test_numerics.py
+crates/ferro-py/.venv/Scripts/python.exe -W error -m unittest discover -s verification/layernorm-numerics -p 'test_*.py' -v
+```
+
+Run the numerical sweep **after the combined binding rebuild**:
+
+```bash
 crates/ferro-py/.venv/Scripts/python.exe verification/layernorm-numerics/validate.py --device cuda:0
 ```
+
+`--eps` must remain finite and strictly positive after f32 rounding. Values such
+as `1e-50` (rounds to zero) and `1e40` (overflows to infinity) exit with argparse
+status 2 before importing torch/ferro or touching the report. Positive finite f32
+values, including subnormals, are accepted. To reproduce rejection without a GPU:
+
+```bash
+crates/ferro-py/.venv/Scripts/python.exe verification/layernorm-numerics/validate.py --device cpu --eps 1e-50
+crates/ferro-py/.venv/Scripts/python.exe verification/layernorm-numerics/validate.py --device cpu --eps 1e40
+```
+
+The CLI regression tests explicitly block torch and ferro imports, so even a
+regression cannot start a sweep or initialize CUDA.
 
 A smaller first run (still all affine options, distributions, ranks, and gradients):
 

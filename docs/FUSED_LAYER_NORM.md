@@ -89,7 +89,7 @@ concurrently with the baseline or post timings.
 
 ## Exact commands and evidence
 
-Run from `C:/Users/DanielHalwell/PythonProjects/ferro` under Git Bash:
+Run from the repository root under Git Bash:
 
 ```bash
 export PATH="$LOCALAPPDATA/Temp/cuda-rt/nvidia/cuda_nvrtc/bin:$LOCALAPPDATA/Temp/cuda-rt/nvidia/cublas/bin:$PATH"

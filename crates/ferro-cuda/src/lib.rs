@@ -16,6 +16,8 @@
 
 mod kernels;
 mod alloc;
+mod static_graph;
+pub use static_graph::{StaticPointwiseGraph, StaticPointwiseRun};
 
 pub use kernels::{chain_bc_args, chain_source, broadcast_strides, ChainStep};
 
@@ -292,6 +294,8 @@ pub struct CudaBackend {
     ctx: Arc<CudaContext>,
     stream: Arc<CudaStream>,
     blas: CudaBlas,
+    _blas_workspace: CudaSlice<u8>,
+    static_graphs: Mutex<usize>,
     device: Device,
     // nvrtc-compiled elementwise kernels, keyed by generated source text so
     // parametrized kinds (Powf, Clamp) cache per scalar value.
@@ -341,14 +345,14 @@ impl CudaBackend {
         // cuBLAS allocates its workspace lazily from the memory pool; a
         // malloc inside stream capture silently invalidates the graph. Keep a
         // pre-allocated workspace so captured matmuls never allocate.
+        let mut workspace = stream.alloc_zeros::<u8>(4<<20)
+            .map_err(|e| format!("cublas workspace alloc failed: {e:?}"))?;
         {
-            const BLAS_WS: usize = 4 << 20;
-            let ws = unsafe { cudarc::driver::result::malloc_async(stream.cu_stream(), BLAS_WS) }
-                .map_err(|e| format!("cublas workspace alloc failed: {e:?}"))?;
-            unsafe {
-                cudarc::cublas::sys::cublasSetWorkspace_v2(*blas.handle(), ws as _, BLAS_WS);
-            }
-            let _ = ws;
+            use cudarc::driver::DevicePtrMut;
+            let (ptr, guard) = workspace.device_ptr_mut(&stream);
+            unsafe { cudarc::cublas::sys::cublasSetWorkspace_v2(*blas.handle(), ptr as _, 4<<20).result() }
+                .map_err(|e| format!("cublas workspace setup failed: {e:?}"))?;
+            drop(guard);
         }
         let device = Device::Cuda(ordinal);
         let alloc = crate::alloc::CachingAllocator::new(stream.clone());
@@ -356,6 +360,8 @@ impl CudaBackend {
             ctx,
             stream,
             blas,
+            _blas_workspace: workspace,
+            static_graphs: Mutex::new(0),
             device,
             funcs: Mutex::new(HashMap::new()),
             pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
@@ -393,6 +399,11 @@ impl CudaBackend {
                     "buffer lives on {} but this backend serves {}",
                     buf.device, self.device
                 ),
+            });
+        }
+        if !Arc::ptr_eq(buf.data.stream(), &self.stream) {
+            return Err(Error::Unsupported {
+                op, msg: "buffer belongs to a different CUDA backend stream/context".into(),
             });
         }
         Ok(buf)
@@ -899,6 +910,8 @@ impl CudaBackend {
     /// That address discipline is what makes replay advance state correctly.
     pub fn begin_step_capture(self: &Arc<Self>) -> Result<()> {
         const OP: &str = "begin_step_capture";
+        let users = self.static_graphs.lock().unwrap_or_else(|e| e.into_inner());
+        if *users != 0 { return Err(cuda_err(OP, "live static graphs require event tracking")); }
         self.alloc.begin_capture();
         unsafe { self.ctx.disable_event_tracking() };
         let pre = self.stream.capture_status().map_err(|e| {
@@ -977,6 +990,8 @@ impl CudaBackend {
         inputs: &[&dyn DeviceBuffer],
     ) -> Result<CapturedChain> {
         const OP: &str = "capture_chain";
+        let users = self.static_graphs.lock().unwrap_or_else(|e| e.into_inner());
+        if *users != 0 { return Err(cuda_err(OP, "live static graphs require event tracking")); }
         assert!(!inputs.is_empty(), "a chain needs at least the seed input");
         let bufs: Vec<&CudaBuf> = inputs
             .iter()
@@ -1113,6 +1128,10 @@ impl CudaBackend {
 }
 
 impl Backend for CudaBackend {
+    fn prepare_static(self: Arc<Self>, runs: &[ferro_core::dispatch::StaticRun], leaves: Vec<Arc<dyn DeviceBuffer>>) -> Result<Box<dyn ferro_core::dispatch::StaticExecution>> {
+        Ok(Box::new(self.prepare_model_graph(runs, leaves)?))
+    }
+
     // Host-slice fallbacks: htod, run the same device kernels as the *_dev
     // path, dtoh. The Backend seam returns bare Vec<f32> (no error channel),
     // so a driver failure cannot be propagated here; the real error path is
