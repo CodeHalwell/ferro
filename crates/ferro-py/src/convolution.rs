@@ -7,7 +7,7 @@ fn cpu(tensors: &[&PyTensor]) -> PyResult<()> {
     Ok(())
 }
 #[pyfunction]
-#[pyo3(signature = (x, weight, bias, stride, padding, dilation, groups))]
+#[pyo3(signature = (x, weight, bias=None, stride=[1, 1], padding=[0, 0], dilation=[1, 1], groups=1))]
 fn conv2d_options(x: &PyTensor, weight: &PyTensor, bias: Option<&PyTensor>, stride: [usize;2], padding: [usize;2], dilation: [usize;2], groups: usize) -> PyResult<PyTensor> {
     cpu(&[x,weight])?;
     if let Some(b)=bias {

@@ -87,8 +87,6 @@ impl Tensor {
                     let backend = backend_for(self.0.device)?;
                     match backend.gather_rows_dev(wbuf.as_ref(), ibuf.as_ref(), dim_size, inner) {
                         Ok(out) => {
-                            let mut out_shape = self.shape().to_vec();
-                            out_shape[dim] = idx.len();
                             let out = device_leaf(out, &out_shape, self.0.device);
                             let in_shape = self.shape().to_vec();
                             let idx = idx.clone();

@@ -5,7 +5,8 @@
 //! in the 1/numel scaling and its own backward, rather than reconstructing
 //! the reduced scalar (and its autograd edge) by hand.
 
-use crate::tensor::{raw_binary, unbroadcast, Tensor};
+use crate::dispatch::UnaryKind;
+use crate::tensor::{raw_binary, raw_unary_k, unbroadcast, Tensor};
 use crate::Result;
 
 impl Tensor {
@@ -35,8 +36,7 @@ impl Tensor {
                 delta * d.signum()
             }
         })?;
-        let dt = Tensor::from_vec(dx.to_vec().iter().map(|d| -d).collect(), dx.shape())?
-            .to_device(self.device())?;
+        let dt = raw_unary_k(&dx, UnaryKind::Neg)?.to_device(self.device())?;
         let dx = dx.to_device(self.device())?;
         let (sx, sy) = (self.shape().to_vec(), target.shape().to_vec());
         let elem = out.record_fn(vec![self.clone(), target.clone()], move |g| {

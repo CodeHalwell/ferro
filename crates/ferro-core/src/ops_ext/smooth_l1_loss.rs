@@ -5,7 +5,8 @@
 //! op with the existing `mean()` folds in the 1/numel scaling and broadcast.
 
 use crate::error::Result;
-use crate::tensor::{raw_binary, unbroadcast, Tensor};
+use crate::dispatch::UnaryKind;
+use crate::tensor::{raw_binary, raw_unary_k, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn smooth_l1_loss(&self, target: &Tensor, beta: f32) -> Result<Tensor> {
@@ -38,8 +39,7 @@ impl Tensor {
                 0.0
             }
         })?;
-        let dt = Tensor::from_vec(dx.to_vec().iter().map(|d| -d).collect(), dx.shape())?
-            .to_device(self.device())?;
+        let dt = raw_unary_k(&dx, UnaryKind::Neg)?.to_device(self.device())?;
         let dx = dx.to_device(self.device())?;
         let (sx, sy) = (self.shape().to_vec(), target.shape().to_vec());
         let elem = out.record_fn(vec![self.clone(), target.clone()], move |g| {

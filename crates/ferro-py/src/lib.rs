@@ -768,10 +768,10 @@ impl PyTensor {
     /// leaves additionally require an active no_grad context.
     /// Captured leaf handles observe the new values on their next replay.
     fn copy_<'py>(slf: PyRef<'py, Self>, src: &PyTensor) -> PyResult<PyRef<'py, Self>> {
-        if ferro_core::autograd::is_grad_enabled() {
-            slf.inner.copy_from(&src.inner).map_err(map_err)?;
-        } else {
+        if !ferro_core::autograd::is_grad_enabled() && slf.inner.requires_grad() {
             slf.inner.copy_leaf_from(&src.inner).map_err(map_err)?;
+        } else {
+            slf.inner.copy_from(&src.inner).map_err(map_err)?;
         }
         Ok(slf)
     }

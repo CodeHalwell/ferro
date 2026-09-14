@@ -10,8 +10,10 @@
 //! sigmoid(0) = 0.5 contribution at x == 0. So the gradient is computed
 //! directly here instead of composed.
 
+use crate::device::Device;
+use crate::dispatch::UnaryKind;
 use crate::error::Result;
-use crate::tensor::{raw_binary, unbroadcast, Tensor};
+use crate::tensor::{raw_binary, raw_unary_k, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn bce_with_logits_loss(&self, target: &Tensor) -> Result<Tensor> {
@@ -24,7 +26,7 @@ impl Tensor {
             1.0 / (1.0 + (-x).exp()) - t
         })?
         .to_device(self.device())?;
-        let dt = Tensor::from_vec(self.to_vec().iter().map(|x| -x).collect(), self.shape())?
+        let dt = raw_unary_k(&self.to_device(Device::Cpu)?, UnaryKind::Neg)?
             .to_device(self.device())?;
         let (sx, st) = (self.shape().to_vec(), target.shape().to_vec());
         let elementwise = out.record_fn(vec![self.clone(), target.clone()], move |g| {
