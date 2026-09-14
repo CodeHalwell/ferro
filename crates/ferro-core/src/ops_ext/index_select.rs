@@ -66,11 +66,18 @@ impl Tensor {
             });
         }
 
+        let mut out_shape = self.shape().to_vec();
+        out_shape[dim] = idx.len();
+        crate::shape::checked_numel("index_select", &out_shape)?;
+
         // Resident fast path: whole contiguous f32 weight + i64 index buffer
         // on the same non-CPU device whose backend implements the gather.
         // Requires outer == 1 (the embedding/index-select-dim0 shape).
         let outer: usize = self.shape()[..dim].iter().product();
-        if self.device() != Device::Cpu && self.device_resident_whole() {
+        if self.dtype() == DType::F32
+            && self.device() != Device::Cpu
+            && self.device_resident_whole()
+        {
             // Distinct cells by construction (f32 weight vs i64 indices), so
             // two plain read guards cannot self-deadlock here.
             let gw = self.0.storage.read();
@@ -134,17 +141,43 @@ impl Tensor {
 
         let inner: usize = in_shape[dim + 1..].iter().product();
         let outer: usize = in_shape[..dim].iter().product();
-        let data = self.to_vec();
-        let mut out_data = Vec::with_capacity(outer * indices.len() * inner);
-        for o in 0..outer {
-            for &idx in indices {
-                let start = (o * dim_size + idx) * inner;
-                out_data.extend_from_slice(&data[start..start + inner]);
-            }
-        }
         let mut out_shape = in_shape.clone();
         out_shape[dim] = indices.len();
-        let out = Tensor::from_vec(out_data, &out_shape)?;
+        crate::shape::checked_numel("index_select", &out_shape)?;
+        let len = outer
+            .checked_mul(indices.len())
+            .and_then(|n| n.checked_mul(inner))
+            .ok_or_else(|| Error::InvalidShape {
+                op: "index_select",
+                msg: "output size overflow".into(),
+            })?;
+        // Typed materializers gather strided views without an f32 round trip.
+        // The host fallback deliberately returns CPU storage for every dtype.
+        macro_rules! select {
+            ($data:expr, $ctor:ident) => {{
+                let data = $data;
+                let mut dst = Vec::with_capacity(len);
+                if len != 0 {
+                    for o in 0..outer {
+                        for &idx in indices {
+                            let start = (o * dim_size + idx) * inner;
+                            dst.extend_from_slice(&data[start..start + inner]);
+                        }
+                    }
+                }
+                Tensor::$ctor(dst, &out_shape)?
+            }};
+        }
+        let out = match self.dtype() {
+            DType::F32 => select!(self.to_vec(), from_vec),
+            DType::F64 => select!(self.to_vec_f64(), from_vec_f64),
+            DType::I64 => select!(self.to_vec_i64(), from_vec_i64),
+            DType::F16 => select!(self.to_vec_f16_bits()?, from_vec_f16_bits),
+            DType::BF16 => select!(self.to_vec_bf16_bits()?, from_vec_bf16_bits),
+        };
+        if self.dtype() != DType::F32 {
+            return Ok(out);
+        }
 
         let indices = indices.to_vec();
         Ok(out.record_fn(vec![self.clone()], move |g| {

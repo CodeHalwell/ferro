@@ -104,7 +104,8 @@ pub trait CollateFn: Send + Sync {
     fn collate(&self, items: &[(Tensor, Tensor)]) -> Result<(Tensor, Tensor)>;
 }
 
-/// Default collate: stacks f32 items along a new leading dimension.
+/// Default collate: stacks items along a new leading dimension, preserving
+/// each side's dtype. Items on the same side must have matching dtype/device.
 pub struct StackCollate;
 
 impl CollateFn for StackCollate {

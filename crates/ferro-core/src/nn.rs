@@ -21,6 +21,19 @@ pub trait Module {
     /// a Sequential); the contract behind state_dict save/load.
     fn named_parameters(&self) -> Vec<(String, Param)>;
 
+    /// Live, stable buffer handles; containers prefix names like parameters.
+    fn named_buffers(&self) -> Vec<(String, Tensor)> { Vec::new() }
+
+    /// Exact scalar state (modes, counters, configuration bits), never f32 casts.
+    fn snapshot_scalars(&self) -> Vec<(String, u64)> { Vec::new() }
+
+    /// Validate without mutation. After success commit_scalars must not fail.
+    fn validate_scalars(&self, state: &[(String, u64)]) -> Result<()> {
+        if !state.is_empty() || !self.snapshot_scalars().is_empty() { return Err(Error::Format { op: "module_state", msg: "custom scalar state requires an explicit restore protocol".into() }); }
+        Ok(())
+    }
+    fn commit_scalars(&self, _state: &[(String, u64)]) {}
+
     /// Switch between training and evaluation behaviour (dropout masking,
     /// BatchNorm running stats). Default: stateless layer, nothing to do.
     fn set_training(&self, _training: bool) {}
@@ -31,6 +44,23 @@ pub trait Module {
             .map(|(_, p)| p)
             .collect()
     }
+}
+
+pub(crate) fn validate_scalar_keys(expected: &[(String, u64)], state: &[(String, u64)]) -> Result<()> {
+    let names: std::collections::HashSet<_> = state.iter().map(|(n, _)| n).collect();
+    if names.len() != state.len() || state.len() != expected.len() || expected.iter().any(|(n, _)| !names.contains(n)) {
+        return Err(Error::Format { op: "module_state", msg: "scalar keys mismatch".into() });
+    }
+    Ok(())
+}
+
+pub(crate) fn child_scalars(state: &[(String, u64)], index: usize) -> Vec<(String, u64)> {
+    let prefix = format!("{index}.");
+    state.iter().filter_map(|(n, v)| n.strip_prefix(&prefix).map(|k| (k.to_owned(), *v))).collect()
+}
+
+pub(crate) fn scalar(state: &[(String, u64)], name: &str) -> u64 {
+    state.iter().find(|(n, _)| n == name).expect("validated scalar").1
 }
 
 /// Put a module tree into training mode.
@@ -74,51 +104,25 @@ impl Init {
     }
 }
 
-/// Save a module's parameters as a safetensors state dict.
+/// Save parameters and buffers as a tensor-only safetensors state dict.
+/// Modes and RNG belong to Checkpoint, not this interchange format.
 pub fn save_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
-    let named = module.named_parameters();
-    let tensors: Vec<(String, Tensor)> =
-        named.iter().map(|(n, p)| (n.clone(), p.tensor())).collect();
+    let tensors: Vec<(String, Tensor)> = module.named_parameters().into_iter().map(|(n,p)| (n,p.tensor()))
+        .chain(module.named_buffers()).collect();
     let refs: Vec<(&str, &Tensor)> = tensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
     crate::safetensors::save_safetensors(path, &refs)
 }
 
 /// Load a safetensors state dict into a module, strictly (torch semantics):
-/// every parameter must be present with a matching shape, and every tensor in
-/// the file must correspond to a parameter.
+/// every parameter/buffer must be present with matching shape and dtype.
+/// Prevalidated CPU restore retains leaf/storage identity; device model
+/// transactions are unsupported. Modes are unchanged.
 pub fn load_module<P: AsRef<std::path::Path>>(path: P, module: &dyn Module) -> Result<()> {
-    let mut loaded = crate::safetensors::load_safetensors(path)?;
-    for (name, param) in module.named_parameters() {
-        let pos = loaded
-            .iter()
-            .position(|(n, _)| *n == name)
-            .ok_or_else(|| Error::Format {
-                op: "load_module",
-                msg: format!("state dict is missing parameter {name:?}"),
-            })?;
-        let (_, t) = loaded.swap_remove(pos);
-        let want = param.tensor();
-        if t.shape() != want.shape() || t.dtype() != want.dtype() {
-            return Err(Error::Format {
-                op: "load_module",
-                msg: format!(
-                    "parameter {name:?}: expected {} {:?}, file has {} {:?}",
-                    want.dtype(),
-                    want.shape(),
-                    t.dtype(),
-                    t.shape()
-                ),
-            });
-        }
-        param.set(t);
-    }
-    if let Some((name, _)) = loaded.first() {
-        return Err(Error::Format {
-            op: "load_module",
-            msg: format!("state dict has unexpected tensor {name:?}"),
-        });
-    }
-    Ok(())
+    let mut cp = crate::checkpoint::Checkpoint::new(0);
+    cp.tensors = crate::safetensors::load_safetensors(path)?;
+    let targets: Vec<_> = module.named_parameters().into_iter().map(|(n,p)| (n,p.tensor()))
+        .chain(module.named_buffers()).collect();
+    cp.load_named_state_into(&targets)
 }
 
 /// Affine layer `y = x @ W + b` with He-initialized weights.
@@ -343,6 +347,21 @@ impl Module for Sequential {
                     .map(move |(n, p)| (format!("{i}.{n}"), p))
             })
             .collect()
+    }
+
+    fn named_buffers(&self) -> Vec<(String, Tensor)> {
+        self.layers.iter().enumerate().flat_map(|(i, l)| l.named_buffers().into_iter().map(move |(n, t)| (format!("{i}.{n}"), t))).collect()
+    }
+    fn snapshot_scalars(&self) -> Vec<(String, u64)> {
+        self.layers.iter().enumerate().flat_map(|(i, l)| l.snapshot_scalars().into_iter().map(move |(n, v)| (format!("{i}.{n}"), v))).collect()
+    }
+    fn validate_scalars(&self, state: &[(String, u64)]) -> Result<()> {
+        crate::nn::validate_scalar_keys(&self.snapshot_scalars(), state)?;
+        for (i, l) in self.layers.iter().enumerate() { l.validate_scalars(&crate::nn::child_scalars(state, i))?; }
+        Ok(())
+    }
+    fn commit_scalars(&self, state: &[(String, u64)]) {
+        for (i, l) in self.layers.iter().enumerate() { l.commit_scalars(&crate::nn::child_scalars(state, i)); }
     }
 
     fn set_training(&self, training: bool) {

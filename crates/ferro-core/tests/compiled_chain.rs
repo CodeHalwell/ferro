@@ -106,6 +106,30 @@ fn unsupported_graphs_are_rejected_not_frozen() {
     assert!(CompiledChain::compile(&x).is_err());
 }
 
+fn assert_scalar_reduction_rejected(reduction: Tensor) {
+    for root in [reduction.clone(), reduction.relu()] {
+        match CompiledChain::compile(&root) {
+            Err(ferro_core::Error::Unsupported { op, msg }) => {
+                assert_eq!(op, "compile_chain");
+                assert!(msg.contains("no replayable kernel tag"), "{msg}");
+                assert!(msg.contains("scalar reduction is not supported"), "{msg}");
+            }
+            Err(err) => panic!("expected explicit scalar reduction rejection, got {err}"),
+            Ok(_) => panic!("scalar reduction was silently compiled or frozen as a tail input"),
+        }
+    }
+}
+
+#[test]
+fn scalar_sum_rejection_preserves_compiled_error_contract() {
+    assert_scalar_reduction_rejected(leaf(&[1., 2.], &[2]).sum());
+}
+
+#[test]
+fn scalar_mean_rejection_preserves_compiled_error_contract() {
+    assert_scalar_reduction_rejected(leaf(&[1., 2.], &[2]).mean());
+}
+
 #[test]
 fn oversized_broadcast_metadata_is_rejected_without_truncation() {
     let x = leaf(&[], &[0, u32::MAX as usize + 1]);

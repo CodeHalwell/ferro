@@ -115,6 +115,7 @@ pub mod trunc;
 pub mod var_dim;
 pub mod where_cond;
 pub mod xlogy;
+pub mod window;
 
 // `embedding` is a free function over (weight, ids) rather than a method.
 pub use embedding::embedding;

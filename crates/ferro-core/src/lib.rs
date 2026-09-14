@@ -4,6 +4,7 @@
 
 pub mod amp;
 pub mod autograd;
+pub mod basis;
 pub mod capture;
 pub mod checkpoint;
 pub mod data;
@@ -25,11 +26,14 @@ pub mod optim;
 pub mod params;
 pub mod philox;
 pub mod pool;
+pub mod recurrent;
 pub mod replay;
 mod reduce;
 pub mod rng;
 pub mod safetensors;
+pub mod segment;
 pub mod shape;
+pub mod sparse;
 pub mod tensor;
 pub mod testkit;
 

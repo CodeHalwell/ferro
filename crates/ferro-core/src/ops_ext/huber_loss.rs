@@ -10,6 +10,12 @@ use crate::Result;
 
 impl Tensor {
     pub fn huber_loss(&self, target: &Tensor, delta: f32) -> Result<Tensor> {
+        if !delta.is_finite() || delta <= 0.0 {
+            return Err(crate::Error::Unsupported {
+                op: "huber_loss",
+                msg: "delta must be finite and positive".into(),
+            });
+        }
         let out = raw_binary("huber_loss", self, target, move |a, b| {
             let d = a - b;
             let ad = d.abs();
@@ -20,20 +26,22 @@ impl Tensor {
             }
         })?
         .to_device(self.device())?;
-        let (x, y) = (self.detach_copy(), target.detach_copy());
+        // Place detached derivatives before recording: transfers detach history.
+        let dx = raw_binary("huber_loss_dx", self, target, |a, b| {
+            let d = a - b;
+            if d.abs() <= delta {
+                d
+            } else {
+                delta * d.signum()
+            }
+        })?;
+        let dt = Tensor::from_vec(dx.to_vec().iter().map(|d| -d).collect(), dx.shape())?
+            .to_device(self.device())?;
+        let dx = dx.to_device(self.device())?;
         let (sx, sy) = (self.shape().to_vec(), target.shape().to_vec());
         let elem = out.record_fn(vec![self.clone(), target.clone()], move |g| {
-            let dpart = raw_binary("huber_loss_dd", &x, &y, move |a, b| {
-                let d = a - b;
-                if d.abs() <= delta {
-                    d
-                } else {
-                    delta * d.signum()
-                }
-            })
-            .unwrap();
-            let ga = raw_binary("huber_loss_bwa", g, &dpart, |gg, p| gg * p).unwrap();
-            let gb = raw_binary("huber_loss_bwb", g, &dpart, |gg, p| -gg * p).unwrap();
+            let ga = g.mul(&dx).unwrap();
+            let gb = g.mul(&dt).unwrap();
             vec![unbroadcast(&ga, &sx), unbroadcast(&gb, &sy)]
         });
         Ok(elem.mean())

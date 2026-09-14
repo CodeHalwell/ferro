@@ -13,12 +13,10 @@ impl Tensor {
             msg: "expected a non-empty list of tensors".into(),
         })?;
         for t in tensors {
-            // Forward reads through to_vec (an f32 cast), so non-f32 inputs
-            // must be rejected rather than silently converted.
-            if t.dtype() != DType::F32 {
+            if t.dtype() != first.dtype() {
                 return Err(Error::DtypeMismatch {
                     op: "cat",
-                    expected: DType::F32,
+                    expected: first.dtype(),
                     got: t.dtype(),
                 });
             }
@@ -59,22 +57,68 @@ impl Tensor {
         let outer: usize = base[..dim].iter().product();
         let inner: usize = base[dim + 1..].iter().product();
         let dim_sizes: Vec<usize> = tensors.iter().map(|t| t.shape()[dim]).collect();
-        let cat_size: usize = dim_sizes.iter().sum();
+        let cat_size = dim_sizes
+            .iter()
+            .try_fold(0usize, |n, &d| n.checked_add(d))
+            .ok_or_else(|| Error::InvalidShape {
+                op: "cat",
+                msg: "axis size overflow".into(),
+            })?;
 
         let mut out_shape = base;
         out_shape[dim] = cat_size;
-        let mut out_data = vec![0.0f32; outer * cat_size * inner];
-        let mut offset = 0usize;
-        for (t, &d) in tensors.iter().zip(&dim_sizes) {
-            let src = t.to_vec();
-            let block = d * inner;
-            for o in 0..outer {
-                let dst = o * cat_size * inner + offset * inner;
-                out_data[dst..dst + block].copy_from_slice(&src[o * block..(o + 1) * block]);
-            }
-            offset += d;
+        crate::shape::checked_numel("cat", &out_shape)?;
+        let len = outer
+            .checked_mul(cat_size)
+            .and_then(|n| n.checked_mul(inner))
+            .ok_or_else(|| Error::InvalidShape {
+                op: "cat",
+                msg: "output size overflow".into(),
+            })?;
+        // No device cat kernel: typed host materialization returns CPU storage.
+        macro_rules! concat {
+            ($sources:expr, $ctor:ident) => {{
+                let sources: Vec<_> = $sources;
+                let mut dst = Vec::with_capacity(len);
+                if len != 0 {
+                    for o in 0..outer {
+                        for (src, &d) in sources.iter().zip(&dim_sizes) {
+                            let block = d * inner;
+                            dst.extend_from_slice(&src[o * block..(o + 1) * block]);
+                        }
+                    }
+                }
+                Tensor::$ctor(dst, &out_shape)?
+            }};
         }
-        let out = Tensor::from_vec(out_data, &out_shape)?;
+        let out = match first.dtype() {
+            DType::F32 => concat!(tensors.iter().map(Tensor::to_vec).collect(), from_vec),
+            DType::F64 => concat!(
+                tensors.iter().map(Tensor::to_vec_f64).collect(),
+                from_vec_f64
+            ),
+            DType::I64 => concat!(
+                tensors.iter().map(Tensor::to_vec_i64).collect(),
+                from_vec_i64
+            ),
+            DType::F16 => concat!(
+                tensors
+                    .iter()
+                    .map(Tensor::to_vec_f16_bits)
+                    .collect::<Result<Vec<_>>>()?,
+                from_vec_f16_bits
+            ),
+            DType::BF16 => concat!(
+                tensors
+                    .iter()
+                    .map(Tensor::to_vec_bf16_bits)
+                    .collect::<Result<Vec<_>>>()?,
+                from_vec_bf16_bits
+            ),
+        };
+        if first.dtype() != DType::F32 {
+            return Ok(out);
+        }
 
         let in_shapes: Vec<Vec<usize>> = tensors.iter().map(|t| t.shape().to_vec()).collect();
         Ok(out.record_fn(tensors.to_vec(), move |g| {

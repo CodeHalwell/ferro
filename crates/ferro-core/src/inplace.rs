@@ -16,6 +16,9 @@
 //!   fresh allocations, so host targets may be freely aliased by views:
 //!   mutation is visible through every view (torch semantics) and any graph
 //!   input among them is version-protected.
+//! - `copy_leaf_from` permits a grad-requiring leaf only under explicit no-grad,
+//!   retaining the same storage/layout/history gates and shared version bumps.
+//!   General public mutation methods retain their original grad rejection.
 //!
 //! Locking protocol: layout metadata (shape/stride/offset) is immutable, so
 //! preconditions are checked lock-free; then every needed storage lock is
@@ -474,6 +477,10 @@ impl Tensor {
                     .to_string(),
             });
         }
+        self.check_inplace_storage(op)
+    }
+
+    fn check_inplace_storage(&self, op: &'static str) -> Result<()> {
         if self.0.device != Device::Cpu && Arc::strong_count(&self.0.storage) > 1 {
             return Err(Error::Unsupported {
                 op,
@@ -532,6 +539,21 @@ impl Tensor {
     pub fn mul_scalar_(&self, value: f32) -> Result<()> {
         self.check_inplace_allowed("mul_scalar_")?;
         raw_affine_("mul_scalar_", self, value, -0.0)
+    }
+
+    /// Copy values into an existing leaf only while grad recording is disabled.
+    /// Requires matching f32 shape/device, a whole contiguous destination, no
+    /// history, and uniquely referenced device storage. Identity, grad slots and
+    /// storage are retained; writes bump the shared version (self-copy is a no-op).
+    /// Unlike copy_from, this is not a cross-device transfer escape.
+    pub fn copy_leaf_from(&self, src: &Tensor) -> Result<()> {
+        const OP: &str = "copy_leaf_from";
+        if crate::autograd::is_grad_enabled() || self.0.op.is_some() {
+            return Err(Error::Unsupported { op: OP, msg: "leaf copy requires disabled grad recording and a destination without history".into() });
+        }
+        self.check_inplace_storage(OP)?;
+        check_src(OP, self, src)?;
+        raw_copy_(OP, self, src)
     }
 
     /// Overwrite self's contents with src's values (same shape; src may be

@@ -1,4 +1,6 @@
-//! Batch normalization, train mode with running stats (torch semantics).
+//! Functional batch normalization with returned running statistics.
+//! Training requires at least two elements per channel. Evaluation uses frozen
+//! statistics and accepts singleton or empty batches. Zero channels are invalid.
 //! Input rank-2 [N, C] or rank-4 NCHW [N, C, H, W]; per-channel statistics
 //! over everything except C. Normalization uses the biased batch variance;
 //! running_var is updated with the unbiased one (m / (m - 1)), like torch.
@@ -34,6 +36,13 @@ impl Tensor {
         momentum: f32,
     ) -> Result<BatchNormOut> {
         let op = "batch_norm";
+        if self.dtype() != DType::F32 {
+            return Err(Error::DtypeMismatch {
+                op,
+                expected: DType::F32,
+                got: self.dtype(),
+            });
+        }
         let ndim = self.ndim();
         if ndim != 2 && ndim != 4 {
             return Err(Error::Unsupported {
@@ -43,24 +52,37 @@ impl Tensor {
         }
         let shape = self.shape().to_vec();
         let c = shape[1];
-        let m: usize = shape.iter().product::<usize>() / c;
-        if m < 2 {
+        if c == 0 {
+            return Err(Error::InvalidShape {
+                op,
+                msg: "expected at least one channel".into(),
+            });
+        }
+        let m: usize = self.numel() / c;
+        if train && m < 2 {
             return Err(Error::InvalidShape {
                 op,
                 msg: "batch statistic needs at least 2 elements per channel".into(),
             });
         }
-        for (name, t) in [
+        for (_name, t) in [
             ("weight", weight),
             ("bias", bias),
             ("running_mean", running_mean),
             ("running_var", running_var),
         ] {
-            if t.dtype() != DType::F32 || t.numel() != c {
+            if t.dtype() != DType::F32 {
+                return Err(Error::DtypeMismatch {
+                    op,
+                    expected: DType::F32,
+                    got: t.dtype(),
+                });
+            }
+            if t.shape() != [c] {
                 return Err(Error::ShapeMismatch {
                     op,
                     lhs: vec![c],
-                    rhs: vec![t.numel()],
+                    rhs: t.shape().to_vec(),
                 });
             }
         }
@@ -74,22 +96,24 @@ impl Tensor {
 
         let mut mean = vec![0.0f32; c];
         let mut var = vec![0.0f32; c];
-        for chn in 0..c {
-            let mut s = 0.0f32;
-            for n in 0..outer {
-                let base = (n * c + chn) * spatial;
-                s += x[base..base + spatial].iter().sum::<f32>();
-            }
-            mean[chn] = s / m as f32;
-            let mut v = 0.0f32;
-            for n in 0..outer {
-                let base = (n * c + chn) * spatial;
-                for xi in &x[base..base + spatial] {
-                    let d = xi - mean[chn];
-                    v += d * d;
+        if train {
+            for chn in 0..c {
+                let mut s = 0.0f32;
+                for n in 0..outer {
+                    let base = (n * c + chn) * spatial;
+                    s += x[base..base + spatial].iter().sum::<f32>();
                 }
+                mean[chn] = s / m as f32;
+                let mut v = 0.0f32;
+                for n in 0..outer {
+                    let base = (n * c + chn) * spatial;
+                    for xi in &x[base..base + spatial] {
+                        let d = xi - mean[chn];
+                        v += d * d;
+                    }
+                }
+                var[chn] = v / m as f32;
             }
-            var[chn] = v / m as f32;
         }
 
         let (norm_mean, save_std) = if train {

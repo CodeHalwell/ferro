@@ -38,8 +38,25 @@ use crate::Result;
 /// optimizer.safetensors alongside model.safetensors.
 pub trait OptimizerState {
     fn snapshot(&self) -> Vec<(String, Tensor)>;
+    /// Ordered, deduplicated parameter slots for checkpoint identity validation.
+    fn state_parameters(&self) -> Option<Vec<Param>> { None }
+    /// Live optimizer buffers for alias validation, not owning snapshots.
+    fn state_buffers(&self) -> Option<Vec<Tensor>> { None }
+    /// Prepare without live mutation. Dropping the token aborts; invoking it is
+    /// infallible and preserves live buffer identities. CPU only.
+    fn prepare_cpu_restore<'a>(&'a mut self, _config: &[f32], _state: &[(String, Tensor)]) -> Result<Box<dyn FnOnce() + 'a>> {
+        Err(Error::Unsupported { op: "optim_restore", msg: "optimizer has no CPU transaction protocol".into() })
+    }
+    fn configuration(&self) -> Vec<f32> { Vec::new() }
+    fn restore_configuration(&mut self, config: &[f32]) -> Result<()> {
+        if !config.is_empty() { return Err(Error::Format { op: "optim_restore", msg: "unsupported configuration".into() }); }
+        Ok(())
+    }
     /// Strict restore: every array from `snapshot` must be present with
-    /// matching shape, and nothing extra may remain.
+    /// matching shape, and nothing extra may remain. Validation/staging errors
+    /// leave live state unchanged. Existing buffers retain storage and bump
+    /// versions on commit; device commit errors may leave partial updates and
+    /// require discarding the optimizer. This is not a model-state transaction.
     fn restore(&mut self, tensors: &[(String, Tensor)]) -> Result<()>;
 }
 
@@ -108,13 +125,14 @@ fn check_buf(
     // has empty (None) slots, so we cannot infer the device from the slot -- the
     // caller passes the param's device so restored moments land where the
     // (capturable) update expects them, not defaulting to CPU.
-    let up = t.1.to_device(dev)?;
+    let up = t.1.owned_detach_copy().to_device(dev)?;
     *slot = Some(up.reshape(expected_shape)?);
     Ok(())
 }
 
 /// Stochastic gradient descent with optional heavy-ball momentum, nesterov
 /// lookahead, and global-norm gradient clipping.
+#[derive(Clone)]
 pub struct Sgd {
     params: Vec<Param>,
     lr: f32,
@@ -126,6 +144,8 @@ pub struct Sgd {
 
 impl Sgd {
     pub fn new(params: Vec<Param>, lr: f32) -> Sgd {
+        let mut seen = std::collections::HashSet::new();
+        let params: Vec<_> = params.into_iter().filter(|p| seen.insert(p.identity())).collect();
         let velocity = params.iter().map(|_| None).collect();
         Sgd {
             params,
@@ -225,6 +245,35 @@ impl Sgd {
 }
 
 impl OptimizerState for Sgd {
+    fn state_buffers(&self) -> Option<Vec<Tensor>> { Some(self.velocity.iter().flatten().cloned().collect()) }
+    fn state_parameters(&self) -> Option<Vec<Param>> { Some(self.params.clone()) }
+    fn prepare_cpu_restore<'a>(&'a mut self, config: &[f32], state: &[(String, Tensor)]) -> Result<Box<dyn FnOnce() + 'a>> {
+        validate_cpu_parameters(&self.params)?;
+        validate_cpu_buffers(&self.velocity)?;
+        let mut names = std::collections::HashSet::new();
+        if state.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_configuration(config)?;
+        staged.restore_staged(state)?;
+        validate_buffer_copies(&self.velocity, &staged.velocity)?;
+        Ok(Box::new(move || {
+            commit_buffers(&self.velocity, &mut staged.velocity).expect("validated CPU buffers");
+            *self = staged;
+        }))
+    }
+    fn configuration(&self) -> Vec<f32> { vec![1.0, self.lr, self.momentum, self.nesterov as u8 as f32, self.max_grad_norm.unwrap_or(-1.0)] }
+    fn restore_configuration(&mut self, c: &[f32]) -> Result<()> {
+        if c.len() != 5 || c[0] != 1.0 || c.iter().any(|x| !x.is_finite())
+            || c[1] < 0.0 || c[2] < 0.0 || ![0.0, 1.0].contains(&c[3])
+            || (c[3] == 1.0 && c[2] <= 0.0) || (c[4] != -1.0 && c[4] < 0.0) {
+            return Err(Error::Format { op: "optim_restore", msg: "invalid optimizer configuration".into() });
+        }
+        self.lr = c[1];
+        self.momentum = c[2];
+        self.nesterov = c[3] == 1.0;
+        self.max_grad_norm = if c[4] == -1.0 { None } else { Some(c[4]) };
+        Ok(())
+    }
     fn snapshot(&self) -> Vec<(String, Tensor)> {
         // Cold path: state comes back to the host for serialization.
         self.velocity
@@ -233,7 +282,7 @@ impl OptimizerState for Sgd {
             .map(|(i, v)| {
                 let host = v
                     .as_ref()
-                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
+                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered").owned_detach_copy())
                     .unwrap_or_else(|| zero_like_cpu(self.params[i].tensor().numel()));
                 // State is stored flat (one element per parameter), matching
                 // the pre-device file format.
@@ -247,6 +296,20 @@ impl OptimizerState for Sgd {
     }
 
     fn restore(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
+
+        let mut names = std::collections::HashSet::new();
+        if tensors.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_staged(tensors)?;
+        validate_buffer_copies(&self.velocity, &staged.velocity)?;
+        commit_buffers(&self.velocity, &mut staged.velocity)?;
+        *self = staged;
+        Ok(())
+    }
+}
+
+impl Sgd {
+    fn restore_staged(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
         if tensors.len() != self.velocity.len() {
             return Err(Error::Format {
                 op: "optim_restore",
@@ -271,11 +334,59 @@ impl OptimizerState for Sgd {
     }
 }
 
+fn validate_buffer_copies(old: &[Option<Tensor>], new: &[Option<Tensor>]) -> Result<()> {
+    for (old, new) in old.iter().zip(new) {
+        if let (Some(dst), Some(src)) = (old, new) {
+            if dst.shape() != src.shape() || dst.dtype() != src.dtype() || dst.device() != src.device()
+                || dst.0.offset != 0 || !dst.is_contiguous() || dst.numel() != dst.storage_len() {
+                return Err(Error::Format { op: "optim_restore", msg: "stale optimizer buffer shape or layout".into() });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_cpu_parameters(params: &[Param]) -> Result<()> {
+    for p in params { crate::checkpoint::validate_destination(&p.tensor(), &p.tensor())?; }
+    Ok(())
+}
+
+fn validate_cpu_buffers(buffers: &[Option<Tensor>]) -> Result<()> {
+    for t in buffers.iter().flatten() { crate::checkpoint::validate_destination(t, t)?; }
+    Ok(())
+}
+
+fn commit_buffers(old: &[Option<Tensor>], new: &mut [Option<Tensor>]) -> Result<()> {
+    for (old, new) in old.iter().zip(new) {
+        if let (Some(dst), Some(src)) = (old, new.as_ref()) {
+            if let Err(e) = crate::inplace::raw_copy_("optim_restore", dst, src) {
+                // A backend may have enqueued a write before reporting failure.
+                dst.bump_version();
+                return Err(Error::Unsupported { op: "optim_restore", msg: format!("state commit failed; buffers may be partially updated; backend rollback is unsupported: {e}") });
+            }
+            *new = Some(dst.clone());
+        }
+    }
+    Ok(())
+}
+
+fn checked_step(t: &Tensor) -> Result<f32> {
+    if t.shape() != [] || t.dtype() != crate::dtype::DType::F32 {
+        return Err(Error::Format { op: "optim_restore", msg: "step must be scalar f32".into() });
+    }
+    let x = t.item();
+    if !x.is_finite() || x < 0.0 || x.fract() != 0.0 || x as f64 > u32::MAX as f64 {
+        return Err(Error::Format { op: "optim_restore", msg: "step out of range".into() });
+    }
+    Ok(x)
+}
+
 fn zero_like_cpu(len: usize) -> Tensor {
     Tensor::from_vec(vec![0.0; len], &[len]).expect("flat f32 buffer")
 }
 
 /// Adam with bias correction. Defaults: beta1=0.9, beta2=0.999, eps=1e-8.
+#[derive(Clone)]
 pub struct Adam {
     params: Vec<Param>,
     lr: f32,
@@ -292,6 +403,8 @@ pub struct Adam {
 
 impl Adam {
     pub fn new(params: Vec<Param>, lr: f32) -> Adam {
+        let mut seen = std::collections::HashSet::new();
+        let params: Vec<_> = params.into_iter().filter(|p| seen.insert(p.identity())).collect();
         let m = params.iter().map(|_| None).collect();
         let v = params.iter().map(|_| None).collect();
         let t = vec![0u32; params.len()];
@@ -401,6 +514,39 @@ impl Adam {
 }
 
 impl OptimizerState for Adam {
+    fn state_buffers(&self) -> Option<Vec<Tensor>> { Some(self.m.iter().chain(&self.v).flatten().cloned().collect()) }
+    fn state_parameters(&self) -> Option<Vec<Param>> { Some(self.params.clone()) }
+    fn prepare_cpu_restore<'a>(&'a mut self, config: &[f32], state: &[(String, Tensor)]) -> Result<Box<dyn FnOnce() + 'a>> {
+        validate_cpu_parameters(&self.params)?;
+        validate_cpu_buffers(&self.m)?;
+        validate_cpu_buffers(&self.v)?;
+        let mut names = std::collections::HashSet::new();
+        if state.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_configuration(config)?;
+        staged.restore_staged(state)?;
+        validate_buffer_copies(&self.m, &staged.m)?;
+        validate_buffer_copies(&self.v, &staged.v)?;
+        Ok(Box::new(move || {
+            commit_buffers(&self.m, &mut staged.m).expect("validated CPU buffers");
+            commit_buffers(&self.v, &mut staged.v).expect("validated CPU buffers");
+            *self = staged;
+        }))
+    }
+    fn configuration(&self) -> Vec<f32> { vec![2.0, self.lr, self.beta1, self.beta2, self.eps, self.max_grad_norm.unwrap_or(-1.0)] }
+    fn restore_configuration(&mut self, c: &[f32]) -> Result<()> {
+        if c.len() != 6 || c[0] != 2.0 || c.iter().any(|x| !x.is_finite())
+            || c[1] < 0.0 || !(0.0..1.0).contains(&c[2]) || !(0.0..1.0).contains(&c[3])
+            || c[4] <= 0.0 || (c[5] != -1.0 && c[5] < 0.0) {
+            return Err(Error::Format { op: "optim_restore", msg: "invalid optimizer configuration".into() });
+        }
+        self.lr = c[1];
+        self.beta1 = c[2];
+        self.beta2 = c[3];
+        self.eps = c[4];
+        self.max_grad_norm = if c[5] == -1.0 { None } else { Some(c[5]) };
+        Ok(())
+    }
     fn snapshot(&self) -> Vec<(String, Tensor)> {
         // Cold path: state comes back to the host for serialization.
         let mut out = Vec::new();
@@ -408,7 +554,7 @@ impl OptimizerState for Adam {
             let host = |s: &Option<Tensor>| -> Tensor {
                 let t = s
                     .as_ref()
-                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
+                    .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered").owned_detach_copy())
                     .unwrap_or_else(|| zero_like_cpu(self.params[i].tensor().numel()));
                 // Stored flat (one element per parameter): file-format parity.
                 let n = t.numel();
@@ -422,6 +568,22 @@ impl OptimizerState for Adam {
     }
 
     fn restore(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
+
+        let mut names = std::collections::HashSet::new();
+        if tensors.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_staged(tensors)?;
+        validate_buffer_copies(&self.m, &staged.m)?;
+        validate_buffer_copies(&self.v, &staged.v)?;
+        commit_buffers(&self.m, &mut staged.m)?;
+        commit_buffers(&self.v, &mut staged.v)?;
+        *self = staged;
+        Ok(())
+    }
+}
+
+impl Adam {
+    fn restore_staged(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
         if tensors.len() != 3 * self.params.len() {
             return Err(Error::Format {
                 op: "optim_restore",
@@ -444,7 +606,7 @@ impl OptimizerState for Adam {
                     op: "optim_restore",
                     msg: format!("optimizer state is missing t.{i}"),
                 })?;
-            let tv = ts.1.to_vec()[0];
+            let tv = checked_step(&ts.1)?;
             if tv < 0.0 || tv.fract() != 0.0 || tv > u32::MAX as f32 {
                 return Err(Error::Format {
                     op: "optim_restore",
@@ -461,6 +623,7 @@ impl OptimizerState for Adam {
 /// term `lr * wd * param` is applied directly to the parameter instead of
 /// being folded into the gradient, so it never enters the moment estimates.
 /// Defaults match torch: beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.01.
+#[derive(Clone)]
 pub struct AdamW {
     params: Vec<Param>,
     lr: f32,
@@ -481,6 +644,8 @@ pub struct AdamW {
 
 impl AdamW {
     pub fn new(params: Vec<Param>, lr: f32) -> AdamW {
+        let mut seen = std::collections::HashSet::new();
+        let params: Vec<_> = params.into_iter().filter(|p| seen.insert(p.identity())).collect();
         let m = params.iter().map(|_| None).collect();
         let v = params.iter().map(|_| None).collect();
         AdamW {
@@ -690,6 +855,43 @@ impl AdamW {
 }
 
 impl OptimizerState for AdamW {
+    fn state_buffers(&self) -> Option<Vec<Tensor>> { Some(self.m.iter().chain(&self.v).flatten().cloned().chain(self.capturable_t.iter().cloned()).collect()) }
+    fn state_parameters(&self) -> Option<Vec<Param>> { Some(self.params.clone()) }
+    fn prepare_cpu_restore<'a>(&'a mut self, config: &[f32], state: &[(String, Tensor)]) -> Result<Box<dyn FnOnce() + 'a>> {
+        validate_cpu_parameters(&self.params)?;
+        validate_cpu_buffers(&self.m)?;
+        validate_cpu_buffers(&self.v)?;
+        validate_cpu_buffers(std::slice::from_ref(&self.capturable_t))?;
+        let mut names = std::collections::HashSet::new();
+        if state.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_configuration(config)?;
+        staged.restore_staged(state)?;
+        validate_buffer_copies(&self.m, &staged.m)?;
+        validate_buffer_copies(&self.v, &staged.v)?;
+        validate_buffer_copies(std::slice::from_ref(&self.capturable_t), std::slice::from_ref(&staged.capturable_t))?;
+        Ok(Box::new(move || {
+            commit_buffers(&self.m, &mut staged.m).expect("validated CPU buffers");
+            commit_buffers(&self.v, &mut staged.v).expect("validated CPU buffers");
+            commit_buffers(std::slice::from_ref(&self.capturable_t), std::slice::from_mut(&mut staged.capturable_t)).expect("validated CPU buffers");
+            *self = staged;
+        }))
+    }
+    fn configuration(&self) -> Vec<f32> { vec![3.0, self.lr, self.beta1, self.beta2, self.eps, self.weight_decay, self.max_grad_norm.unwrap_or(-1.0)] }
+    fn restore_configuration(&mut self, c: &[f32]) -> Result<()> {
+        if c.len() != 7 || c[0] != 3.0 || c.iter().any(|x| !x.is_finite())
+            || c[1] < 0.0 || !(0.0..1.0).contains(&c[2]) || !(0.0..1.0).contains(&c[3])
+            || c[4] <= 0.0 || c[5] < 0.0 || (c[6] != -1.0 && c[6] < 0.0) {
+            return Err(Error::Format { op: "optim_restore", msg: "invalid optimizer configuration".into() });
+        }
+        self.lr = c[1];
+        self.beta1 = c[2];
+        self.beta2 = c[3];
+        self.eps = c[4];
+        self.weight_decay = c[5];
+        self.max_grad_norm = if c[6] == -1.0 { None } else { Some(c[6]) };
+        Ok(())
+    }
     fn snapshot(&self) -> Vec<(String, Tensor)> {
         // Cold path: state comes back to the host for serialization.
         // In capturable mode the device timestep buffer is authoritative
@@ -700,23 +902,41 @@ impl OptimizerState for AdamW {
             None => self.t,
         };
         let mut out = vec![("t".to_string(), Tensor::scalar(step as f32))];
-        let host = |s: &Option<Tensor>| -> Tensor {
+        let host = |s: &Option<Tensor>, i: usize| -> Tensor {
             let t = s
                 .as_ref()
-                .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered"))
-                .unwrap_or_else(|| zero_like_cpu(self.params[0].tensor().numel()));
+                .map(|t| t.to_device(Device::Cpu).expect("cpu is always registered").owned_detach_copy())
+                .unwrap_or_else(|| zero_like_cpu(self.params[i].tensor().numel()));
             // Stored flat (one element per parameter): file-format parity.
             let n = t.numel();
             t.reshape(&[n]).expect("flat reshape")
         };
         for i in 0..self.params.len() {
-            out.push((format!("m.{i}"), host(&self.m[i])));
-            out.push((format!("v.{i}"), host(&self.v[i])));
+            out.push((format!("m.{i}"), host(&self.m[i], i)));
+            out.push((format!("v.{i}"), host(&self.v[i], i)));
         }
         out
     }
 
     fn restore(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
+
+        let mut names = std::collections::HashSet::new();
+        if tensors.iter().any(|(n,_)| !names.insert(n)) { return Err(Error::Format { op: "optim_restore", msg: "duplicate optimizer key".into() }); }
+        let mut staged = self.clone();
+        staged.restore_staged(tensors)?;
+        validate_buffer_copies(&self.m, &staged.m)?;
+        validate_buffer_copies(&self.v, &staged.v)?;
+        validate_buffer_copies(std::slice::from_ref(&self.capturable_t), std::slice::from_ref(&staged.capturable_t))?;
+        commit_buffers(&self.m, &mut staged.m)?;
+        commit_buffers(&self.v, &mut staged.v)?;
+        commit_buffers(std::slice::from_ref(&self.capturable_t), std::slice::from_mut(&mut staged.capturable_t))?;
+        *self = staged;
+        Ok(())
+    }
+}
+
+impl AdamW {
+    fn restore_staged(&mut self, tensors: &[(String, Tensor)]) -> Result<()> {
         if tensors.len() != 2 * self.params.len() + 1 {
             return Err(Error::Format {
                 op: "optim_restore",
@@ -734,7 +954,7 @@ impl OptimizerState for AdamW {
                 op: "optim_restore",
                 msg: "optimizer state is missing t".into(),
             })?;
-        let tv = ts.1.to_vec()[0];
+        let tv = checked_step(&ts.1)?;
         if tv < 0.0 || tv.fract() != 0.0 || tv > u32::MAX as f32 {
             return Err(Error::Format {
                 op: "optim_restore",
