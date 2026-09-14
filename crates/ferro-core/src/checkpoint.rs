@@ -3,6 +3,7 @@
 //! Legacy model.safetensors plus checkpoint.json directories remain readable.
 //! Module snapshots include named buffers and exact scalar modes/counters.
 //! Whole-training snapshots also bind optimizer slots and parameter ties.
+//! Snapshot I/O preserves tensor dtype bits and device placement in memory.
 //! Restore is transactional for supported whole-contiguous CPU f32 targets.
 //! Model device restore is rejected: no backend transaction exists. Optimizer
 //! buffer restore is separate and supports devices without a rollback guarantee.
@@ -64,7 +65,7 @@ impl Checkpoint {
     pub fn with_named_state(mut self, state: &[(String, Tensor)]) -> Result<Self> {
         for (name, t) in state {
             if self.tensors.iter().any(|(n, _)| n == name) { return Err(format_error("duplicate state name")); }
-            self.tensors.push((name.clone(), t.owned_detach_copy()));
+            self.tensors.push((name.clone(), t.try_owned_detach_copy()?));
         }
         Ok(self)
     }
@@ -117,7 +118,7 @@ impl Checkpoint {
         if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_') { return Err(format_error("invalid optimizer namespace")); }
         let prefix = format!("optim.{name}.");
         if self.tensors.iter().any(|(n, _)| n.starts_with(&prefix)) { return Err(format_error("duplicate optimizer namespace")); }
-        for (key, t) in opt.snapshot() { self.tensors.push((format!("{prefix}{key}"), t.owned_detach_copy())); }
+        for (key, t) in opt.snapshot() { self.tensors.push((format!("{prefix}{key}"), t.try_owned_detach_copy()?)); }
         let config = opt.configuration();
         let n = config.len();
         self.tensors.push((format!("{prefix}config"), Tensor::from_vec(config, &[n])?));

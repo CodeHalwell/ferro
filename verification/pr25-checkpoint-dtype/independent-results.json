@@ -1,0 +1,82 @@
+{
+  "base": "f7ed528db68c8dfab9236d40badf0779b277439e",
+  "environment": {
+    "FERRO_REQUIRE_CUDA": "1",
+    "PATH_prefix": "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Lib\\site-packages\\torch\\lib"
+  },
+  "runs": {
+    "cpu": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ferro-core",
+        "-j2",
+        "--test",
+        "checkpoint_dtype"
+      ],
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0
+    },
+    "core": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ferro-core",
+        "-j2"
+      ],
+      "exit_code": 0,
+      "passed": 759,
+      "failed": 0,
+      "ignored": 2
+    },
+    "cuda-check": {
+      "command": [
+        "cargo",
+        "check",
+        "-p",
+        "ferro-cuda",
+        "-j2"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    },
+    "cuda": {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "ferro-cuda",
+        "-j2",
+        "--test",
+        "checkpoint_dtype"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "diff": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "sha256": {
+    "crates/ferro-core/src/tensor.rs": "e9adb40f5e119685e8538c2641b8498040a1bf38103738eeeb054f167378073b",
+    "crates/ferro-core/src/checkpoint.rs": "4d6a803e02109a0c3c51b792c9211e75f7d4259cd05ed176e7fee32d1e625935",
+    "crates/ferro-core/tests/checkpoint_dtype.rs": "3c5ee6c085343075f613e0cb6c00ff7f8bcf2c8a896c802d98146bdd5a9519e3",
+    "crates/ferro-cuda/tests/checkpoint_dtype.rs": "3ea18f5ff78bd80451a8ac9ec34445c5cef29e365f5eecbb00db24ea4c272c04"
+  }
+}

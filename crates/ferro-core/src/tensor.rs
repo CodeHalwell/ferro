@@ -1025,16 +1025,29 @@ impl Tensor {
     /// built from this so an in-place optimizer step can never scribble
     /// over the caller's tensor. Cold paths only.
     pub(crate) fn owned_detach_copy(&self) -> Tensor {
+        self.try_owned_detach_copy().expect("owning tensor copy failed")
+    }
+
+    /// Preserve dtype bits and placement; propagate device transfer failures.
+    pub(crate) fn try_owned_detach_copy(&self) -> Result<Tensor> {
         if self.device_resident_whole() {
-            let backend = backend_for(self.0.device).expect("device tensor implies backend");
+            let backend = backend_for(self.0.device)?;
             let g = self.0.storage.read();
             let Storage::Device(buf) = &*g else { unreachable!() };
-            let copy = backend.copy_dev(buf.as_ref()).expect("device buffer copy");
-            return device_leaf(copy, &self.0.shape, self.0.device);
+            let copy = backend.copy_dev(buf.as_ref())?;
+            return Ok(device_leaf(copy, &self.0.shape, self.0.device));
         }
-        let host = Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap();
+        let host = {
+            let g = self.0.storage.read();
+            match &*g {
+                Storage::Device(buf) => Tensor::from_vec(
+                    self.gather_view(&backend_for(self.device())?.copy_to_host(buf.as_ref())?), self.shape())?,
+                Storage::DeviceI64(buf) => Tensor::from_vec_i64(
+                    self.gather_view(&backend_for(self.device())?.copy_i64_to_host(buf.as_ref())?), self.shape())?,
+                _ => { drop(g); self.detach_copy_same_dtype() }
+            }
+        };
         host.to_device(self.0.device)
-            .expect("tensor's device backend is registered")
     }
 
     /// Constant tensor on the given device (cpu allocation or backend fill).
