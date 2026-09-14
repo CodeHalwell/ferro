@@ -13,4 +13,5 @@ classifiers = [
 ]
 
 [tool.maturin]
-module-name = "ferro"
+module-name = "ferro._native"
+python-source = "python"
