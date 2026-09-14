@@ -1,0 +1,15 @@
+{
+  "leaf_commands": 41,
+  "nonzero": [],
+  "rust_test_executions": 1906,
+  "python_test_executions": 238,
+  "source_stability": {
+    "stable": true,
+    "added": [],
+    "removed": [],
+    "changed": []
+  },
+  "packaging_matches": true,
+  "note": "Executions, not unique tests. Wrapper and copied logs excluded; final Rust summary per harness used; nested child summaries retained separately.",
+  "installed_stable": true
+}

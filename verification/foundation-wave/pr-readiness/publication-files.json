@@ -1,0 +1,839 @@
+{
+  "base": "43dc8ead5e4f2460efc7ba5bca14c2e06c3a5603",
+  "file_count": 104,
+  "note": "Hashes describe working-tree bytes before Git clean conversion. Git blob identities verify staged/committed content. This manifest self-hash is null. Original proposal is historical.",
+  "files": [
+    {
+      "path": "crates/ferro-core/src/autograd.rs",
+      "group": "core",
+      "original_sha256": "c670088ad3ad805b7fda2c6a130909b81757a7535d893dbd0b375e8665592acb",
+      "publication_sha256": "c670088ad3ad805b7fda2c6a130909b81757a7535d893dbd0b375e8665592acb",
+      "git_blob": "92aaf680c900dd01ed90c704d4044b2c2ffae804",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/basis.rs",
+      "group": "core",
+      "original_sha256": "976bbe4d8fd872247b5aef2ab8febf690386ce779e830539b41338899ac8c9a0",
+      "publication_sha256": "976bbe4d8fd872247b5aef2ab8febf690386ce779e830539b41338899ac8c9a0",
+      "git_blob": "0aad65a2a2ec203bcc93d032e6844eae738938c0",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/checkpoint.rs",
+      "group": "core",
+      "original_sha256": "f82c0a6953a4a386a8d1161bc1e33fae26418f5b5157ebaaabeb95fb32b93dc1",
+      "publication_sha256": "f82c0a6953a4a386a8d1161bc1e33fae26418f5b5157ebaaabeb95fb32b93dc1",
+      "git_blob": "f0358e7b419f1c1f4cddbbc9c4a4b19bd1da15fa",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/data.rs",
+      "group": "core",
+      "original_sha256": "8310fc956150bbdcc21f4094fc20794e610e8a3a4f0feb58749fb97a5390ab0d",
+      "publication_sha256": "8310fc956150bbdcc21f4094fc20794e610e8a3a4f0feb58749fb97a5390ab0d",
+      "git_blob": "8a881787587d53278f9e731ca9a31db6a6838e23",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/graph.rs",
+      "group": "core",
+      "original_sha256": "10e56f4b866c2786d7f1ba6ffb893a9c0d446b4e2fb008cbecf60c9bea86b0c0",
+      "publication_sha256": "10e56f4b866c2786d7f1ba6ffb893a9c0d446b4e2fb008cbecf60c9bea86b0c0",
+      "git_blob": "a2d3bebfb7174bf5845d9db276fae9b5bc72365c",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/higher_order.rs",
+      "group": "core",
+      "original_sha256": "4833544ad04c195457e1083e020718522313be724d79bfe907fb349a0c5d1811",
+      "publication_sha256": "4833544ad04c195457e1083e020718522313be724d79bfe907fb349a0c5d1811",
+      "git_blob": "f974d7bbb56da4a46c34f70fa493181e8f5e6947",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/inplace.rs",
+      "group": "core",
+      "original_sha256": "5119b27206de85e8e42ccaf81e20336b4f16fecd350e32a5ffc834ca22b61fd9",
+      "publication_sha256": "5119b27206de85e8e42ccaf81e20336b4f16fecd350e32a5ffc834ca22b61fd9",
+      "git_blob": "0ab0f634da233d31566e778d6d9a9d52d11ccdec",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/lib.rs",
+      "group": "core",
+      "original_sha256": "9dab512922cc029a4b5335505179a429cd28fcf23a7d96fb6245b686925c416a",
+      "publication_sha256": "9dab512922cc029a4b5335505179a429cd28fcf23a7d96fb6245b686925c416a",
+      "git_blob": "75183263fcab31f0fea602e6c57024866748f498",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/modules.rs",
+      "group": "core",
+      "original_sha256": "94b6c50c3b4f35c3d2a055eaaa596e9dd35336d8fc3cc1e7d0a0f2323eb1013c",
+      "publication_sha256": "94b6c50c3b4f35c3d2a055eaaa596e9dd35336d8fc3cc1e7d0a0f2323eb1013c",
+      "git_blob": "9b81b75e17509fc2b39f5eedaafd28ee4ea0cfa1",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/nn.rs",
+      "group": "core",
+      "original_sha256": "acce77de54b4d933d6cb93d08e4acbc98f3c492e1f039c7d3cee61679e3a0387",
+      "publication_sha256": "acce77de54b4d933d6cb93d08e4acbc98f3c492e1f039c7d3cee61679e3a0387",
+      "git_blob": "8fb72f845d38f9979349cba0c395ba1ae3a009e2",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops.rs",
+      "group": "core",
+      "original_sha256": "f247bd58fff2f0e79db4aca02d96c3de8ea448138507814643ab17c5f571ebdf",
+      "publication_sha256": "f247bd58fff2f0e79db4aca02d96c3de8ea448138507814643ab17c5f571ebdf",
+      "git_blob": "db632a538d5f0274871082da71520a4386f5f753",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/batch_norm.rs",
+      "group": "core",
+      "original_sha256": "fc5ac1d7ccbf3a041ac3fd18ec8f2d63f9c792343af8bbce86667c3baf444e49",
+      "publication_sha256": "fc5ac1d7ccbf3a041ac3fd18ec8f2d63f9c792343af8bbce86667c3baf444e49",
+      "git_blob": "29e53e844e4e49b25ccbee45999de72cc2e5243e",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/bce_with_logits_loss.rs",
+      "group": "core",
+      "original_sha256": "cae58f6a0ddbd5e6a95a3ad822735e66eda488cc3b143b2d461e96605d5605aa",
+      "publication_sha256": "cae58f6a0ddbd5e6a95a3ad822735e66eda488cc3b143b2d461e96605d5605aa",
+      "git_blob": "dbd47bee46fb38744d2628a4757c01a8543054f2",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/cat.rs",
+      "group": "core",
+      "original_sha256": "6760412fd68a6bb283bdb9b65bf0668c9b11f1ad8d8ada16d300df2fc143cab9",
+      "publication_sha256": "6760412fd68a6bb283bdb9b65bf0668c9b11f1ad8d8ada16d300df2fc143cab9",
+      "git_blob": "07da4056ab7c771d29de6b1414514c23650556da",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/conv2d.rs",
+      "group": "core",
+      "original_sha256": "e2a3298e2ceeb2f25f00fd064448a7f4440b4a42250bd03732932965bdc6e130",
+      "publication_sha256": "e2a3298e2ceeb2f25f00fd064448a7f4440b4a42250bd03732932965bdc6e130",
+      "git_blob": "a82c5706afe53bda204d5a7bf810b5cace2eb501",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/huber_loss.rs",
+      "group": "core",
+      "original_sha256": "9bc2c48d37f9025c4b888b4d87e48dfeaf7236825a6679075a8ba33ff8c8a1e1",
+      "publication_sha256": "9bc2c48d37f9025c4b888b4d87e48dfeaf7236825a6679075a8ba33ff8c8a1e1",
+      "git_blob": "21869ca2fedf5a655b9620177257f3f16a706168",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/index_select.rs",
+      "group": "core",
+      "original_sha256": "d420977710c2859cdb87aee7e50cfb53ea57c4a966803fd3a11ef21aa4f6212e",
+      "publication_sha256": "d420977710c2859cdb87aee7e50cfb53ea57c4a966803fd3a11ef21aa4f6212e",
+      "git_blob": "156174de57a5ab7ce909e5070b0eaa8cc68c3f9b",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/mod.rs",
+      "group": "core",
+      "original_sha256": "b16a714c2fdc92fd6b05a879c8a32af6273da5ce2c518582e310e615cfbb2d75",
+      "publication_sha256": "b16a714c2fdc92fd6b05a879c8a32af6273da5ce2c518582e310e615cfbb2d75",
+      "git_blob": "ec6ed374897afdac34d7095acf5a2fbdd268b810",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/smooth_l1_loss.rs",
+      "group": "core",
+      "original_sha256": "995c3fb4910304dc85f61ce9fb4b56027a284d8a6074a9d2488298007ade4d39",
+      "publication_sha256": "995c3fb4910304dc85f61ce9fb4b56027a284d8a6074a9d2488298007ade4d39",
+      "git_blob": "5a02316b235652ce801579aa19395c5a398e6009",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/sum_dim.rs",
+      "group": "core",
+      "original_sha256": "073d10a5736a2897e481e043c2f40e23445be3703f92b55fd8e6ab0804298d29",
+      "publication_sha256": "073d10a5736a2897e481e043c2f40e23445be3703f92b55fd8e6ab0804298d29",
+      "git_blob": "6dee437892107821ca9aedba53717e67d21ac09f",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/window.rs",
+      "group": "core",
+      "original_sha256": "60c63c87a08c004b8c1320c204e8df1937c3a97420703051133643e363ae047f",
+      "publication_sha256": "60c63c87a08c004b8c1320c204e8df1937c3a97420703051133643e363ae047f",
+      "git_blob": "d6c3357b43c2f8d1fe5e1889258bf545e637a550",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/optim.rs",
+      "group": "core",
+      "original_sha256": "166d7571a693b6ea2109797f7d3980fa495331d72359b0425e7a23f4bdf3c81d",
+      "publication_sha256": "166d7571a693b6ea2109797f7d3980fa495331d72359b0425e7a23f4bdf3c81d",
+      "git_blob": "1b5ac35a5914b2ffb9e6c2ad594f52de8f65733d",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/params.rs",
+      "group": "core",
+      "original_sha256": "39686b90ca08f083dd506ed65d95874457d4f9438497938b3f97636087ed0ef6",
+      "publication_sha256": "39686b90ca08f083dd506ed65d95874457d4f9438497938b3f97636087ed0ef6",
+      "git_blob": "e89006b5669b9e05d68bc79757a1c7fcd251b7d2",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/recurrent.rs",
+      "group": "core",
+      "original_sha256": "aa1e0ca9713e7b71dcc9bd95f3070d1e38116ff58fa54b3d7d86d8152f630e62",
+      "publication_sha256": "aa1e0ca9713e7b71dcc9bd95f3070d1e38116ff58fa54b3d7d86d8152f630e62",
+      "git_blob": "0a606c1e3f1ddfae8adbfa11609f751e5a5f8b35",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/rng.rs",
+      "group": "core",
+      "original_sha256": "48487a9c4c74ae7c18954e7b0c89da60fa66071fc7c3803e580255da56c1faa4",
+      "publication_sha256": "48487a9c4c74ae7c18954e7b0c89da60fa66071fc7c3803e580255da56c1faa4",
+      "git_blob": "b87f513ff2bab88a268e30a2300d32a8d29353b4",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/segment.rs",
+      "group": "core",
+      "original_sha256": "141b60bcc2785c499b5de2fc9afa541d4b9e36841763e6325aa0df47c3e75c6f",
+      "publication_sha256": "141b60bcc2785c499b5de2fc9afa541d4b9e36841763e6325aa0df47c3e75c6f",
+      "git_blob": "ed56a21f35d63ebe05aa16762ee06724c90dea5f",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/shape.rs",
+      "group": "core",
+      "original_sha256": "209b38ec2af05d32e0028b73baf5e48f850bded1c917f37f1685a61d8c371dba",
+      "publication_sha256": "209b38ec2af05d32e0028b73baf5e48f850bded1c917f37f1685a61d8c371dba",
+      "git_blob": "1614f1e2e3f21b0f1660afe8f9aac46d12beb2b1",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/sparse.rs",
+      "group": "core",
+      "original_sha256": "4d85f7c85844c9f688991a407974ee66b5bf4faf8d4f38734076e83dc48933fa",
+      "publication_sha256": "4d85f7c85844c9f688991a407974ee66b5bf4faf8d4f38734076e83dc48933fa",
+      "git_blob": "8ed04bc6d14d4e4750ddace6ca81698618034afa",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/src/tensor.rs",
+      "group": "core",
+      "original_sha256": "d13b004dad4369684cbf7162784edb1a518c650093b4bcfaddcd985f2e51fdcf",
+      "publication_sha256": "d13b004dad4369684cbf7162784edb1a518c650093b4bcfaddcd985f2e51fdcf",
+      "git_blob": "b96080b4623735e484f5e53c042664a3a8488eb7",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/compiled_chain.rs",
+      "group": "core",
+      "original_sha256": "1d111cf76e933451f808140d19869656079a3c174efc71a39f9266e3eddcef7d",
+      "publication_sha256": "1d111cf76e933451f808140d19869656079a3c174efc71a39f9266e3eddcef7d",
+      "git_blob": "5694b3043d202fe21393c61533731bda0334fa41",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_basis.rs",
+      "group": "core",
+      "original_sha256": "6756a5d3050ef1b447b9708feac076c3ad891feef77cfe303c0db9e620f4df55",
+      "publication_sha256": "6756a5d3050ef1b447b9708feac076c3ad891feef77cfe303c0db9e620f4df55",
+      "git_blob": "aa71ec6ec13aa8bfe134795956315e38491e9e10",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_batchnorm.rs",
+      "group": "core",
+      "original_sha256": "7672f31665297fc0907fdb01ea6f21efe531281b6a51f8c4b96cb6cbbca0d0b7",
+      "publication_sha256": "7672f31665297fc0907fdb01ea6f21efe531281b6a51f8c4b96cb6cbbca0d0b7",
+      "git_blob": "658e3556aeeaf128fb26be1d6830753956513eb1",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_data.rs",
+      "group": "core",
+      "original_sha256": "f0ed8f47a6317cae090b23ea64beabfb8823bdbbf37a63e2e017eac17eb56666",
+      "publication_sha256": "f0ed8f47a6317cae090b23ea64beabfb8823bdbbf37a63e2e017eac17eb56666",
+      "git_blob": "f09ef749f072ac42ef98926c48554cdb5f5099ab",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_grad_mode.rs",
+      "group": "core",
+      "original_sha256": "ad41de21aa8553aca4cbeec34ae4b893d64299333b34ee7767c36825fd1e174e",
+      "publication_sha256": "ad41de21aa8553aca4cbeec34ae4b893d64299333b34ee7767c36825fd1e174e",
+      "git_blob": "0236f345ce5bd6349f8a222b05e3fa66adbe7162",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_leaf_copy.rs",
+      "group": "core",
+      "original_sha256": "46c4c7807a31d549f8459817894c16357ca4e4b61c8eee11d9d0fa926e891f85",
+      "publication_sha256": "46c4c7807a31d549f8459817894c16357ca4e4b61c8eee11d9d0fa926e891f85",
+      "git_blob": "04eba7c0340440e3fa57a88f5904aa77bb982d55",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_losses.rs",
+      "group": "core",
+      "original_sha256": "cc3dadb0757f1a3ee8c396df561c4e1ff07692c378310de37440fde1ee4d8c69",
+      "publication_sha256": "cc3dadb0757f1a3ee8c396df561c4e1ff07692c378310de37440fde1ee4d8c69",
+      "git_blob": "0c076761544345d2717e23b8fc71cc7e1f182b93",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_recurrent.rs",
+      "group": "core",
+      "original_sha256": "12012ebaad4532e246fe2ad5ae0edff5204b4e30e6ff21d7d8d11d83cd947eae",
+      "publication_sha256": "12012ebaad4532e246fe2ad5ae0edff5204b4e30e6ff21d7d8d11d83cd947eae",
+      "git_blob": "91d519e8e2fd3485e70355139ddcbad5d62b4f25",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_segment.rs",
+      "group": "core",
+      "original_sha256": "0753baa6d47f21a46f57e08aca5abad38f9305b8a5ad59c4591b67fe29cd0b6e",
+      "publication_sha256": "0753baa6d47f21a46f57e08aca5abad38f9305b8a5ad59c4591b67fe29cd0b6e",
+      "git_blob": "d0e776c886ffd0078977c7afef9b84c2e88cb0a6",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_sparse.rs",
+      "group": "core",
+      "original_sha256": "12cd54eebbd06da4f0f76366390e50311065a79c68d7755a01b399880bd3b25e",
+      "publication_sha256": "12cd54eebbd06da4f0f76366390e50311065a79c68d7755a01b399880bd3b25e",
+      "git_blob": "dfc43938af95c9c10c718c649f867717e13cf20e",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_state.rs",
+      "group": "core",
+      "original_sha256": "86db38f94f70af13423fdd4b215228a042c0d443e94e5947e19b12d5a67b976c",
+      "publication_sha256": "86db38f94f70af13423fdd4b215228a042c0d443e94e5947e19b12d5a67b976c",
+      "git_blob": "c0bae0bf4c4ec6b12e6f2034e5b7a330a2fc4e5d",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/foundation_tensor.rs",
+      "group": "core",
+      "original_sha256": "8e7f0d92c46fbd84172db824317553bd2093d8395724816d8d9ba52c83032d36",
+      "publication_sha256": "8e7f0d92c46fbd84172db824317553bd2093d8395724816d8d9ba52c83032d36",
+      "git_blob": "67119b173780f9f6419484e3580d2178c79d71be",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/higher_order.rs",
+      "group": "core",
+      "original_sha256": "e79f2fc8504b1dd6feac1dbd225d235d770e40b0c365e41c7c49873c4fcadda7",
+      "publication_sha256": "e79f2fc8504b1dd6feac1dbd225d235d770e40b0c365e41c7c49873c4fcadda7",
+      "git_blob": "c8c77129961d0c7fa26605b41ce16b05f6cde7a7",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/module_state.rs",
+      "group": "core",
+      "original_sha256": "6ae1b28028aa630ee1eea14d99164ac452658709e9f97fa5ffd58c8b75d644b0",
+      "publication_sha256": "6ae1b28028aa630ee1eea14d99164ac452658709e9f97fa5ffd58c8b75d644b0",
+      "git_blob": "9f076dd1f34f3616371b65944c94722f766ae622",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/op_cat.rs",
+      "group": "core",
+      "original_sha256": "e5cada4dfc527647d1612bdd292ea8a28f58654e29bd527e02fa392e0f0a7a0b",
+      "publication_sha256": "e5cada4dfc527647d1612bdd292ea8a28f58654e29bd527e02fa392e0f0a7a0b",
+      "git_blob": "691c5c134c08ac252928aad07df9bb8c9cdd517c",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/second_review_state.rs",
+      "group": "core",
+      "original_sha256": "05519b4907306aa3834e45a568da54671d25b594e535895c19f621d6d7301373",
+      "publication_sha256": "05519b4907306aa3834e45a568da54671d25b594e535895c19f621d6d7301373",
+      "git_blob": "621ab486f8e40f27452cc875167dce78ec7c895b",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-core/tests/window_conv.rs",
+      "group": "core",
+      "original_sha256": "f9dfba32dd0d67c084faaf4b6ca20e8c061a22b7c68f33116df9aa265b980fc7",
+      "publication_sha256": "f9dfba32dd0d67c084faaf4b6ca20e8c061a22b7c68f33116df9aa265b980fc7",
+      "git_blob": "32909330a006183933a7217b13a915ec34ccdeda",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-fastcpu/src/elementwise.rs",
+      "group": "fastcpu",
+      "original_sha256": "59590e55f4f31032b54a7de490f1f052eedee95f2e6e6c127b699760a5c0bf85",
+      "publication_sha256": "59590e55f4f31032b54a7de490f1f052eedee95f2e6e6c127b699760a5c0bf85",
+      "git_blob": "a35487f4f622cfd6d7a3406a241fb94a085797b5",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-fastcpu/src/lib.rs",
+      "group": "fastcpu",
+      "original_sha256": "01fffd3a994d58a690d718663065e2f57bda478b683e2eabe7edb99f2d8a4978",
+      "publication_sha256": "01fffd3a994d58a690d718663065e2f57bda478b683e2eabe7edb99f2d8a4978",
+      "git_blob": "d6483d073ef8f32dd6cc7a9c20db8b07025b7c08",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-fastcpu/tests/bmm_parity.rs",
+      "group": "fastcpu",
+      "original_sha256": "22e6a1347d43909fb5cef2b786553ce39abda17aa5305b474f90314c7f7f03dd",
+      "publication_sha256": "22e6a1347d43909fb5cef2b786553ce39abda17aa5305b474f90314c7f7f03dd",
+      "git_blob": "0ff13daf675914db7215181c994af3d90a383a59",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-fastcpu/tests/support/bmm_diagnostics.rs",
+      "group": "fastcpu",
+      "original_sha256": "fad45b0cb998892ef43bbf815a4b4ac1096f2a0fc5d55cfc45b3ce92508fa95a",
+      "publication_sha256": "fad45b0cb998892ef43bbf815a4b4ac1096f2a0fc5d55cfc45b3ce92508fa95a",
+      "git_blob": "91abb5c423efbf6d1ab62e68f8fa82213e3621e5",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/Cargo.toml",
+      "group": "python",
+      "original_sha256": "8f6ee0970a95bf34f58b439f180ee34e16a281dcf470f310021e7224e91baca7",
+      "publication_sha256": "8f6ee0970a95bf34f58b439f180ee34e16a281dcf470f310021e7224e91baca7",
+      "git_blob": "429be89a78bdd6e302c13deb85cb671615ff077d",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/pyproject.toml",
+      "group": "python",
+      "original_sha256": "7c7a185653a516335dd69fe3df938ddfc3e3dfa40b7eb0e077548cbdc45449bd",
+      "publication_sha256": "7c7a185653a516335dd69fe3df938ddfc3e3dfa40b7eb0e077548cbdc45449bd",
+      "git_blob": "784e79d5a8d4c5734090fdd84436fedf6e4b4cf0",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/__init__.py",
+      "group": "python",
+      "original_sha256": "fb2e603ce9fb1164b8fbecb2a829a7014f7186239a49d0277aad2db89420b41e",
+      "publication_sha256": "fb2e603ce9fb1164b8fbecb2a829a7014f7186239a49d0277aad2db89420b41e",
+      "git_blob": "6f2e9be72eed4ebf10253e91b81e757a256eb260",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/_grad_mode.py",
+      "group": "python",
+      "original_sha256": "b0fdaabf68236f08d54b5abd05b0c20d4f9765c5b9e4a32dc4c16cc0b257c3fe",
+      "publication_sha256": "b0fdaabf68236f08d54b5abd05b0c20d4f9765c5b9e4a32dc4c16cc0b257c3fe",
+      "git_blob": "b1cb196b8717d94c2fc0c1b79a6ab228fb1689f3",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/autograd.py",
+      "group": "python",
+      "original_sha256": "22e5e3a42a138a2c0cf7db053165401c00fcee67bf5763ba52622f55a87fd59b",
+      "publication_sha256": "22e5e3a42a138a2c0cf7db053165401c00fcee67bf5763ba52622f55a87fd59b",
+      "git_blob": "504735bedf343caa0200d8e76358304d59050f67",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/basis.py",
+      "group": "python",
+      "original_sha256": "7d2cbc2c13cad47431adc86fcc522d5874a4b2dad5d0fd4e8347846cb7a45987",
+      "publication_sha256": "7d2cbc2c13cad47431adc86fcc522d5874a4b2dad5d0fd4e8347846cb7a45987",
+      "git_blob": "a758d3f64a00af389a307457d7d7a657049eb243",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/graph.py",
+      "group": "python",
+      "original_sha256": "d750da19ae7bcc2b19ac737d485bceb79a13cd9e4ae2ed495b02b90848bfb81a",
+      "publication_sha256": "d750da19ae7bcc2b19ac737d485bceb79a13cd9e4ae2ed495b02b90848bfb81a",
+      "git_blob": "b1b50f7851ec6268889c2037204b9e269e281c11",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/nn/__init__.py",
+      "group": "python",
+      "original_sha256": "f66808cfd2b994120fbe936972676794e68e049b0bf941b939a06ae1c81ef06a",
+      "publication_sha256": "f66808cfd2b994120fbe936972676794e68e049b0bf941b939a06ae1c81ef06a",
+      "git_blob": "c8d236e4923eef19b29bcd78a1e5e8525dec23b0",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/nn/functional.py",
+      "group": "python",
+      "original_sha256": "ec6ceae255c90cf14afb6c7af57b95aa0ec57dad2aaf0051b00dad2e8bf25b69",
+      "publication_sha256": "e1c8240335aa5681f4d9463b30088aea19b39ea771e629a22b9232f88f588e42",
+      "git_blob": "d4cfc1a4c96965b17e87153acf5e732e1ea3918c",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/nn/linear.py",
+      "group": "python",
+      "original_sha256": "3c60fb3152cb6e9559132df6f257f7659dc5f44c87f3d4500bdc735018ab317b",
+      "publication_sha256": "3c60fb3152cb6e9559132df6f257f7659dc5f44c87f3d4500bdc735018ab317b",
+      "git_blob": "193829d459e0b9ca930a647db371e804a355c425",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/nn/losses.py",
+      "group": "python",
+      "original_sha256": "954e246634f478326f9078c8b46ae4ddec455810599ad3233a93259fa54ed739",
+      "publication_sha256": "954e246634f478326f9078c8b46ae4ddec455810599ad3233a93259fa54ed739",
+      "git_blob": "2705dada9c3385acaf5f8de7c2937952c87dfe0b",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/nn/module.py",
+      "group": "python",
+      "original_sha256": "021d4043ec2a14817034a1eaff29ac28eec3d2855a465a5c4a9a8303ea2bc469",
+      "publication_sha256": "021d4043ec2a14817034a1eaff29ac28eec3d2855a465a5c4a9a8303ea2bc469",
+      "git_blob": "58a13504cb17abf11716d52bf121f801c825b4c7",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/optim.py",
+      "group": "python",
+      "original_sha256": "d1436f426d323661ad5625e89761edfb170b693c6744e4f97cffda429549dcef",
+      "publication_sha256": "d1436f426d323661ad5625e89761edfb170b693c6744e4f97cffda429549dcef",
+      "git_blob": "d73677b8eb149b674ff04a158642cd05d6070922",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/progress.py",
+      "group": "python",
+      "original_sha256": "0bce668f18fe47c5dc467035afdd3dafd9925441c255eb105a5278006777c622",
+      "publication_sha256": "0bce668f18fe47c5dc467035afdd3dafd9925441c255eb105a5278006777c622",
+      "git_blob": "901c94f8c50c22bedf7ee914142f280a56de4014",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/recurrent.py",
+      "group": "python",
+      "original_sha256": "e9df3dfea83f80ab0e5f610d582f24ed3d2527c99bb42603e104b6bc35f2e735",
+      "publication_sha256": "e9df3dfea83f80ab0e5f610d582f24ed3d2527c99bb42603e104b6bc35f2e735",
+      "git_blob": "a154f6894ddef2b87bc7ed063c0200aede9ee188",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/python/ferro/training.py",
+      "group": "python",
+      "original_sha256": "471bfef0fe51c7b8080dc9cb109321bb7d28b51cc48cbb96bc010312a4fd6a26",
+      "publication_sha256": "471bfef0fe51c7b8080dc9cb109321bb7d28b51cc48cbb96bc010312a4fd6a26",
+      "git_blob": "92b13459f9d7f09e6be74265fd83354491650955",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/src/architecture.rs",
+      "group": "python",
+      "original_sha256": "22b3bd274afe4087fbfe8da1bbfa39c0235d063330590b59a3a31e134076e295",
+      "publication_sha256": "22b3bd274afe4087fbfe8da1bbfa39c0235d063330590b59a3a31e134076e295",
+      "git_blob": "9793b60889f168a73e71f8f7db1dfdbdc362802d",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/src/basis.rs",
+      "group": "python",
+      "original_sha256": "552e232453b987e584c7d146513e6496b12fa00add6a014c7bcf2607437a9b89",
+      "publication_sha256": "552e232453b987e584c7d146513e6496b12fa00add6a014c7bcf2607437a9b89",
+      "git_blob": "c96b3b9f9823e416a4de1a8f1b950593a40457bf",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/src/convolution.rs",
+      "group": "python",
+      "original_sha256": "c03458f1f78753d3f30b408a40ce0b4bdb16b8b8f80789cb2e6edd422ea1d8f5",
+      "publication_sha256": "c03458f1f78753d3f30b408a40ce0b4bdb16b8b8f80789cb2e6edd422ea1d8f5",
+      "git_blob": "973205f00c78dd5fe4168f87c3192aeebf6efaeb",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/src/lib.rs",
+      "group": "python",
+      "original_sha256": "a24cc60a9f24f44dd2a2c9464970d1d08613150aa61fb3bd3653b16dd290c6b5",
+      "publication_sha256": "a24cc60a9f24f44dd2a2c9464970d1d08613150aa61fb3bd3653b16dd290c6b5",
+      "git_blob": "aba373e3b9f77aada7fdc217b381661d74ef229c",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/src/recurrent.rs",
+      "group": "python",
+      "original_sha256": "1b60ad398d248ee3e65d3a73e7a10fe8c84184eface69d1545b328116136770f",
+      "publication_sha256": "1b60ad398d248ee3e65d3a73e7a10fe8c84184eface69d1545b328116136770f",
+      "git_blob": "6ab65d1957b9b86696e950272e19364975f91b12",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_grad_mode.py",
+      "group": "python",
+      "original_sha256": "08217dded7f1de6b92f17c8a6573dfa4cef97082c78755a7c347ce6c43e6d682",
+      "publication_sha256": "08217dded7f1de6b92f17c8a6573dfa4cef97082c78755a7c347ce6c43e6d682",
+      "git_blob": "60d3120bbd95916de21e691fef1ac1e8e8114eb9",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_progress.py",
+      "group": "python",
+      "original_sha256": "844a1b7c1ec633dd09b98a9a622f7611f65981124c54276c4de2306aaf34f0c0",
+      "publication_sha256": "844a1b7c1ec633dd09b98a9a622f7611f65981124c54276c4de2306aaf34f0c0",
+      "git_blob": "3f7d9b9ca6af66cd47bb16f5188b51de4df97ee3",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_review_python.py",
+      "group": "python",
+      "original_sha256": "0be203baba9ffba6f509799995e1b550b5c367c785319ccf2c9b3686b26bdd5c",
+      "publication_sha256": "0be203baba9ffba6f509799995e1b550b5c367c785319ccf2c9b3686b26bdd5c",
+      "git_blob": "2b88c1d365f18698dda6c60a4e3b37090f52c747",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_training_api.py",
+      "group": "python",
+      "original_sha256": "2f0e7f19dc8a40bf9963d5c4e3df8dc204075611220571cc4cc371d02bc77b7a",
+      "publication_sha256": "2f0e7f19dc8a40bf9963d5c4e3df8dc204075611220571cc4cc371d02bc77b7a",
+      "git_blob": "984ce7a754304c36c8562c3be38e15c0f423d3d2",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "docs/FOUNDATIONS_AND_ARCHITECTURE_ROADMAP.md",
+      "group": "docs",
+      "original_sha256": "9731cbd035921a91b159069a7c11f96cc654f2931aeed4ebf6a4e29947aac8ec",
+      "publication_sha256": "170f8c3bb33778fd49d61f9f1334add420c9551928b1385f8318d8992d85643e",
+      "git_blob": "4163af97cc5b2a61753299db79a0451ea0fb5a61",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "docs/PYTHON_API_DESIGN.md",
+      "group": "docs",
+      "original_sha256": "5dfb29e2aceac11c48a1d0430f31e170b1a29ed221cb97b6dafd73709f2105e2",
+      "publication_sha256": "ba0cdd87c9ade81072542729a8ec38baa8f2885f9ea9e1d9c0e2624870b2f766",
+      "git_blob": "ddfa5ad218f62235c227391e6eff6c6da6a09528",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/fastcpu-second-review/README.md",
+      "group": "docs",
+      "original_sha256": "e716fdcffe1000764d8935e84760c141139b957f001957247a7d8687518d2eeb",
+      "publication_sha256": "f5113aa0728c900bdbaea0e210a8bdb5523c540ad1097b2e96d855c82b80f864",
+      "git_blob": "3203ea486d3af914343a5b608f305a236e9c556e",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/fastcpu-second-review/omission_probe.rs",
+      "group": "fastcpu",
+      "original_sha256": null,
+      "publication_sha256": "f018ed2b52074262810088b43cef3982dd1a6e56b27807d56ad252e6eab9d17d",
+      "git_blob": "26bee502a63f4a60e8ef07106060045c56401397",
+      "reason": "Compact dependency-free counterfactual reproducer; not a natural fastcpu failure"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/PR_BODY.md",
+      "group": "docs",
+      "original_sha256": "13c9de215e7b35c1dc30c61772ddb5463ca16596f00a7c91054ebd0023a73fa8",
+      "publication_sha256": "f82097b619a9dc9f40e04e42d34f92d22192573068c14fed7f8414d030869c5b",
+      "git_blob": "05e9714e625be4b055d76979c8124fd509cd0d77",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/PUBLICATION.md",
+      "group": "docs",
+      "original_sha256": null,
+      "publication_sha256": "b445add806958fc444363f599550655ea0570f58179c613f3c381a9ed3a2e928",
+      "git_blob": "f3c24affe5b2553bab3f76ffe41714f9341169a6",
+      "reason": "Authoritative publication scope, local evidence policy and portable test commands"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/README.md",
+      "group": "docs",
+      "original_sha256": "5469949629f44e423c3fa04859824a5ca86773166172f43dc6e9865f01a17ff1",
+      "publication_sha256": "65457cb1b498f3249d80182496e7f8627e7548b00c5c4ac86fa00afd006e5d7f",
+      "git_blob": "7a359c03370b0c1ae3b9081c3fb841336975b3c6",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/collect.py",
+      "group": "docs",
+      "original_sha256": "365fa339be75c85311799c945ded57118b0246e6b785d4af0c2ef07a3757e96d",
+      "publication_sha256": "365fa339be75c85311799c945ded57118b0246e6b785d4af0c2ef07a3757e96d",
+      "git_blob": "a46e32d459544334a30cfed9872d2c0a99ac02e6",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/packaging.json",
+      "group": "docs",
+      "original_sha256": "e58f7933957a6194dc3033afc18eb6826833fea71d89023d012bdd287e4bc610",
+      "publication_sha256": "e58f7933957a6194dc3033afc18eb6826833fea71d89023d012bdd287e4bc610",
+      "git_blob": "4d6fe9670b4668a5f5ce8a06c78da0888e4e023c",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/results.json",
+      "group": "docs",
+      "original_sha256": "14d8b3f59bc852e71706ffb2348b2c8459023e5b42baa93e9b33d99de549a185",
+      "publication_sha256": "14d8b3f59bc852e71706ffb2348b2c8459023e5b42baa93e9b33d99de549a185",
+      "git_blob": "8c53aba47ead04be4af022563f08bd85f4fe6ff1",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/source-exclusions.json",
+      "group": "docs",
+      "original_sha256": "6fae96c6b0be9efdfc005c9a6382a3b8961baa036e458a4b60d13b88a2185527",
+      "publication_sha256": "6fae96c6b0be9efdfc005c9a6382a3b8961baa036e458a4b60d13b88a2185527",
+      "git_blob": "26e0d4c2cda9fcf2e44881fc59f56c9d701cae6d",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/source-stability.json",
+      "group": "docs",
+      "original_sha256": "37e8ae8cb7280479740221f334e00c62129b204460fa7ddcdb2f5b5f66cf8e10",
+      "publication_sha256": "37e8ae8cb7280479740221f334e00c62129b204460fa7ddcdb2f5b5f66cf8e10",
+      "git_blob": "4cab3e245a8d8d7952d8c9767b337781c93ff26b",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/sources-after.json",
+      "group": "docs",
+      "original_sha256": "e0d7bc29abf01e381094dacdd751ae275b8b7960f72305361d556caef0f7024f",
+      "publication_sha256": "e0d7bc29abf01e381094dacdd751ae275b8b7960f72305361d556caef0f7024f",
+      "git_blob": "3029749a26d3c0eb9687d57191b1ba5f329aabf6",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/final/sources-before.json",
+      "group": "docs",
+      "original_sha256": "e0d7bc29abf01e381094dacdd751ae275b8b7960f72305361d556caef0f7024f",
+      "publication_sha256": "e0d7bc29abf01e381094dacdd751ae275b8b7960f72305361d556caef0f7024f",
+      "git_blob": "3029749a26d3c0eb9687d57191b1ba5f329aabf6",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/inventory.json",
+      "group": "docs",
+      "original_sha256": "8423b0775883ac7e46b978f3ab3cead7faaca38a138c6aa0b77011ca2166ab69",
+      "publication_sha256": "8423b0775883ac7e46b978f3ab3cead7faaca38a138c6aa0b77011ca2166ab69",
+      "git_blob": "b1b4bd686fae4e605f695641e2384136d32b6874",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/leaf-results-counts.json",
+      "group": "docs",
+      "original_sha256": "f124b987e7cd55df463d42492096bbc404b515b7acb8db5555f23c28a32d7a59",
+      "publication_sha256": "f124b987e7cd55df463d42492096bbc404b515b7acb8db5555f23c28a32d7a59",
+      "git_blob": "a98ca04947f5175a74d5ad2a8457e81a1884af47",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/packaging_smoke.py",
+      "group": "python",
+      "original_sha256": null,
+      "publication_sha256": "f92196c76cb5afa91d6d3cc80522fcebe527d2e792a49224c800fd8675254d10",
+      "git_blob": "45420b7e8ae80965e2654e5ccefc75b59ef2c78f",
+      "reason": "Portable staged facade regression runner; verifies EOF-only change against installed native identity"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/proposed-files.json",
+      "group": "docs",
+      "original_sha256": "003d1e389cf05b7dbc1a39e9cbbf24cb3a768606c4975f605720f66e67cdf717",
+      "publication_sha256": "003d1e389cf05b7dbc1a39e9cbbf24cb3a768606c4975f605720f66e67cdf717",
+      "git_blob": "bf8aaface1c5b21d9ea2f3e2835b13adbe5b07d2",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/publication-files.json",
+      "group": "docs",
+      "original_sha256": null,
+      "publication_sha256": null,
+      "git_blob": null,
+      "reason": "Exact final allowlist and per-file publication identity; self hash deliberately null"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/security-scan.json",
+      "group": "docs",
+      "original_sha256": "8126e29be2d76ede5440ec2d6fb8c3e784fb869a0219e141a418882b1aa041ba",
+      "publication_sha256": "8126e29be2d76ede5440ec2d6fb8c3e784fb869a0219e141a418882b1aa041ba",
+      "git_blob": "23b05e956ca8f654e6237b798aa733b443f4e0f1",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/summary.json",
+      "group": "docs",
+      "original_sha256": "2c7522a1e044a7150874a684a1df4dc593caecbbbefeb7d7726a4f28be952c90",
+      "publication_sha256": "2c7522a1e044a7150874a684a1df4dc593caecbbbefeb7d7726a4f28be952c90",
+      "git_blob": "35ebbc95bdb7e7c9e523e7a841c9d4ae28ca5d18",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/tested-source-provenance.json",
+      "group": "docs",
+      "original_sha256": "991ebf8c11bd082567fd7b51c9d5dea75657540a1d7ad6dba9beee6ee2bc4b4c",
+      "publication_sha256": "991ebf8c11bd082567fd7b51c9d5dea75657540a1d7ad6dba9beee6ee2bc4b4c",
+      "git_blob": "df523a96957c2a5bf9b4529f4230b4f9fb6662da",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/verify.py",
+      "group": "docs",
+      "original_sha256": "73b46ea106aa074f047ed531744b26df4ac764429e720a5ea53b7937a2c1c5ee",
+      "publication_sha256": "b6cd12a5bda118757aee20a4a26288507553efb9cb26b7362066788461f3c958",
+      "git_blob": "2abc2b3407c9b9c98cf3a1e5ec5dfea4ea7d478f",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/review-fixes/fastcpu/README.md",
+      "group": "docs",
+      "original_sha256": "e9438e25c1b9a7f40046c457e8371251f4d77aa3ce4e4c69805ddc04c7fe1976",
+      "publication_sha256": "a55e13ba40112b8b757f870116f90895a88cec481fd6e55fc6a938e937f5c7da",
+      "git_blob": "7e974aef3d965efca503e198bfbbd60b052fd7fc",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/foundation-wave/second-review/STATUS.md",
+      "group": "docs",
+      "original_sha256": "71b9f0b02f43db6e81f943dad5d9c8de90345403c9697d60848787d8858dfd04",
+      "publication_sha256": "e2f030fec7779e63d87b575064681b519500d039f21923994b5d48c16b12b5ac",
+      "git_blob": "2031e1d13b535787183abb8678c1817a4279768d",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "group": "python",
+      "original_sha256": "3dd7a05bcdc63c1f085d4a473dc56f37288db76ddf6488269b33e2b989d3207c",
+      "publication_sha256": "3dd7a05bcdc63c1f085d4a473dc56f37288db76ddf6488269b33e2b989d3207c",
+      "git_blob": "af19e3edbddb9464638ef9c30dc3af2dad91b13f",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/python-architecture-api/README.md",
+      "group": "docs",
+      "original_sha256": "d18a0db2f0358e97760dcee169c2144df363de5f9fed9e4482085c9b1c7c3b23",
+      "publication_sha256": "d270c45ee3e55aeb1c6c62205d5a45128512d70ce050914defa2873c043fdb78",
+      "git_blob": "c35a99b54111cf0e68272f9ece117d1015f330c5",
+      "reason": "Original proposed path; publication-only edit"
+    },
+    {
+      "path": "verification/python-architecture-api/test_architecture.py",
+      "group": "python",
+      "original_sha256": "1246752c57624bff96a74a23a18693b2024da3fd387642d015a4c5fc74d96b30",
+      "publication_sha256": "1246752c57624bff96a74a23a18693b2024da3fd387642d015a4c5fc74d96b30",
+      "git_blob": "d0be81523f9d7dadd88406c0cf070ff51d32fe87",
+      "reason": "Original proposed content unchanged"
+    },
+    {
+      "path": "verification/python-architecture-api/training_examples.py",
+      "group": "python",
+      "original_sha256": "44230e6b626da72a5435e86ce75117a8d8824efadffe1bac53992ed32508bc77",
+      "publication_sha256": "44230e6b626da72a5435e86ce75117a8d8824efadffe1bac53992ed32508bc77",
+      "git_blob": "5d56631c879139c2b489338080526b70cc3c81cb",
+      "reason": "Original proposed content unchanged"
+    }
+  ]
+}
