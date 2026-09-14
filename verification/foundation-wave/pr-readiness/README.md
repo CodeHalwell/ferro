@@ -1,3 +1,5 @@
+> Historical snapshot: current publication status and corrected parent/child test counts are in [PUBLICATION.md](/verification/foundation-wave/pr-readiness/PUBLICATION.md). The documented merge blocker is cleared by independently validated software BMM containment; historical root cause remains unresolved. Omitted logs/collectors are local provenance.
+
 # Frozen foundation bundle: verification passes, merge BLOCKED
 
 > Publication note: this is the preserved pre-packaging verifier report. Statements below about no commits/publication describe that verifier, not the eventual branch state. [PUBLICATION.md](PUBLICATION.md) and [PR_BODY.md](PR_BODY.md) govern the draft scope and evidence policy. Raw logs and omitted historical artifacts referenced below remain local, not downloadable PR artifacts.

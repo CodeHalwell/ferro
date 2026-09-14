@@ -1,0 +1,132 @@
+[
+  {
+    "name": "wheel-build",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\wheel-build.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "maturin",
+      "build",
+      "--release",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--out",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\pr25-final-independent\\final\\wheels",
+      "-i",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe"
+    ]
+  },
+  {
+    "name": "wheel-install",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\wheel-install.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "pip",
+      "install",
+      "--force-reinstall",
+      "--no-deps",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\pr25-final-independent\\final\\wheels\\ferro-0.0.1-cp311-abi3-win_amd64.whl"
+    ]
+  },
+  {
+    "name": "integration13",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "verification/static-perf-wave/run_checks.py",
+      "--output-dir",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\pr25-final-independent\\final\\integration13"
+    ]
+  },
+  {
+    "name": "cuda-default-parallel",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\cuda-default-parallel.log",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ]
+  },
+  {
+    "name": "binding-default-parallel",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\binding-default-parallel.log",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--lib"
+    ]
+  },
+  {
+    "name": "contracts17",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\contracts17.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-api-contract/contract.py"
+    ]
+  },
+  {
+    "name": "architecture8",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\architecture8.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-architecture-api/test_architecture.py"
+    ]
+  },
+  {
+    "name": "fastcpu-release",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\fastcpu-release.log",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-fastcpu",
+      "--release",
+      "--",
+      "--test-threads=1"
+    ]
+  },
+  {
+    "name": "copy-required",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\copy-required.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/tests/test_pr25_copy.py"
+    ]
+  },
+  {
+    "name": "convolution",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\convolution.log",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/tests/test_pr25_convolution.py"
+    ]
+  },
+  {
+    "name": "diff-check",
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\diff-check.log",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ]
+  }
+]

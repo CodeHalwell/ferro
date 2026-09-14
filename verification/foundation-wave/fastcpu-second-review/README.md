@@ -1,3 +1,5 @@
+> Historical snapshot: current publication status and corrected parent/child test counts are in [PUBLICATION.md](/verification/foundation-wave/pr-readiness/PUBLICATION.md). The documented merge blocker is cleared by independently validated software BMM containment; historical root cause remains unresolved. Omitted logs/collectors are local provenance.
+
 # Independent fastcpu second review: unresolved, new omission fingerprint
 
 > Historical scoped report. The independent `omission_probe.rs` is packaged; its executable and other cited forensic scripts/results/logs remain local evidence. Use the portable commands in [PUBLICATION.md](../pr-readiness/PUBLICATION.md). No naturally reproduced fastcpu failure or production fix is claimed.

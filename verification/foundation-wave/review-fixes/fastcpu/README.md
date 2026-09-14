@@ -1,3 +1,5 @@
+> Historical snapshot: current publication status and corrected parent/child test counts are in [PUBLICATION.md](/verification/foundation-wave/pr-readiness/PUBLICATION.md). The documented merge blocker is cleared by independently validated software BMM containment; historical root cause remains unresolved. Omitted logs/collectors are local provenance.
+
 # Fastcpu intermittent BMM investigation: UNRESOLVED
 
 > Historical investigation report; later bounded diagnostics are in the committed fastcpu tests. The cited analyze/run scripts and raw result/log archives are local-only. [PUBLICATION.md](../../pr-readiness/PUBLICATION.md) identifies the current portable test entrypoints and evidence policy.

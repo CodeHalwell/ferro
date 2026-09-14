@@ -21,6 +21,8 @@
 use std::thread;
 
 pub mod elementwise;
+#[cfg(test)]
+mod containment_tests;
 
 /// Micro-kernel tile: MR x NR accumulators = 12 ymm registers under AVX2,
 /// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
@@ -55,6 +57,7 @@ const PAR_THRESHOLD: usize = 1 << 18;
 /// spawn/join still needs enough aggregate work to amortize. 2^21 (matching
 /// elementwise.rs's PAR_THRESHOLD) sits right at the crossover with a small
 /// safety margin against the loss side.
+#[cfg(test)]
 const BATCH_PAR_THRESHOLD: usize = 1 << 21;
 
 /// Row-major (m,k) @ (k,n) -> (m,n).
@@ -103,6 +106,35 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
     out
 }
 
+/// Conservative BMM containment for the unresolved PR25 numerical incident.
+/// Every dot uses independent ascending-k f32 multiply then add, fresh storage,
+/// and no packed kernel, MATMUL registry, pool, or worker dispatch. The old
+/// batched optimization is test-only, with no production opt-in. This costs
+/// CPU throughput; it is isolation, not a claim of a root-cause fix.
+pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    if batch == 0 || m == 0 || n == 0 { return Vec::new(); }
+    let rows = batch.checked_mul(m).expect("BMM row count overflow");
+    let alen = rows.checked_mul(k).expect("BMM input size overflow");
+    let bstride = k.checked_mul(n).expect("BMM input size overflow");
+    let blen = batch.checked_mul(bstride).expect("BMM input size overflow");
+    let olen = rows.checked_mul(n).expect("BMM output size overflow");
+    assert!(a.len() >= alen, "BMM A buffer too short");
+    assert!(b.len() >= blen, "BMM B buffer too short");
+    let mut out = vec![0.0f32; olen];
+    if k == 0 { return out; }
+    for (row, dst) in out.chunks_exact_mut(n).enumerate() {
+        let ar = &a[row*k..(row+1)*k];
+        let br = &b[(row/m)*bstride..(row/m+1)*bstride];
+        for (col, value) in dst.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            for (p, &av) in ar.iter().enumerate() { sum += av * br[p*n+col]; }
+            *value = sum;
+        }
+    }
+    out
+}
+
+/// Historical packed BMM, retained only for diagnostics.
 /// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n): batch independent
 /// GEMMs sharing a single std::thread::scope, instead of the trait default's
 /// one scope per batch element (see ferro-core's `Backend::matmul_batch`).
@@ -114,7 +146,8 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
 /// swept in the same pp-block order regardless of how work was chunked
 /// (mirrors `matmul`'s row-split determinism), so results are bitwise
 /// independent of thread count and batch decomposition.
-pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+#[cfg(test)]
+fn matmul_batch_packed(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
     assert!(a.len() >= batch * m * k, "a has {} elements, need batch*m*k = {}", a.len(), batch * m * k);
     assert!(b.len() >= batch * k * n, "b has {} elements, need batch*k*n = {}", b.len(), batch * k * n);
     let mut out = mm_out(batch * m * n, k);
@@ -146,6 +179,7 @@ pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: u
 /// space (row index = bi*m + local row) into `out`, one packing-buffer pair
 /// allocated for the whole call and reused across every batch the group
 /// touches.
+#[cfg(test)]
 fn matmul_batch_group(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize, g0: usize, group_rows: usize) {
     let njtiles = n.div_ceil(NR);
     let mut packed_b = vec![0f32; njtiles * KC * NR];
@@ -182,9 +216,13 @@ fn mm_out(len: usize, k: usize) -> Vec<f32> {
     }
 }
 
-/// Register this kernel process-wide for all ferro-core CPU matmuls.
+/// Register conservative CPU matmul; this also contains default-backend BMM.
+/// Plain MATMUL-registry users pay the same scalar-throughput tradeoff.
+/// Explicit `matmul`/`matmul_with_threads` remain packed, outside this BMM policy.
 pub fn install() {
-    ferro_core::dispatch::set_matmul_kernel(matmul);
+    // CpuBackend's default BMM calls MATMUL once per slab. Registering the
+    // packed kernel here would bypass containment for install-only callers.
+    ferro_core::dispatch::set_matmul_kernel(|a, b, m, k, n| matmul_batch(a, b, 1, m, k, n));
 }
 
 /// Register the vectorized/threaded elementwise backend process-wide for
@@ -214,6 +252,7 @@ fn matmul_rows_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i
 /// fresh per-call allocation - lets `matmul_batch`'s per-thread worker reuse
 /// one pair of buffers across every (batch, row-chunk) item it handles
 /// instead of paying one allocation per item.
+#[cfg(test)]
 fn matmul_rows_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
     #[cfg(target_arch = "x86_64")]
     if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
@@ -226,6 +265,7 @@ fn matmul_rows_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
+#[cfg(test)]
 fn matmul_rows_scratch_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
     matmul_rows_body_scratch(a, b, out, k, n, i0, packed_a, packed_b);
 }
@@ -282,12 +322,21 @@ fn pack_a(dst: &mut [f32], a: &[f32], k: usize, i0: usize, pp: usize, kc: usize,
 #[inline(always)]
 fn micro_packed(pa: &[f32], pb: &[f32], kc: usize, acc: &mut [[f32; NR]; MR]) {
     for p in 0..kc {
+        #[cfg(test)]
+        if containment_tests::PACKED_FAULT.get() == 1 && p == 90 { continue; }
         let av: &[f32; MR] = (&pa[p * MR..p * MR + MR]).try_into().unwrap();
         let bv: &[f32; NR] = (&pb[p * NR..p * NR + NR]).try_into().unwrap();
         for r in 0..MR {
             let ar = av[r];
             for j in 0..NR {
                 acc[r][j] += ar * bv[j];
+                #[cfg(test)]
+                match containment_tests::PACKED_FAULT.get() {
+                    2 => acc[r][j] = f32::NAN,
+                    3 => acc[r][j] = f32::INFINITY,
+                    4 => acc[r][j] = -999.0,
+                    _ => {}
+                }
             }
         }
     }

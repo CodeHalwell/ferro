@@ -1,0 +1,276 @@
+{
+  "base_head": "968b3c687e636f3ced6ee8c0be52bf65749ed3a6",
+  "review_fix_commit": "d40f19a7c5269545eefb38d7e581c52fbac66c4b",
+  "production_and_tests": [
+    "crates/ferro-core/src/ops_ext/bce_with_logits_loss.rs",
+    "crates/ferro-core/src/ops_ext/huber_loss.rs",
+    "crates/ferro-core/src/ops_ext/index_select.rs",
+    "crates/ferro-core/src/ops_ext/smooth_l1_loss.rs",
+    "crates/ferro-fastcpu/src/containment_tests.rs",
+    "crates/ferro-fastcpu/src/lib.rs",
+    "crates/ferro-fastcpu/tests/bmm_containment.rs",
+    "crates/ferro-py/src/convolution.rs",
+    "crates/ferro-py/src/lib.rs",
+    "crates/ferro-py/tests/test_pr25_convolution.py",
+    "crates/ferro-py/tests/test_pr25_copy.py"
+  ],
+  "frozen_input_count": 499,
+  "frozen_inputs_unchanged_at_publication": true,
+  "installed_files_unchanged": true,
+  "files": [
+    {
+      "path": "crates/ferro-core/src/ops_ext/bce_with_logits_loss.rs",
+      "commit_group": "review-corrections",
+      "sha256": "46a9b5b5d229e76df4083dbdf915abd309fec2fa14fe46357c4634abbaf477a3",
+      "git_blob": "dc120bd33c0a16c8ef8205e4b40ab10d5cb48589",
+      "verified_input_sha256": "46a9b5b5d229e76df4083dbdf915abd309fec2fa14fe46357c4634abbaf477a3"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/huber_loss.rs",
+      "commit_group": "review-corrections",
+      "sha256": "35343720aae892d1850839232013aae80d1fd263a03523dfd8a7863b6f84c874",
+      "git_blob": "eac04ca57878fb8cc0400ed430c71e5f90c8c880",
+      "verified_input_sha256": "35343720aae892d1850839232013aae80d1fd263a03523dfd8a7863b6f84c874"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/index_select.rs",
+      "commit_group": "review-corrections",
+      "sha256": "a330c13d1b4cc633e0017caa6c94428b47fed1cdda46e628f147bedc954c8e47",
+      "git_blob": "a793be815b9f908bd83ec0631e1c27d9dcf7d3e7",
+      "verified_input_sha256": "a330c13d1b4cc633e0017caa6c94428b47fed1cdda46e628f147bedc954c8e47"
+    },
+    {
+      "path": "crates/ferro-core/src/ops_ext/smooth_l1_loss.rs",
+      "commit_group": "review-corrections",
+      "sha256": "e01da0f81357b560b676a81c9a21f919dd445c009d2ba621f33772c1296794eb",
+      "git_blob": "60a1b996db2ac2ee155192189eb2c942316cf203",
+      "verified_input_sha256": "e01da0f81357b560b676a81c9a21f919dd445c009d2ba621f33772c1296794eb"
+    },
+    {
+      "path": "crates/ferro-py/src/convolution.rs",
+      "commit_group": "review-corrections",
+      "sha256": "301315f5ea86549ea096a699d39e35d9422a04476f1cfafbc42896a6b76d7e9b",
+      "git_blob": "2b83c52db33cda3590ae474a8a778b10bf0b161c",
+      "verified_input_sha256": "301315f5ea86549ea096a699d39e35d9422a04476f1cfafbc42896a6b76d7e9b"
+    },
+    {
+      "path": "crates/ferro-py/src/lib.rs",
+      "commit_group": "review-corrections",
+      "sha256": "954500cd74a40b9872d195de4cecee3e4505552b73a780925b2b7238f2a997b9",
+      "git_blob": "fdd932b76f2658a0c8d36b1391591105569489d7",
+      "verified_input_sha256": "954500cd74a40b9872d195de4cecee3e4505552b73a780925b2b7238f2a997b9"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_pr25_convolution.py",
+      "commit_group": "review-corrections",
+      "sha256": "35f6601390402adbb2f9131db92bf157372bb609b5773491c173e7986f4e652c",
+      "git_blob": "af5e358cb22cedd821edd2b4feb54b39a1a751d0",
+      "verified_input_sha256": "35f6601390402adbb2f9131db92bf157372bb609b5773491c173e7986f4e652c"
+    },
+    {
+      "path": "crates/ferro-py/tests/test_pr25_copy.py",
+      "commit_group": "review-corrections",
+      "sha256": "9190d0150064942cf91df677b05c45b1a4e326d332092f218b6c7aa7f15791c4",
+      "git_blob": "312df372599786528a52c04171c983425e208626",
+      "verified_input_sha256": "9190d0150064942cf91df677b05c45b1a4e326d332092f218b6c7aa7f15791c4"
+    },
+    {
+      "path": "verification/pr25-review-round2/STATUS.md",
+      "commit_group": "review-corrections",
+      "sha256": "32619d3683aeff6b7b2f9e7e2edd8006a823537de9e2e0ce532f60a097ad38f9",
+      "git_blob": "506c6ad275fe57d2745b3ec2ad04508d4e9ae190",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-review-round2/run.py",
+      "commit_group": "review-corrections",
+      "sha256": "a03ef5e9c52af41b3a363ff40fbd8959d30843efaf2980d378f78b778b3d4d94",
+      "git_blob": "8175873bb18f3cde8aa5993fcd65a766d1575e59",
+      "verified_input_sha256": "a03ef5e9c52af41b3a363ff40fbd8959d30843efaf2980d378f78b778b3d4d94"
+    },
+    {
+      "path": "verification/pr25-review-round2/installed.py",
+      "commit_group": "review-corrections",
+      "sha256": "5ab7147c4fdb76584b225900c98ac3a8aff0b59471635a7e73a00d2476b2b343",
+      "git_blob": "dc85069bd5ea481cbe91eee4a32b5ef99e041eb8",
+      "verified_input_sha256": "5ab7147c4fdb76584b225900c98ac3a8aff0b59471635a7e73a00d2476b2b343"
+    },
+    {
+      "path": "crates/ferro-fastcpu/src/containment_tests.rs",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "286e39fcac387dd7f6fc9ca5118c46ee28b967e9d877dd6618fa0c0a9725bc4a",
+      "git_blob": "a053d507927e831f4887cae6bbb3f1edccf37c24",
+      "verified_input_sha256": "286e39fcac387dd7f6fc9ca5118c46ee28b967e9d877dd6618fa0c0a9725bc4a"
+    },
+    {
+      "path": "crates/ferro-fastcpu/src/lib.rs",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "abb9fd6cca24c05db673efb4716b9074513bf2b7afd3aee3e1ed26f86775816c",
+      "git_blob": "6093ca1ed8464c9e226107c849b932dfa883173a",
+      "verified_input_sha256": "abb9fd6cca24c05db673efb4716b9074513bf2b7afd3aee3e1ed26f86775816c"
+    },
+    {
+      "path": "crates/ferro-fastcpu/tests/bmm_containment.rs",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "3a7590d8862f795dd22146d0d35818ad35d2abb5d2b4112a46b7d0c3a6120427",
+      "git_blob": "24905f72bc0c60ef8d3ea42fe4cc393cc95f6f23",
+      "verified_input_sha256": "3a7590d8862f795dd22146d0d35818ad35d2abb5d2b4112a46b7d0c3a6120427"
+    },
+    {
+      "path": "verification/pr25-final-independent/REVIEW.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "c93cac2a782e16dd85c71f076dc136aefa58555f8e67998c7ee9284c0ec09318",
+      "git_blob": "f3695963e4d2cfea9854216076d7861e49da550d",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-fastcpu-containment/README.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "459bb082330c06403ba74d3e06ce929f2760f1c0cc312429e16328e5da3f0c7f",
+      "git_blob": "18ce75b00a5074bd48174fc89a8faa4cb48891bc",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-fastcpu-containment/results.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "fe5a2fb5c35ff42c3ac06b72878b8806d6faf164ba5f81c5cceba6319b80794a",
+      "git_blob": "de41777dc137676bbc1a8deb15d561b1e34f5fcf",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/results.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "cdcac1c97c05048d6aa01f1a2ea4406d536d8e03d329c89a338969c5831778db",
+      "git_blob": "80602e3e2473117b57a77e4d4b49a848eaa2eef3",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/integration13/integration-results.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "fe917dc42e5fad38ce9f6c9dd9d3a8c1d1797a60b5247ce7b2e3c6551f3cfe43",
+      "git_blob": "ab8cf3f7bcf65e818ef6936345aa0ae489f972d5",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/sources-before.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "bd05194e4c0cbd01eb1320b988d242780e8446a97f83d00e2bf70435a1081fef",
+      "git_blob": "0c0885c1f4eb1835c6304e7bc1766b276d1a13a2",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/sources-after.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "bd05194e4c0cbd01eb1320b988d242780e8446a97f83d00e2bf70435a1081fef",
+      "git_blob": "0c0885c1f4eb1835c6304e7bc1766b276d1a13a2",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/installed-before.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "8bb3f97e17d5218684373ea21237e7c03b343221f95059fc849104bbebf24b1a",
+      "git_blob": "3ecf359602ca4f95c178e82c938d42d7c4a92666",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/installed-after.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "8bb3f97e17d5218684373ea21237e7c03b343221f95059fc849104bbebf24b1a",
+      "git_blob": "3ecf359602ca4f95c178e82c938d42d7c4a92666",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/packaging.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "73524690ea766c9a55049c9b4ccfd64b2cf732efc215a1fc88985f6f4d156203",
+      "git_blob": "e7700b37dfe62c7f8ad09ec417d5d3fbd0d61545",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/parsed-counts.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "f8887361f540cd5a44d9f5bb7e9e0a719a0b556c25ee9fd3d6107b0bd653c1f1",
+      "git_blob": "9d52284d39da79c251c8a86570009aa17a10b866",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/source-stability.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "5d60eb1c9aaeab3d913707dc3db75359adaf1ea98403962ff80cd21266f9b4d1",
+      "git_blob": "f4fd758b2ea396be60b705746026943474ae4ce9",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/supplemental.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "a1f1b0f6484c89b57ac850dc192d111ed704325cb757db1b46c344c22ef20385",
+      "git_blob": "d72e1b990621dc047c06c7a824fa1c9e35d08b6a",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/final/security-scan.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "a0ba6d4b5d2638955a8b6196ee4a41448ae274ceb429057b1e9f41a3f74b9abd",
+      "git_blob": "1aa7fa3739d31c21b4f98b2889cc7a023fb32f93",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/fastcpu-second-review/README.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "0e1003a453b4fa79c048d2f8874308da5d2807892c11bb94275045547969fa9a",
+      "git_blob": "a2f3b356a9c75ad5589ec42b7755cc91773518e1",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/PR_BODY.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "0088dd334a8bd2abdd988956289654d34754c16c7cf2351a796b2626b6629237",
+      "git_blob": "8a52d16fbd0f77cad620cf044bb0db7294481c6c",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/PUBLICATION.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "a79db9e405d4dbd062539eab0a77b9f564819955e15b599f9d38c314244f08ec",
+      "git_blob": "2d4d6eb7f87139490b32d0c4b42180708bba458c",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/pr-readiness/README.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "89daebc2f89932b029ddbdf85234a4ab553af2b6d8cf4f329c94473af59204fe",
+      "git_blob": "32428c7272d5531f608be92d31af6bf36bfdcce8",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/review-fixes/fastcpu/README.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "ba286ca4d49f9ab7fe1f2c5920f452e630ec7e37dcacdb17dc791310288c3afb",
+      "git_blob": "4d443bed5d680897a5c9d3dad3572f2a3aec467a",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/foundation-wave/second-review/STATUS.md",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "5a63496637fdf0ef130003cffb0e377fededdc789af91e83ef3855c9b8eab211",
+      "git_blob": "184fc51c5e0dcca4a0b92852e24f7e0f03aeba3b",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/local-log-hashes.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": "3f2c167d4f1eb62d7bee1baf021789fe93f0028352fdb6d5d0b5017926d70e75",
+      "git_blob": "204224cbc354e9a2ebf4b3dae3f4bcc849a3c0c1",
+      "verified_input_sha256": null
+    },
+    {
+      "path": "verification/pr25-final-independent/publication-files.json",
+      "commit_group": "bmm-containment-and-publication",
+      "sha256": null,
+      "git_blob": null,
+      "verified_input_sha256": null
+    }
+  ],
+  "self_hash_policy": "publication-files.json hashes intentionally null; original staging-proposal retained locally unchanged",
+  "excluded": "All paths not explicitly listed; raw logs, archives, wheels, binaries and credentials are not uploaded."
+}

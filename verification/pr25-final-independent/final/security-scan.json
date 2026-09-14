@@ -1,0 +1,7 @@
+{
+  "(?i)(?:api_key|secret|password|passwd)\\s*=\\s*['\\\"][^'\\\"]{6,}": [],
+  "os\\.system\\(": [],
+  "shell=True": [],
+  "pickle\\.loads?\\(": [],
+  "\\beval\\(": []
+}

@@ -1,60 +1,37 @@
-# Foundation publication: DRAFT, merge BLOCKED
+# Foundation publication: documented merge blocker cleared by containment
 
-The canonical scope and limitations are [PR_BODY.md](PR_BODY.md). The historical **343812 ULP fastcpu BMM incident remains OPEN, root cause unknown**. No natural recurrence, causal production fix or merge-readiness approval is asserted. The p=90 omission probe and deliberately injected output/input corruption tests validate a counterfactual and diagnostic reporting, not a production bug reproduction.
+**MERGE BLOCK CLEARED by validated SOFTWARE BMM path containment, not original root-cause resolution.** The authoritative current scope is [PR_BODY.md](PR_BODY.md), with [independent final review](../../pr25-final-independent/REVIEW.md). No merge or auto-merge is authorized. Human/bot re-review and hosted CI are separate from the local recommendation.
 
-## Review packaging and source identity
+**Material CPU cost:** scalar BMM 13.8991-13.9863 ms versus 0.9193-0.9850 ms for sequential explicit one-thread packed matmul per slab at [16,128,128,128]. This is not historical fused BMM, not an isolated-host benchmark, and not a speedup. Install-only registry matmul is also scalar; explicit nonbatched packed APIs remain unchanged. CpuBackend's pooled aggregate BMM output remains pooled and is fully overwritten slab by slab. No pool defect or universal fault immunity is claimed.
 
-Start with core foundation/state/higher-order/CPU architecture code and its integrated tests; shared tensor/module/autograd files stay together so commits do not depend on speculative partial patches. Review fastcpu's test-only diagnostics and scalar oracle next, then the native mixed Python package/tests/public examples, then evidence and contracts. This is a single draft PR against main, never an authorization to merge.
+The historical 343812-ULP incident remains root-cause UNRESOLVED. Preserve the original failing evidence and investigate independently of containment. Restoring optimized BMM requires causal investigation, renewed all-output oracle/injection/entrypoint validation and explicit review; green repetitions alone do not justify restoring it. See [investigation and containment](../../pr25-fastcpu-containment/README.md).
 
-The original `proposed-files.json` contains exactly 100 proposed paths. All 98 non-null SHA256 entries matched before packaging; its two self-referential entries intentionally have null hashes. It and `inventory.json` are retained as the original verifier's proposal, not silently rewritten into a claim that their historical hashes describe post-packaging prose. `publication-files.json` is the exact final publication allowlist, recording original and final working-tree hashes and the Git-clean blob identities; its own hash is null to avoid self-reference. Git normalizes CRLF when appropriate, so raw disk SHA256 and Git blob identity are different checks.
+## Two-commit review packaging
 
-No production behavior changed after the final frozen verification. The staged whitespace check exposed one trailing blank line in `ferro/nn/functional.py`, removed solely to pass `git diff --cached --check`. Its parsed AST is unchanged; public contracts and architecture tests were rerun with this exact source module loaded over the installed native wheel. Historical 14-file source/wheel byte equality remains evidence for the original tested bytes, not a rebuilt post-whitespace wheel. All other crate/config/test source bytes are unchanged. Other packaging changes are limited to publication prose, precedence/local-evidence notices in historical documents, and the optional `--output-dir` argument in `verify.py`. The latter prevents a fresh rerun from colliding with the committed historical `final/` reports; syntax and help are checked separately, not misrepresented as a second fresh execution of its entire GPU orchestration. The extra `omission_probe.rs` is a compact, reviewed, dependency-free forensic reproducer already exercised during the independent investigation. No additional model features or tolerance changes are introduced.
+Review corrections cover copy dispatch, native convolution defaults, detached host loss negations and redundant index-select shape construction, with executable Python regressions. The second commit contains conservative CPU BMM containment, its real-microkernel fault/installed-Tensor tests, independent verification manifests and current status documentation. The exact eleven source/test candidates are unchanged from final independent verification; no production edits were made while publishing. Working-tree SHA256 and Git-clean blob identities are distinct on CRLF systems; the publication manifest records both. Historical original proposals remain unchanged and do not describe newly published documentation.
 
-## Evidence policy
+## Evidence policy and historical precedence
 
-The committed reports/manifests state what the local execution observed. All 41 canonical leaf commands exited zero and all 41 referenced raw log SHA256 values were rechecked during packaging. The reported totals (1906 Rust and 238 unittest executions) count executions, not unique tests. Raw logs, binary/wheel artifacts, cache files, diagnostic JSONL and earlier-wave archives remain local, unmodified and unpublished. Local paths/usernames in manifests are provenance, not downloadable artifacts; no credentials or environment dumps are intended for publication. A heuristic content scan found only ordinary module `eval` names, not dynamic execution or credential matches; this is not an exhaustive security audit.
+Latest combined results: integration 13/13 exit 0; core 759 parent tests plus 9 child executions (not 768 unique), CUDA 112 parent tests, Python 73, binding 15, contracts 17, architecture 8. Full source/package verification is recorded in the independent report and final manifests. Repeated runs are not summed as unique tests. Older foundation/readiness/worker reports are immutable historical snapshots; their draft/blocker or no-publication statements describe their original point in time and are superseded here. The round-2 worker's 768 total includes child executions; use the independent count instead.
 
-References in historical reports to omitted `forensics.py`, `analyze.py`, older `run.py`/`verify.py`, result JSON, source archives and raw logs denote local-only provenance. Do not execute those historical reproduction blocks expecting omitted files in a fresh clone. `collect.py` is an archival reconciliation/inventory utility requiring the preserved local raw-log tree under `final/`; it is not a standalone fresh-clone test or a publication staging tool. Running it overwrites proposal/report JSON, so do not run it on the publication manifests merely to validate them. The executable current test entrypoints below are packaged with their source dependencies.
+Only explicitly selected source, tests, reports and JSON manifests are committed. Raw logs, wheels, executables, PDBs, caches, unrelated archives and secrets are excluded, preserved locally. `verification/pr25-final-independent/run.py` and `pr25-fastcpu-containment/summarize.py` are omitted archival orchestration/collection tools; their references in reports denote local provenance, not runnable fresh-clone commands. The former has a fixed output directory; the latter requires preserved raw logs and overwrites its report. Historical `collect.py` likewise requires local archives. Do not run archival collectors to validate immutable reports. `local-log-hashes.json` records retained raw evidence hashes, without publishing logs. Source manifests may inventory local-only inputs and are not publication allowlists.
 
-## Portable core and focused reproductions
+## Reproduction with published dependencies
 
-From repository root, using the supported Rust toolchain:
+Prerequisites for full Windows verification: Rust/MSVC, project venv at `crates/ferro-py/.venv`, maturin, torch/numpy/safetensors, and real CUDA runtime directories at `%LOCALAPPDATA%/Temp/cuda-rt/nvidia/cuda_nvrtc/bin` and `cublas/bin`. Missing GPU prerequisites fail required checks rather than silently skip. The tracked full verifier builds and installs a noneditable release wheel, sets required CUDA, and uses base PYTHONHOME only for embedded binding tests. Choose a new output directory on every attempt:
 
 ```text
+python verification/foundation-wave/pr-readiness/verify.py --output-dir verification/foundation-wave/pr-readiness/rerun-02
 cargo test -j2 -p ferro-core
 cargo test -j2 -p ferro-fastcpu -p ferro-tokenizer
-cargo test -j2 -p ferro-fastcpu --test bmm_parity -- --nocapture
-cargo test -j2 -p ferro-core --test second_review_state
-rustc --edition=2021 verification/foundation-wave/fastcpu-second-review/omission_probe.rs -o target/foundation-omission-probe.exe
-target/foundation-omission-probe.exe
+cargo test -j2 -p ferro-fastcpu --release -- --test-threads=1
+cargo test -j2 -p ferro-fastcpu --release --test bmm_containment serial_cpu_cost_probe -- --ignored --exact --nocapture --test-threads=1
+python verification/pr25-review-round2/run.py copy-rerun-01 @python crates/ferro-py/tests/test_pr25_copy.py
+python verification/pr25-review-round2/run.py conv-rerun-01 @python crates/ferro-py/tests/test_pr25_convolution.py
 ```
 
-The last two commands reconstruct the seeded scalar counterfactual; they do not invoke fastcpu. Core state, higher-order and architecture tests are part of ordinary Cargo discovery. The fastcpu integration tests include `tests/support/bmm_diagnostics.rs`; no omitted verification helper is required. Their injected diagnostics create clearly labelled local reports and are never evidence of a natural failure.
+The round-2 wrapper uses Torch's DLL directory and requires the freshly installed native wheel; use fresh labels because its log output overwrites the named file. Current tests reproduce current containment, not historical pre-fix RED states. The old `packaging_smoke.py` intentionally pins the old native binary and is historical, not the current-wheel gate. Portable Cargo tests include their checked-in support modules; Python regressions import the installed package, with no untracked helper dependency.
 
-## Python and full Windows verification
+## Scope and remaining work
 
-Prerequisites: project venv at `crates/ferro-py/.venv`, a working Rust/MSVC toolchain, maturin and the existing test dependencies (including torch/numpy/safetensors), and the real CUDA setup used by the integration runners. The full verifier explicitly checks `%LOCALAPPDATA%/Temp/cuda-rt/nvidia/cuda_nvrtc/bin` and `cublas/bin`; missing prerequisites are failures, not skip-based success. It builds/installs a noneditable wheel in that project venv. Embedded Python binding tests set the queried base PYTHONHOME; wheel builds do not. CPU wrapper coverage is not CUDA architecture residency.
-
-```text
-python verification/foundation-wave/pr-readiness/verify.py --output-dir verification/foundation-wave/pr-readiness/rerun-01
-crates/ferro-py/.venv/Scripts/python.exe -m unittest discover -s crates/ferro-py/tests -v
-crates/ferro-py/.venv/Scripts/python.exe verification/python-api-contract/contract.py
-crates/ferro-py/.venv/Scripts/python.exe verification/python-architecture-api/test_architecture.py
-crates/ferro-py/.venv/Scripts/python.exe verification/python-architecture-api/training_examples.py
-```
-
-Choose a nonexistent output directory inside the repository on every new full attempt. The original unchanged DLPack and static integration runners are already tracked. Historical original literal commands and exact exits remain in `leaf-results-counts.json`; the packaging-only output option does not retroactively alter those commands or source manifests.
-
-## Packaging smoke
-
-```text
-crates/ferro-py/.venv/Scripts/python.exe verification/foundation-wave/pr-readiness/packaging_smoke.py
-```
-
-This packages all 14 authored facade files into a temporary directory with a copy of the verified installed native extension, checks exact import locations, and runs discovery (69 passed), contracts (17 passed) and architecture tests (8 passed). Source/native hashes stayed stable. One expected saved-version panic diagnostic was caught by its regression test and the suite passed. This is not a new native build or a replacement for the frozen CUDA validation. The runner intentionally requires the recorded native SHA256 rather than silently accepting a stale extension.
-
-## Acceptance still outstanding
-
-Resolve the fastcpu incident causally and obtain human review before reconsidering merge. Full Python training-state exposure, resident CUDA architecture kernels, complete arbitrary-loop checkpoint state and remaining roadmap model-family proofs are follow-ups, not completed foundations. Custom restore protocols and CPU-only transactional limitations remain as stated in the PR body. Existing compiler warnings remain; no clippy/sanitizer/Miri or performance certification is implied.
-
-AI assistance: implementation, scoped independent review, verification and packaging used AI agents. Publication is for review only; no review-bot requests or merge operations are part of this handoff.
+This remains one foundation PR, not completion of the roadmap. New architecture wrappers are CPU-f32, higher-order AD is partial, Python full training-state snapshots remain unexposed, and CPU checkpoint transactions require paused training/matching configuration with documented state omissions and custom-protocol responsibilities. No GPU architecture residency, all-model-family certification, universal rollback, physical power-loss guarantee or performance certification is implied. AI-assisted implementation/review/verification/publication; no exhaustive audit or human approval claim.

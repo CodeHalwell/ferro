@@ -1,3 +1,5 @@
+> Historical snapshot: current publication status and corrected parent/child test counts are in [PUBLICATION.md](/verification/foundation-wave/pr-readiness/PUBLICATION.md). The documented merge blocker is cleared by independently validated software BMM containment; historical root cause remains unresolved. Omitted logs/collectors are local provenance.
+
 # Second-wave independent integration review
 
 > Historical review evidence, not publication status. Referenced raw logs, earlier status files and result archives remain local-only; current compiled regressions are packaged in the core test suite. The final source-identity/count manifest and scope are under [pr-readiness](../pr-readiness/PUBLICATION.md).

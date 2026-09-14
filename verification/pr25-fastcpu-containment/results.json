@@ -1,0 +1,353 @@
+{
+  "root_cause": "UNRESOLVED",
+  "containment": "independent scalar BMM; packed BMM test-only",
+  "scope": "matmul_batch, FastCpuBackend BMM, install-only default backend BMM; not explicit packed matmul",
+  "historical_failure_reproduced": false,
+  "injected_reds": [
+    "omitted packed product escapes BMM",
+    "install-only MATMUL bypass"
+  ],
+  "tests": {
+    "red": [
+      {
+        "status": "FAILED",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      }
+    ],
+    "install-red": [
+      {
+        "status": "FAILED",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      }
+    ],
+    "green": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "full-debug": [
+      {
+        "status": "ok",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "full-release": [
+      {
+        "status": "ok",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "final-debug": [
+      {
+        "status": "ok",
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "final-release": [
+      {
+        "status": "ok",
+        "passed": 18,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "cpu-cost": [
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "cost_samples": [
+    {
+      "run": 0,
+      "implementation": "scalar_bmm",
+      "shape": [
+        16,
+        128,
+        128,
+        128
+      ],
+      "nanoseconds": [
+        13994000,
+        14003100,
+        14011300,
+        14087400,
+        13881800,
+        13986300,
+        13854800,
+        13884400,
+        13866600
+      ],
+      "median_ns": 13986300
+    },
+    {
+      "run": 0,
+      "implementation": "packed_serial_per_slab",
+      "shape": [
+        16,
+        128,
+        128,
+        128
+      ],
+      "nanoseconds": [
+        919300,
+        845800,
+        840700,
+        844800,
+        856700,
+        1087700,
+        1101000,
+        1084900,
+        1104000
+      ],
+      "median_ns": 919300
+    },
+    {
+      "run": 1,
+      "implementation": "packed_serial_per_slab",
+      "shape": [
+        16,
+        128,
+        128,
+        128
+      ],
+      "nanoseconds": [
+        860500,
+        985000,
+        841200,
+        833800,
+        865200,
+        1129000,
+        1126100,
+        1246400,
+        1187500
+      ],
+      "median_ns": 985000
+    },
+    {
+      "run": 1,
+      "implementation": "scalar_bmm",
+      "shape": [
+        16,
+        128,
+        128,
+        128
+      ],
+      "nanoseconds": [
+        14526700,
+        13759200,
+        13899100,
+        13699600,
+        13611500,
+        14111300,
+        13839700,
+        14192700,
+        14057500
+      ],
+      "median_ns": 13899100
+    }
+  ],
+  "cost_limit": "Serial CPU call comparison only; packed comparator is one-thread per-slab matmul, NOT historical fused BMM. Shared host idle status not established; no general speed claim.",
+  "source_hashes_after_execution": {
+    "crates\\ferro-fastcpu\\examples\\char_lm.rs": "c4e01406735c7b9a8fc0a817abed27a62846f58cd66f55b80f5aa22cd4851b3e",
+    "crates\\ferro-fastcpu\\examples\\gpt2.rs": "5b1f3180fb92aa825abcd7a0f0293acedd2daf4416884a0ad8b51f4176975408",
+    "crates\\ferro-fastcpu\\src\\containment_tests.rs": "286e39fcac387dd7f6fc9ca5118c46ee28b967e9d877dd6618fa0c0a9725bc4a",
+    "crates\\ferro-fastcpu\\src\\elementwise.rs": "59590e55f4f31032b54a7de490f1f052eedee95f2e6e6c127b699760a5c0bf85",
+    "crates\\ferro-fastcpu\\src\\lib.rs": "abb9fd6cca24c05db673efb4716b9074513bf2b7afd3aee3e1ed26f86775816c",
+    "crates\\ferro-fastcpu\\src\\bin\\bench.rs": "98c111146fc4fc6fb9fd417788eba7d16eb70af8ebd21a403688d289e5fb60ac",
+    "crates\\ferro-fastcpu\\src\\bin\\bench_elementwise.rs": "b315a1524bd6f51652ea901dce04da9219a25c0d4f18d1cc2dc00fa3438ee299",
+    "crates\\ferro-fastcpu\\src\\bin\\roofline.rs": "c1b6fcd7e01c18c48e09e1850bbc4776c65453e96ae299970bb183e18de8e65c",
+    "crates\\ferro-fastcpu\\tests\\bmm_containment.rs": "3a7590d8862f795dd22146d0d35818ad35d2abb5d2b4112a46b7d0c3a6120427",
+    "crates\\ferro-fastcpu\\tests\\bmm_parity.rs": "22e6a1347d43909fb5cef2b786553ce39abda17aa5305b474f90314c7f7f03dd",
+    "crates\\ferro-fastcpu\\tests\\bmm_perf.rs": "bb9db4d8dc60f375b662a40d3e0693cb6a9a245917ba79c239d7a9b538ad0d19",
+    "crates\\ferro-fastcpu\\tests\\support\\bmm_diagnostics.rs": "fad45b0cb998892ef43bbf815a4b4ac1096f2a0fc5d55cfc45b3ce92508fa95a",
+    "crates\\ferro-fastcpu\\Cargo.toml": "1ecbf0cd8dbb4255317afc3a2fd8fda0522ff64b9415e1d84aab2897fca04509",
+    "Cargo.lock": "055051d32944c013419007f60eaf4c99c80acce799f3e5cd6dd18d6e9cee5d2d"
+  },
+  "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-pc-windows-msvc\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+  "git_head": "968b3c687e636f3ced6ee8c0be52bf65749ed3a6"
+}
