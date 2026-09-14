@@ -445,6 +445,41 @@ mod tests {
     }
 
     #[test]
+    fn batch_group_splits_match_scalar_oracle() {
+        for (batch, m, k, n) in [(16, 128, 128, 128), (3, 49, 257, 17), (3, 7, 0, 17)] {
+            let a: Vec<_> = lcg_fill(2556, batch * m * k).into_iter().map(|x| x * 4.0).collect();
+            let b: Vec<_> = lcg_fill(3556, batch * k * n).into_iter().map(|x| x * 4.0).collect();
+            let want: Vec<f32> = (0..batch * m * n).map(|idx| {
+                let (bi, row, col) = (idx / (m * n), idx / n % m, idx % n);
+                let mut sum = 0.0;
+                for p in 0..k {
+                    sum += a[(bi * m + row) * k + p] * b[(bi * k + p) * n + col];
+                }
+                sum
+            }).collect();
+            for threads in [1, 3, 7, 31, 32, 33] {
+                let mut got = vec![if k == 0 { 0.0 } else { f32::NAN }; want.len()];
+                if threads == 1 {
+                    // Bypass the host heuristic: exercise the actual serial BMM worker.
+                    matmul_batch_group(&a, &b, &mut got, m, k, n, 0, batch * m);
+                } else {
+                    let rows_per = (batch * m).div_ceil(threads);
+                    thread::scope(|scope| {
+                        for (group, chunk) in got.chunks_mut(rows_per * n).enumerate() {
+                            let (a, b) = (&a, &b);
+                            let rows = chunk.len() / n;
+                            scope.spawn(move || matmul_batch_group(a, b, chunk, m, k, n, group * rows_per, rows));
+                        }
+                    });
+                }
+                for (idx, (x, y)) in got.iter().zip(&want).enumerate() {
+                    assert_eq!(x.to_bits(), y.to_bits(), "shape={batch},{m},{k},{n} threads={threads} index={idx}: {x} vs scalar {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn install_routes_tensor_matmul() {
         let (m, k, n) = (12, 20, 9);
         let a = lcg_fill(3, m * k);

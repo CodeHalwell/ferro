@@ -227,6 +227,7 @@ fn apply2(a: &[f32], b: &[f32], out: &mut [f32], f: impl Fn(f32, f32) -> f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod diagnostics { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/bmm_diagnostics.rs")); }
     use std::sync::{Arc, Mutex};
 
     use ferro_core::{CpuBackend, Device, Tensor};
@@ -389,8 +390,12 @@ mod tests {
             for (i, &(m, k, n)) in MATMUL_BATCH_DIMS.iter().enumerate() {
                 let a = lcg_fill(1000 + i as u64 + batch as u64 * 97, batch * m * k);
                 let b = lcg_fill(2000 + i as u64 + batch as u64 * 97, batch * k * n);
+                let seeds = [1000 + i as u64 + batch as u64 * 97, 2000 + i as u64 + batch as u64 * 97];
+                let mut evidence = diagnostics::Capture::new(&a, &b, [batch, m, k, n], seeds, 0, None);
                 let want = CpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+                evidence.before_fast(&a, &b, &want);
                 let got = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+                evidence.on_failure(&a, &b, &got, &want, "matmul_batch_matches_default_bitwise");
                 assert_bitwise(&got, &want, &format!("batch={batch} m={m} k={k} n={n}"));
             }
         }
@@ -403,8 +408,11 @@ mod tests {
         let (batch, m, k, n) = (16usize, 128usize, 128usize, 128usize);
         let a = lcg_fill(11, batch * m * k);
         let b = lcg_fill(13, batch * k * n);
+        let mut evidence = diagnostics::Capture::new(&a, &b, [batch, m, k, n], [11, 13], 0, None);
         let r1 = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+        evidence.before_fast(&a, &b, &r1);
         let r2 = FastCpuBackend.matmul_batch(&a, &b, batch, m, k, n);
+        evidence.on_failure(&a, &b, &r2, &r1, "matmul_batch determinism");
         assert_bitwise(&r2, &r1, "matmul_batch determinism");
     }
 }
