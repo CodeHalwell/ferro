@@ -1,9 +1,9 @@
-//! Sum reduction over one dimension. Forward reuses the `raw_sum_dim` kernel;
+//! Sum reduction over one dimension. Forward reuses the `try_raw_sum_dim` kernel;
 //! backward expands the reduced grad back to the input shape: reshape to the
 //! keepdim shape (size-1 at `dim`), broadcast to the input shape, materialize.
 
 use crate::error::{Error, Result};
-use crate::tensor::{raw_sum_dim, Tensor};
+use crate::tensor::{try_raw_sum_dim, Tensor};
 
 impl Tensor {
     pub fn sum_dim(&self, dim: usize, keepdim: bool) -> Result<Tensor> {
@@ -14,7 +14,7 @@ impl Tensor {
                 msg: format!("dim {dim} out of range for rank {ndim}"),
             });
         }
-        let out = raw_sum_dim(self, dim, keepdim);
+        let out = try_raw_sum_dim(self, dim, keepdim)?;
         let in_shape = self.shape().to_vec();
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::SumDim(dim, keepdim), move |g| {
             let mut keep_shape = in_shape.clone();

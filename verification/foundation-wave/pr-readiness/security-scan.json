@@ -1,0 +1,71 @@
+{
+  "scope": "Added tracked lines and complete proposed untracked source/config files; heuristic only; no exhaustive security approval",
+  "findings": [
+    {
+      "path": "crates/ferro-py/python/ferro/nn/module.py",
+      "scan_line": 145,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "crates/ferro-py/tests/test_progress.py",
+      "scan_line": 98,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "crates/ferro-py/tests/test_review_python.py",
+      "scan_line": 32,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "crates/ferro-py/tests/test_review_python.py",
+      "scan_line": 44,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "crates/ferro-py/tests/test_review_python.py",
+      "scan_line": 58,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "crates/ferro-py/tests/test_review_python.py",
+      "scan_line": 78,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "scan_line": 49,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "scan_line": 145,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "scan_line": 164,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "scan_line": 276,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    },
+    {
+      "path": "verification/python-api-contract/contract.py",
+      "scan_line": 339,
+      "category": "dynamic_eval",
+      "assessment": "False positive: Module.eval definition or module evaluation-mode call, not Python dynamic eval."
+    }
+  ]
+}

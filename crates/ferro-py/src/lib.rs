@@ -1,4 +1,8 @@
 mod dlpack;
+mod architecture;
+mod recurrent;
+mod basis;
+mod convolution;
 
 #[cfg(test)]
 #[path = "../tests/support/dlpack_recorded_error.rs"]
@@ -723,22 +727,52 @@ impl PyTensor {
         self.inner.requires_grad()
     }
 
+    #[pyo3(signature = (inputs, create_graph=false))]
+    fn grad_wrt(&self, inputs: Vec<PyRef<'_, PyTensor>>, create_graph: bool) -> PyResult<Vec<PyTensor>> {
+        let inputs: Vec<_> = inputs.iter().map(|t| &t.inner).collect();
+        self.inner.grad_wrt(&inputs, create_graph).map(|v| v.into_iter().map(PyTensor::wrap).collect()).map_err(map_err)
+    }
+
+    #[pyo3(signature = (inputs, seed, create_graph=false))]
+    fn vjp_wrt(&self, inputs: Vec<PyRef<'_, PyTensor>>, seed: &PyTensor, create_graph: bool) -> PyResult<Vec<PyTensor>> {
+        let inputs: Vec<_> = inputs.iter().map(|t| &t.inner).collect();
+        self.inner.vjp_wrt(&inputs, &seed.inner, create_graph).map(|v| v.into_iter().map(PyTensor::wrap).collect()).map_err(map_err)
+    }
+
+    fn backward_with(&self, seed: &PyTensor) -> PyResult<()> {
+        if seed.inner.shape() != self.inner.shape() || seed.inner.device() != self.inner.device() || seed.inner.dtype() != self.inner.dtype() {
+            return Err(PyValueError::new_err("backward seed must match output shape, dtype, and device"));
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.backward_with(&seed.inner)))
+            .map_err(|_| PyValueError::new_err("native backward failed (invalid or stale graph)"))
+    }
+
     fn backward(&self) -> PyResult<()> {
         if self.inner.numel() != 1 {
             return Err(PyValueError::new_err(
                 "backward() requires a scalar output; reduce with .sum() or .mean()",
             ));
         }
-        self.inner.backward();
-        Ok(())
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.backward()))
+            .map_err(|payload| {
+                let message = payload.downcast_ref::<String>().map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("native backward failed (invalid or stale graph)");
+                PyValueError::new_err(message.to_owned())
+            })
     }
 
     /// Copy values into this tensor's existing storage and return self.
     /// Shape must match. Uses core's checked in-place API: whole-contiguous f32
-    /// destinations only, no autograd history or shared device snapshots.
+    /// destinations only, no op history or shared device snapshots. Grad-requiring
+    /// leaves additionally require an active no_grad context.
     /// Captured leaf handles observe the new values on their next replay.
     fn copy_<'py>(slf: PyRef<'py, Self>, src: &PyTensor) -> PyResult<PyRef<'py, Self>> {
-        slf.inner.copy_from(&src.inner).map_err(map_err)?;
+        if !ferro_core::autograd::is_grad_enabled() && slf.inner.requires_grad() {
+            slf.inner.copy_leaf_from(&src.inner).map_err(map_err)?;
+        } else {
+            slf.inner.copy_from(&src.inner).map_err(map_err)?;
+        }
         Ok(slf)
     }
 
@@ -906,11 +940,74 @@ fn capture(build: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
     ferro_core::capture(|| build.call0()?.extract::<PyTensor>())
 }
 
+#[pyclass(name = "Parameter", module = "ferro.nn", unsendable)]
+struct PyParameter { inner: ferro_core::params::Param }
+
+#[pymethods]
+impl PyParameter {
+    #[new]
+    fn new(tensor: &PyTensor) -> PyResult<Self> {
+        tensor.inner.requires_grad_(true).map_err(map_err)?;
+        Ok(Self { inner: ferro_core::params::Param::new(tensor.inner.clone()) })
+    }
+    fn tensor(&self) -> PyTensor { PyTensor::wrap(self.inner.tensor()) }
+    fn zero_grad(&self) { self.inner.zero_grad(); }
+    #[getter]
+    fn grad(&self) -> Option<PyTensor> { self.inner.grad().map(PyTensor::wrap) }
+}
+
+#[pyclass(name = "_SGD", unsendable)]
+struct PySgd { inner: ferro_core::optim::Sgd }
+
+#[pymethods]
+impl PySgd {
+    #[new]
+    #[pyo3(signature = (params, lr, momentum=0.0, nesterov=false))]
+    fn new(params: Vec<PyRef<'_, PyParameter>>, lr: f32, momentum: f32, nesterov: bool) -> PyResult<Self> {
+        if !lr.is_finite() || lr < 0.0 || !momentum.is_finite() || momentum < 0.0 || (nesterov && momentum == 0.0) {
+            return Err(PyValueError::new_err("invalid SGD learning rate or momentum"));
+        }
+        let slots = params.iter().map(|p| p.inner.clone()).collect();
+        Ok(Self { inner: ferro_core::optim::Sgd::new(slots, lr).with_momentum(momentum).with_nesterov(nesterov) })
+    }
+    fn zero_grad(&self) { self.inner.zero_grad(); }
+    fn step(&mut self) -> PyResult<()> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.inner.step()))
+            .map_err(|_| PyValueError::new_err("native SGD step failed"))
+    }
+}
+
+#[pyfunction]
+fn is_grad_enabled() -> bool { ferro_core::autograd::is_grad_enabled() }
+
+#[pyfunction]
+fn set_grad_enabled(enabled: bool) -> bool { ferro_core::autograd::set_grad_enabled(enabled) }
+
+#[pyfunction]
+fn no_grad(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    Ok(py.import("ferro._grad_mode")?.getattr("no_grad")?.call0()?.unbind())
+}
+
+#[pyfunction]
+fn enable_grad(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    Ok(py.import("ferro._grad_mode")?.getattr("enable_grad")?.call0()?.unbind())
+}
+
 #[pymodule]
-fn ferro(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
     ferro_fastcpu::install();
+    architecture::register(m)?;
+    recurrent::register(m)?;
+    basis::register(m)?;
+    convolution::register(m)?;
     m.add_class::<PyTensor>()?;
+    m.add_class::<PyParameter>()?;
+    m.add_class::<PySgd>()?;
+    m.add_function(wrap_pyfunction!(is_grad_enabled, m)?)?;
+    m.add_function(wrap_pyfunction!(set_grad_enabled, m)?)?;
+    m.add_function(wrap_pyfunction!(no_grad, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_grad, m)?)?;
     m.add_function(wrap_pyfunction!(capture, m)?)?;
     m.add_class::<PyCompiledChain>()?;
     m.add_class::<PyStaticGraph>()?;

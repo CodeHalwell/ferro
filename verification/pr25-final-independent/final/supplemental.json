@@ -1,0 +1,31 @@
+{
+  "fastcpu_default_parallel": {
+    "command": "cargo test -j2 -p ferro-fastcpu",
+    "exit_code": 0,
+    "passed": 25,
+    "ignored": 2
+  },
+  "sources_rechecked_unchanged": true,
+  "parsed_cost": [
+    {
+      "run": 0,
+      "implementation": "scalar_bmm",
+      "median_ms": 13.9863
+    },
+    {
+      "run": 0,
+      "implementation": "packed_serial_per_slab",
+      "median_ms": 0.9193
+    },
+    {
+      "run": 1,
+      "implementation": "packed_serial_per_slab",
+      "median_ms": 0.985
+    },
+    {
+      "run": 1,
+      "implementation": "scalar_bmm",
+      "median_ms": 13.8991
+    }
+  ]
+}

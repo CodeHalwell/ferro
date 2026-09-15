@@ -24,6 +24,13 @@ impl Rng {
         }
     }
 
+    pub fn state(&self) -> [u64; 2] { [self.s0.get(), self.s1.get()] }
+
+    pub fn restore_state(&self, state: [u64; 2]) -> crate::Result<()> {
+        if state == [0, 0] { return Err(crate::Error::Format { op: "rng_restore", msg: "zero xorshift state".into() }); }
+        self.s0.set(state[0]); self.s1.set(state[1]); Ok(())
+    }
+
     fn next_u64(&self) -> u64 {
         let mut x = self.s0.get();
         let y = self.s1.get();

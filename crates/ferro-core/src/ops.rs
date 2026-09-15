@@ -143,7 +143,7 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Sum)
             .unwrap_or_else(|| Tensor::scalar(self.raw_host_sum()));
         let in_shape = self.shape().to_vec();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Sum, move |g| {
             // d(sum)/dx = g: build a whole device buffer (fill+mul) rather
             // than broadcasting a stride-0 view - downstream backwards only
             // take the device fastpath on whole contiguous buffers, and a
@@ -160,7 +160,7 @@ impl Tensor {
         let out = raw_reduce_dev(self, ReduceKind::Mean)
             .unwrap_or_else(|| Tensor::scalar(self.raw_host_sum() / n));
         let in_shape = self.shape().to_vec();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Mean, move |g| {
             // d(mean)/dx = g/n: same whole-buffer construction as sum's
             // backward; no g.item() host sync, no broadcast views.
             vec![g

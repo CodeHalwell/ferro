@@ -1,5 +1,5 @@
 use ferro_core::testkit::grad_check;
-use ferro_core::Tensor;
+use ferro_core::{DType, Error, Tensor};
 
 #[test]
 fn cat_values() {
@@ -60,8 +60,21 @@ fn cat_grad() {
 }
 
 #[test]
-fn cat_rejects_non_f32() {
+fn cat_preserves_large_i64_exactly() {
+    let ids = Tensor::from_vec_i64(vec![i64::MAX, 16_777_217], &[2, 1]).unwrap();
+    let more = Tensor::from_vec_i64(vec![-9_007_199_254_740_993, i64::MIN], &[2, 1]).unwrap();
+    let out = Tensor::cat(&[ids, more], 1).unwrap();
+    assert_eq!(out.dtype(), DType::I64);
+    assert_eq!(out.shape(), &[2, 2]);
+    assert_eq!(out.to_vec_i64(), vec![i64::MAX, -9_007_199_254_740_993, 16_777_217, i64::MIN]);
+}
+
+#[test]
+fn cat_rejects_mismatched_dtypes() {
     let ids = Tensor::from_vec_i64(vec![1, 2], &[2]).unwrap();
-    let more = Tensor::from_vec_i64(vec![3], &[1]).unwrap();
-    assert!(Tensor::cat(&[ids, more], 0).is_err());
+    let floats = Tensor::from_vec(vec![3.], &[1]).unwrap();
+    assert!(matches!(Tensor::cat(&[ids.clone(), floats.clone()], 0),
+        Err(Error::DtypeMismatch { op: "cat", expected: DType::I64, got: DType::F32 })));
+    assert!(matches!(Tensor::cat(&[floats, ids], 0),
+        Err(Error::DtypeMismatch { op: "cat", expected: DType::F32, got: DType::I64 })));
 }

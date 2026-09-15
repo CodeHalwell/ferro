@@ -1,0 +1,164 @@
+[
+  {
+    "name": "initial-installed",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:25:35.088789+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\initial-installed.log"
+  },
+  {
+    "name": "required-unchanged",
+    "command": [
+      "C:\\Users\\DanielHalwell\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "verification/dlpack-raw-review/run.py",
+      "all",
+      "--output-dir",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\required-unchanged"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:25:35.157322+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged.log"
+  },
+  {
+    "name": "wheel-build",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "maturin",
+      "build",
+      "--release",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--out",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\wheels",
+      "-i",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:48.831257+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-build.log"
+  },
+  {
+    "name": "wheel-install",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "pip",
+      "install",
+      "--force-reinstall",
+      "--no-deps",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\wheels\\ferro-0.0.1-cp311-abi3-win_amd64.whl"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:49.392407+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-install.log"
+  },
+  {
+    "name": "wheel-installed-before",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:49.998073+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-installed-before.log"
+  },
+  {
+    "name": "wheel-integration",
+    "command": [
+      "C:\\Users\\DanielHalwell\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe",
+      "verification/static-perf-wave/run_checks.py",
+      "--output-dir",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\wheel-integration"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:50.068425+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration.log"
+  },
+  {
+    "name": "cuda-default-parallel",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:37.510001+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\cuda-default-parallel.log"
+  },
+  {
+    "name": "python-discovery",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:44.194158+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\python-discovery.log"
+  },
+  {
+    "name": "contracts17",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-api-contract/contract.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:54.168561+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\contracts17.log"
+  },
+  {
+    "name": "architecture8",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-architecture-api/test_architecture.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:54.237291+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\architecture8.log"
+  },
+  {
+    "name": "training-examples",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-architecture-api/training_examples.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.445337+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\training-examples.log"
+  },
+  {
+    "name": "wheel-installed-after",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.511945+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-installed-after.log"
+  },
+  {
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.572631+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\diff-check.log"
+  }
+]

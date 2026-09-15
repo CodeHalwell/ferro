@@ -1,0 +1,1018 @@
+[
+  {
+    "path": "bench/compiled_fusion_3090.json",
+    "reason": "review required JSON"
+  },
+  {
+    "path": "bench/compiled_fusion_3090_run2.json",
+    "reason": "review required JSON"
+  },
+  {
+    "path": "bench/eager_fusion_3090.json",
+    "reason": "review required JSON"
+  },
+  {
+    "path": "bench/host_3090.json",
+    "reason": "review required JSON"
+  },
+  {
+    "path": "bench/results_3090.json",
+    "reason": "review required JSON"
+  },
+  {
+    "path": "evidencefoundation-wave/basis/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/attention-forward.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/attention-reverse.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/attention-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/attention-verify-command.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/commands.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/attention-forward.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/commands.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/model-forward.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/model-reverse.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/model-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/initial-harness-failure/source-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/model-forward.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/model-reverse.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/model-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/source-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/attention-wave/baseline/source-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/green.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/red.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/unit-existing.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-error-fix/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/green.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/probe.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/red.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/dlpack-raw-review/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/before-grad-mode/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/before-grad-mode/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/before-grad-mode/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/before-grad-mode/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/first-run/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/first-run/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/first-run/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/first-run/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/combined/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/fastcpu-diagnostics/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/fastcpu-second-review/final-verification.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/fastcpu-second-review/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/fastcpu-second-review/rust-probe.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/count-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/foundation-torch/command.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/foundation-torch/parity.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/installed-binding-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/installed-binding-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/leaf-results-counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/build/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/eager/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/integration/integration-checks/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/integration/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/integration/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/snapshot/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/raw-all/unit/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/supplement-binding-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/supplement-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/final-review/wheel-integration-checks/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/extra-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/binding-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/binding-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/build/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/eager/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/integration/integration-checks/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/integration/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/integration/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/snapshot/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/raw-all/unit/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-01/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/final-identity.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/production-source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/supplement-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/supplement-01/torch/command.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/gpu/supplement-01/torch/parity.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/module-state/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/module-state/source-sha256.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/recurrent/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/affinity-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/dot-product-and-source-analysis.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/final-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/final-01/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-01/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-01/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-01/sources-changed-during-run.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-02/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-02/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/fastcpu/run-02/sources-changed-during-run.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/python/baseline.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/python/final.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/python/green.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/python/lifetime-detached-red.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/python/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/expanded-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/final-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/green-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/red-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review-fixes/state/verified-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/security-scan.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/review/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/second-review/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/second-review/security-scan.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/second-review/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/second-review/sources-final-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/second-review/sources-final-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/sparse/result.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/state/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/foundation-wave/vision/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-output-only/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-output-only/post1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-output-only/post2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-output-only/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/baseline1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/baseline2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/final-smoke.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/post1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/post2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layernorm-wave/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layout-profile/run1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/layout-profile/run2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/review-run1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/review-run2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/review-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/run1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/run2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/run3.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/run4.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/continuation/verified-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-cuda-graphs/parallel-first-integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-graphs-run1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-graphs-run2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/model-smoke.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/native-graph-failures/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/native-graph-failures/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/native-graph-failures/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr19-review/checks.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr19-review/test-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/build-concurrent-incomplete-2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/build-concurrent-incomplete.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/green-test-oracle-error.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/green.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/python-before-standalone-eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/python.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/red.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-dlpack-review/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/count-totals.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/harness-counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/installed-binding.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/integration-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/build/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/eager/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/integration/integration-checks/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/integration/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/integration/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/snapshot/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/raw-all/unit/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/security-scan.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/source-stability.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/sources-after.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-final-independent/sources-before.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-native-review/review-comments.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-native-review/source-hashes.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-native-review/summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-tooling-review/comments.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/pr24-tooling-review/reviews.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/profile/run1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/profile/run2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/profile/run3.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/profile/run4.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-implementation/clean-smoke.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-implementation/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-implementation/source-identity.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-integration/native-counts.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-integration/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-integration/source-identities.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-api-integration/wheel-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/python-architecture-api/verification.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/review-fixes/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-coverage-python/red-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-coverage-wave/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/all-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/build.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/eager.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/integration.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/snapshot.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/sources-sha256.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-core/src/dispatch.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-core/src/graph.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-core/src/tensor.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-core/tests/device.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-core/tests/empty_softmax.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-cuda/src/lib.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-cuda/src/static_graph.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-cuda/src/static_graph/model.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-cuda/tests/model_static_graph.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/src/dlpack.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/src/lib.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/tests/support/dlpack_recorded_error.rs",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/tests/test_eager_dlpack.py",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/tests/test_static_coverage.py",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/sources/crates/ferro-py/tests/test_static_snapshot_dlpack.py",
+    "reason": "historical source snapshot, not executable current tree"
+  },
+  {
+    "path": "verification/static-empty-fix/unit.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/baseline-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/baseline1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/baseline2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/comparisons.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/final-summary.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/final1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/final2.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/guards1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/integration-results.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/layout1.json",
+    "reason": "verification/diagnostic result data"
+  },
+  {
+    "path": "verification/static-perf-wave/metadata.json",
+    "reason": "verification/diagnostic result data"
+  }
+]

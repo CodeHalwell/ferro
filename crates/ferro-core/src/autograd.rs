@@ -1,4 +1,29 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::cell::Cell;
+
+thread_local! {
+    static GRAD_ENABLED: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Whether ordinary operations record autograd on this thread. Capture is independent.
+pub fn is_grad_enabled() -> bool { GRAD_ENABLED.with(Cell::get) }
+
+/// Set this thread's recording mode and return the previous mode for restoration.
+pub fn set_grad_enabled(enabled: bool) -> bool { GRAD_ENABLED.with(|mode| mode.replace(enabled)) }
+
+struct GradModeGuard(bool);
+impl Drop for GradModeGuard {
+    fn drop(&mut self) { set_grad_enabled(self.0); }
+}
+
+/// Run with a recording mode, restoring the previous mode even during unwinding.
+pub fn with_grad_enabled<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
+    let _guard = GradModeGuard(set_grad_enabled(enabled));
+    run()
+}
+
+#[path = "higher_order.rs"]
+mod higher_order;
 
 use crate::dispatch::OpTag;
 use crate::dtype::DType;
@@ -7,13 +32,15 @@ use crate::tensor::Tensor;
 /// Forward executors use current operands, never autograd backward closures.
 #[derive(Clone, Debug)]
 pub(crate) enum ForwardOp {
-    MatMul, Bmm, Reshape(Vec<usize>), Transpose(usize, usize),
+    Sum, Mean, MatMul, Bmm, Reshape(Vec<usize>), Transpose(usize, usize),
     Softmax(usize), SumDim(usize, bool), LayerNorm { weight: bool, bias: bool, eps: f32 },
 }
 
 impl ForwardOp {
     pub(crate) fn run(&self, inputs: &[Tensor]) -> crate::Result<Tensor> {
         match self {
+            Self::Sum => Ok(inputs[0].sum()),
+            Self::Mean => Ok(inputs[0].mean()),
             Self::MatMul => inputs[0].matmul(&inputs[1]),
             Self::Bmm => inputs[0].bmm(&inputs[1]),
             Self::Reshape(shape) => inputs[0].reshape(shape),
@@ -92,7 +119,14 @@ impl Op {
     }
 
     pub(crate) fn backward(&self, g: &Tensor) -> Vec<Tensor> {
-        (self.backward.as_ref().expect("inference-only node has no backward"))(g)
+        self.vjp(g, false).expect("inference-only node has no backward")
+    }
+
+    fn vjp(&self, g: &Tensor, create_graph: bool) -> crate::Result<Vec<Tensor>> {
+        let backward = self.backward.as_ref().ok_or_else(|| crate::Error::Unsupported {
+            op: "vjp_wrt", msg: "inference-only node has no backward".into(),
+        })?;
+        if create_graph { self.graph_backward(g) } else { Ok(backward(g)) }
     }
 
     /// Consume the op, yielding its input tensors. Used by TensorInner's
@@ -128,6 +162,85 @@ fn build_topo(root: &Tensor) -> Vec<Tensor> {
 }
 
 impl Tensor {
+    /// Functional scalar gradient in input order, without touching `.grad()`.
+    /// Unused/non-requiring inputs return detached zeros, which can be differentiated again.
+    /// create_graph supports add/sub/mul/div/neg/exp/sigmoid/tanh/sqrt, 2D matmul,
+    /// reshape/transpose/sum_dim/sum/mean. Other VJPs return Error::Unsupported, never
+    /// silently detached derivatives. Broadcasting and accumulation retain graphs.
+    pub fn grad_wrt(&self, inputs: &[&Tensor], create_graph: bool) -> crate::Result<Vec<Tensor>> {
+        if self.numel() != 1 {
+            return Err(crate::Error::InvalidShape { op: "grad_wrt", msg: "requires a single-element output; use vjp_wrt with an explicit seed".into() });
+        }
+        let seed = Tensor::full_on(self.shape(), 1.0, self.device())?;
+        self.vjp_wrt(inputs, &seed, create_graph)
+    }
+
+    /// Functional VJP for selected leaves or intermediates. With create_graph,
+    /// the seed is a live differentiable operand (held fixed in this VJP but
+    /// available to later derivatives). Otherwise it is detached. Graphs are
+    /// retained; returned derivatives never accumulate into `.grad()`.
+    /// create_graph controls recording during this VJP even inside no-grad; the
+    /// caller's thread-local mode is restored on return, error, or unwinding.
+    pub fn vjp_wrt(&self, inputs: &[&Tensor], seed: &Tensor, create_graph: bool) -> crate::Result<Vec<Tensor>> {
+        let _grad_mode = GradModeGuard(set_grad_enabled(create_graph));
+        use crate::Error;
+        if seed.shape() != self.shape() {
+            return Err(Error::ShapeMismatch { op: "vjp_wrt", lhs: self.shape().to_vec(), rhs: seed.shape().to_vec() });
+        }
+        for t in std::iter::once(self).chain(std::iter::once(seed)).chain(inputs.iter().copied()) {
+            if t.dtype() != DType::F32 {
+                return Err(Error::DtypeMismatch { op: "vjp_wrt", expected: DType::F32, got: t.dtype() });
+            }
+            if t.device() != self.device() {
+                return Err(Error::DeviceMismatch { op: "vjp_wrt", lhs: self.device(), rhs: t.device() });
+            }
+        }
+        let topo = build_topo(self);
+        let selected: HashSet<_> = inputs.iter().filter(|t| t.requires_grad()).map(|t| t.id()).collect();
+        let mut needed = selected;
+        for t in &topo {
+            if let Some(op) = &t.0.op {
+                if op.inputs.iter().any(|i| needed.contains(&i.id())) { needed.insert(t.id()); }
+            }
+        }
+        let mut grads = HashMap::new();
+        if needed.contains(&self.id()) {
+            grads.insert(self.id(), if create_graph { seed.clone() } else { seed.detach_copy() });
+        }
+        for t in topo.iter().rev() {
+            let Some(op) = &t.0.op else { continue };
+            if !op.inputs.iter().any(|i| needed.contains(&i.id()) && i.requires_grad()) { continue; }
+            let Some(g) = grads.get(&t.id()) else { continue };
+            for (inp, saved) in op.inputs.iter().zip(&op.saved_versions) {
+                if inp.version() != *saved {
+                    return Err(Error::Unsupported { op: "vjp_wrt", msg: format!("saved input {} modified inplace (version {} -> {})", inp.id(), saved, inp.version()) });
+                }
+            }
+            let contributions = op.vjp(g, create_graph)?;
+            if contributions.len() != op.inputs.len() {
+                return Err(Error::Unsupported { op: "vjp_wrt", msg: "backward gradient arity does not match inputs".into() });
+            }
+            for (inp, contribution) in op.inputs.iter().zip(contributions) {
+                if contribution.shape() != inp.shape() {
+                    return Err(Error::ShapeMismatch { op: "vjp_wrt backward", lhs: inp.shape().to_vec(), rhs: contribution.shape().to_vec() });
+                }
+                if !inp.requires_grad() || !needed.contains(&inp.id()) { continue; }
+                let contribution = if contribution.device() != inp.device() {
+                    if create_graph { return Err(Error::DeviceMismatch { op: "create_graph backward", lhs: inp.device(), rhs: contribution.device() }); }
+                    contribution.to_device(inp.device())?
+                } else { contribution };
+                let value = if let Some(previous) = grads.remove(&inp.id()) { previous.add(&contribution)? } else { contribution };
+                grads.insert(inp.id(), if create_graph { value } else { value.detach_copy() });
+            }
+        }
+        inputs.iter().map(|input| {
+            match grads.get(&input.id()) {
+                Some(g) => Ok(if create_graph { g.clone() } else { g.detach_copy() }),
+                None => Tensor::full_on(input.shape(), 0.0, input.device()),
+            }
+        }).collect()
+    }
+
     /// Reverse-mode autodiff seeded with ones (call on a scalar loss): the
     /// scalar restriction (v = 1) of `backward_with`. Populates `.grad()` on
     /// every leaf/intermediate with `requires_grad = true`. Repeated calls
@@ -152,8 +265,8 @@ impl Tensor {
     /// carrying cotangent must not splice a surprise edge into this backward
     /// pass) and aligned to `self`'s device the same way any op's backward
     /// contribution is, via `accumulate_grad`. Differentiating through this
-    /// pass itself (create_graph) is a separate, later capability - see
-    /// docs/CAPABILITY.md 1.2. Same retain_graph semantics as `backward()`.
+    /// pass itself uses the functional `grad_wrt`/`vjp_wrt` APIs instead.
+    /// Same retain_graph semantics as `backward()`.
     pub fn backward_with(&self, cotangent: &Tensor) {
         assert!(
             cotangent.shape() == self.shape(),

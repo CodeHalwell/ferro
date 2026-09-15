@@ -1,0 +1,149 @@
+[
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-core"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\core.log"
+  },
+  {
+    "name": "cpu-tokenizer",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-fastcpu",
+      "-p",
+      "ferro-tokenizer"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\cpu-tokenizer.log"
+  },
+  {
+    "name": "cuda",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\cuda.log"
+  },
+  {
+    "name": "cuda-check",
+    "command": [
+      "cargo",
+      "check",
+      "-j2",
+      "-p",
+      "ferro-cuda",
+      "--all-targets"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\cuda-check.log"
+  },
+  {
+    "name": "python-capture",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-capture.log"
+  },
+  {
+    "name": "python-compiled",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_compiled_fusion_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-compiled.log"
+  },
+  {
+    "name": "python-fuse",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_fuse_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-fuse.log"
+  },
+  {
+    "name": "python-general",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/py_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-general.log"
+  },
+  {
+    "name": "python-ops",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/ops_vs_torch.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-ops.log"
+  },
+  {
+    "name": "python-safetensors",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/safetensors_vs_python.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-safetensors.log"
+  },
+  {
+    "name": "python-fuzz",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/fuzz_vs_torch.py",
+      "--trials",
+      "200",
+      "--seed",
+      "0"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\python-fuzz.log"
+  },
+  {
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\diff-check.log"
+  },
+  {
+    "name": "capture-layout-gpu",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "--manifest-path",
+      "verification/capture-layout-gpu/Cargo.toml",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "log": "verification\\pr25-final-independent\\final\\integration13\\capture-layout-gpu.log"
+  }
+]

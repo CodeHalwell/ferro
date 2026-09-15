@@ -8,7 +8,7 @@ use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::reduce::{pairwise_sum, pairwise_sum_strided};
 use crate::rng::Rng;
-use crate::shape::{broadcast_shapes, default_strides, numel};
+use crate::shape::{broadcast_shapes, checked_numel, default_strides, numel};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -250,7 +250,7 @@ impl Tensor {
         storage: Storage,
         shape: &[usize],
     ) -> Result<Tensor> {
-        if len != numel(shape) {
+        if len != checked_numel(op, shape)? {
             return Err(Error::InvalidShape {
                 op,
                 msg: format!("{len} elements do not fit shape {shape:?}"),
@@ -547,15 +547,13 @@ impl Tensor {
                 .into_iter()
                 .map(crate::half::f32_from_bf16_bits)
                 .collect(),
-            // Device-i64 index buffers materialize through the i64 channel
-            // (whole-buffer download; device i64 buffers are never views).
-            Storage::DeviceI64(b) => backend_for(self.0.device)
-                .expect("device tensor exists, so its backend must be registered")
-                .copy_i64_to_host(b.as_ref())
-                .expect("device i64-to-host copy failed")
-                .into_iter()
-                .map(|x| x as f32)
-                .collect(),
+            Storage::DeviceI64(b) => {
+                let host = backend_for(self.0.device)
+                    .expect("device tensor exists, so its backend must be registered")
+                    .copy_i64_to_host(b.as_ref())
+                    .expect("device i64-to-host copy failed");
+                self.gather_view(&host).into_iter().map(|x| x as f32).collect()
+            }
             Storage::Device(b) => {
                 let host = device_to_host(self.0.device, b.as_ref());
                 self.gather_view(&host)
@@ -630,10 +628,11 @@ impl Tensor {
                         .collect()
                 }
                 Storage::DeviceI64(b) => {
-                    return backend_for(self.0.device)
+                    let host = backend_for(self.0.device)
                         .expect("device tensor exists, so its backend must be registered")
                         .copy_i64_to_host(b.as_ref())
-                        .expect("device i64-to-host copy failed")
+                        .expect("device i64-to-host copy failed");
+                    return self.gather_view(&host);
                 }
                 Storage::Device(_) => {}
             }
@@ -833,6 +832,7 @@ impl Tensor {
     /// Broadcast to `shape` without copying (inserts zero strides). Detached:
     /// broadcasting's gradient is handled by reducing in backward.
     pub(crate) fn broadcast_to(&self, shape: &[usize]) -> Result<Tensor> {
+        checked_numel("broadcast_to", shape)?;
         let cur = &self.0.shape;
         if shape.len() < cur.len() {
             return Err(Error::ShapeMismatch {
@@ -905,7 +905,7 @@ impl Tensor {
     }
 
     pub fn reshape(&self, shape: &[usize]) -> Result<Tensor> {
-        if numel(shape) != self.numel() {
+        if checked_numel("reshape", shape)? != self.numel() {
             return Err(Error::InvalidShape {
                 op: "reshape",
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
@@ -1025,38 +1025,53 @@ impl Tensor {
     /// built from this so an in-place optimizer step can never scribble
     /// over the caller's tensor. Cold paths only.
     pub(crate) fn owned_detach_copy(&self) -> Tensor {
+        self.try_owned_detach_copy().expect("owning tensor copy failed")
+    }
+
+    /// Preserve dtype bits and placement; propagate device transfer failures.
+    pub(crate) fn try_owned_detach_copy(&self) -> Result<Tensor> {
         if self.device_resident_whole() {
-            let backend = backend_for(self.0.device).expect("device tensor implies backend");
+            let backend = backend_for(self.0.device)?;
             let g = self.0.storage.read();
             let Storage::Device(buf) = &*g else { unreachable!() };
-            let copy = backend.copy_dev(buf.as_ref()).expect("device buffer copy");
-            return device_leaf(copy, &self.0.shape, self.0.device);
+            let copy = backend.copy_dev(buf.as_ref())?;
+            return Ok(device_leaf(copy, &self.0.shape, self.0.device));
         }
-        let host = Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap();
+        let host = {
+            let g = self.0.storage.read();
+            match &*g {
+                Storage::Device(buf) => Tensor::from_vec(
+                    self.gather_view(&backend_for(self.device())?.copy_to_host(buf.as_ref())?), self.shape())?,
+                Storage::DeviceI64(buf) => Tensor::from_vec_i64(
+                    self.gather_view(&backend_for(self.device())?.copy_i64_to_host(buf.as_ref())?), self.shape())?,
+                _ => { drop(g); self.detach_copy_same_dtype() }
+            }
+        };
         host.to_device(self.0.device)
-            .expect("tensor's device backend is registered")
     }
 
     /// Constant tensor on the given device (cpu allocation or backend fill).
     pub fn full_on(shape: &[usize], value: f32, device: Device) -> Result<Tensor> {
+        let n = checked_numel("full_on", shape)?;
         if device == Device::Cpu {
             return Ok(Tensor::full(shape, value));
         }
-        let buf = backend_for(device)?.fill_dev(value, numel(shape))?;
+        let buf = backend_for(device)?.fill_dev(value, n)?;
         Ok(device_leaf(buf, shape, device))
     }
 
     /// The single autograd recording hook: `inputs` are the differentiable
     /// operands; `backward` maps the output gradient to one gradient per input
     /// (same order; the engine asserts arity and shapes). Recorded only when
-    /// some input requires grad or inference capture is active. Capture-only
+    /// grad mode is enabled and some input requires grad, or inference capture
+    /// is active independently of grad mode. Capture-only
     /// nodes discard the backward closure. `self` must be freshly-created, uniquely-
     /// owned output (as returned by the raw kernels).
     pub fn record_fn<F>(mut self, inputs: Vec<Tensor>, backward: F) -> Tensor
     where
         F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
     {
-        if inputs.iter().any(|t| t.requires_grad()) {
+        if crate::autograd::is_grad_enabled() && inputs.iter().any(|t| t.requires_grad()) {
             let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
             inner.requires_grad = true;
             inner.op = Some(Op::new(inputs, Box::new(backward)));
@@ -1080,7 +1095,7 @@ impl Tensor {
     where
         F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
     {
-        if inputs.iter().any(|t| t.requires_grad()) {
+        if crate::autograd::is_grad_enabled() && inputs.iter().any(|t| t.requires_grad()) {
             let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
             inner.requires_grad = true;
             inner.op = Some(Op::new_tagged(inputs, tag, Box::new(backward)));
@@ -1400,6 +1415,8 @@ pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
 }
 
 /// Full-tensor reduction on a resident device tensor, if it is one.
+/// Only the default missing-seam sentinel permits fallback: backends may also
+/// encode operational failures as Unsupported. Infallible callers expose those.
 pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
     if !t.device_resident_whole() {
         return None;
@@ -1409,10 +1426,12 @@ pub(crate) fn raw_reduce_dev(t: &Tensor, kind: ReduceKind) -> Option<Tensor> {
     let Storage::Device(buf) = &*g else {
         unreachable!()
     };
-    let out = backend
-        .reduce_dev(kind, buf.as_ref())
-        .expect("device backend lacks reduce_dev");
-    Some(device_leaf(out, &[], t.0.device))
+    match backend.reduce_dev(kind, buf.as_ref()) {
+        Ok(out) => Some(device_leaf(out, &[], t.0.device)),
+        Err(Error::Unsupported { op: "reduce_dev", ref msg })
+            if msg == "backend does not implement device-resident storage" => None,
+        Err(err) => panic!("device reduction failed: {err}"),
+    }
 }
 
 /// Matmul with logical transpose flags: computes op(a) @ op(b) where op is
@@ -1462,32 +1481,53 @@ pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result
 
 /// Sum over one dim, matching PyTorch's keepdim semantics.
 pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
+    try_raw_sum_dim(t, dim, keepdim).expect("sum_dim failed")
+}
+
+/// Fallible seam for forward callers; legacy backward closures cannot return errors.
+pub(crate) fn try_raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Result<Tensor> {
     let in_shape = t.0.shape.clone();
     let ndim = in_shape.len();
+    if dim >= ndim {
+        return Err(Error::InvalidShape { op: "sum_dim", msg: format!("dim {dim} out of range for rank {ndim}") });
+    }
     if t.device_resident_whole() {
-        let backend = backend_for(t.0.device).expect("device tensor implies registered backend");
+        let backend = backend_for(t.0.device)?;
         let g = t.0.storage.read();
         let Storage::Device(buf) = &*g else {
             unreachable!()
         };
-        let out = backend
-            .sum_dim_dev(buf.as_ref(), &in_shape, dim)
-            .expect("device backend lacks sum_dim_dev");
-        let mut keep_shape = in_shape.clone();
-        keep_shape[dim] = 1;
-        let out_shape: Vec<usize> = if keepdim {
-            keep_shape
-        } else {
-            in_shape
-                .iter()
-                .enumerate()
-                .filter(|(d, _)| *d != dim)
-                .map(|(_, &s)| s)
-                .collect()
+        let out = match backend.sum_dim_dev(buf.as_ref(), &in_shape, dim) {
+            Ok(out) => Some(out),
+            Err(Error::Unsupported { op: "sum_dim_dev", ref msg })
+                if msg == "backend does not implement device-resident storage" => None,
+            Err(err) => return Err(err),
         };
-        return device_leaf(out, &out_shape, t.0.device);
+        if let Some(out) = out {
+            let mut keep_shape = in_shape.clone();
+            keep_shape[dim] = 1;
+            let out_shape: Vec<usize> = if keepdim {
+                keep_shape
+            } else {
+                in_shape
+                    .iter()
+                    .enumerate()
+                    .filter(|(d, _)| *d != dim)
+                    .map(|(_, &s)| s)
+                    .collect()
+            };
+            return Ok(device_leaf(out, &out_shape, t.0.device));
+        }
     }
-    let v = t.to_vec_pooled();
+    let v = {
+        let storage = t.0.storage.read();
+        match &*storage {
+            Storage::Device(buf) => t.gather_view(&backend_for(t.device())?.copy_to_host(buf.as_ref())?),
+            Storage::DeviceI64(buf) => t.gather_view(&backend_for(t.device())?.copy_i64_to_host(buf.as_ref())?)
+                .into_iter().map(|x| x as f32).collect(),
+            _ => { drop(storage); t.to_vec_pooled() }
+        }
+    };
     let strides = default_strides(&in_shape);
     let (n, stride) = (in_shape[dim], strides[dim]);
     let mut keep_shape = in_shape.clone();
@@ -1520,7 +1560,7 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
             .map(|(_, &s)| s)
             .collect()
     };
-    Tensor::from_vec(out, &out_shape).unwrap()
+    Tensor::from_vec(out, &out_shape)
 }
 
 /// Row-wise softmax/log_softmax over the last dim of a whole contiguous device
@@ -1576,6 +1616,32 @@ mod tests {
     // arithmetic directly via the pub(crate) constructor an external
     // integration test cannot reach.
     use super::*;
+
+    #[test]
+    fn fallible_sum_dim_preserves_backend_error() {
+        use crate::dispatch::{Backend, register_backend};
+        struct Failure;
+        impl Backend for Failure {
+            fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { unreachable!() }
+            fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { unreachable!() }
+            fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { unreachable!() }
+            fn sum_dim_dev(&self, _: &dyn DeviceBuffer, _: &[usize], _: usize) -> Result<Box<dyn DeviceBuffer>> {
+                Err(Error::Io { op: "sum_dim_dev", msg: "injected launch failure".into() })
+            }
+        }
+        struct Buf;
+        impl DeviceBuffer for Buf {
+            fn device(&self) -> Device { Device::Cuda(88) }
+            fn len(&self) -> usize { 6 }
+            fn as_any(&self) -> &dyn std::any::Any { self }
+        }
+        register_backend(Device::Cuda(88), Arc::new(Failure));
+        let t = device_leaf(Box::new(Buf), &[2, 3], Device::Cuda(88));
+        assert_eq!(try_raw_sum_dim(&t, 1, false).err(), Some(Error::Io {
+            op: "sum_dim_dev", msg: "injected launch failure".into(),
+        }));
+        assert!(matches!(try_raw_sum_dim(&t, 2, false), Err(Error::InvalidShape { .. })));
+    }
 
     fn offset_view(v: Vec<f32>, offset: usize, shape: &[usize]) -> Tensor {
         Tensor::from_parts(

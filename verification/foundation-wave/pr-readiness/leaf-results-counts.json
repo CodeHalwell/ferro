@@ -1,0 +1,1157 @@
+[
+  {
+    "phase": "unchanged",
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-core"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\core.log",
+    "rust_counts": {
+      "passed": 751,
+      "failed": 0,
+      "ignored": 2,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 175,
+    "nested_excluded": [
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ]
+    ],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "d9384bc17e885f391371314129134edc089d803318fc3151d9b0982e7f0143cb"
+  },
+  {
+    "phase": "unchanged",
+    "name": "cpu-tokenizer",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-fastcpu",
+      "-p",
+      "ferro-tokenizer"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\cpu-tokenizer.log",
+    "rust_counts": {
+      "passed": 27,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 10,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "26db7b5889647dd543d4639babde140460578dc671c4c2d586fee6161ab91fdf"
+  },
+  {
+    "phase": "unchanged",
+    "name": "cuda",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\cuda.log",
+    "rust_counts": {
+      "passed": 111,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 8,
+    "nested_excluded": [
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "894ffc5630a7893cf72eaa4a80552b566df39729e5c8daf3caf3d1fa24639938"
+  },
+  {
+    "phase": "unchanged",
+    "name": "cuda-check",
+    "command": [
+      "cargo",
+      "check",
+      "-j2",
+      "-p",
+      "ferro-cuda",
+      "--all-targets"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\cuda-check.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "820b4e664f468fb72e0d3bc8d8a49bed0bc1e103868c7c04e5df505b0ecfd4d5"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-capture",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-capture.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 69,
+    "python_skipped": [],
+    "log_sha256": "7064aca92e2fe85f835cea2358a32da67d6c16793d13f04103b0c79de981407d"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-compiled",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_compiled_fusion_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-compiled.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "24838faffa7a1fad266180d5f1c42f75cbde364a31d9e08cef280fe96ec4a504"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-fuse",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_fuse_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-fuse.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "eadb4a932b239e5ed84071f0b3fed39c6176b87cf30459fe4db346ef3fd6e91d"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-general",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/py_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-general.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "6bb511cc657986ed9f8e6999f40268e38b815dd20bfcb3408a5ffb3720eb0df9"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-ops",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/ops_vs_torch.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-ops.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "6af95aea7dd1c6eea74cc22afc5d96d7617493d4d55cd9233720c471c8f2fecc"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-safetensors",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/safetensors_vs_python.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-safetensors.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "730b9cb29b20a993f62111fd50a3be6db7c3abf19c14186a3c4a656a0b27c8d4"
+  },
+  {
+    "phase": "unchanged",
+    "name": "python-fuzz",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/fuzz_vs_torch.py",
+      "--trials",
+      "200",
+      "--seed",
+      "0"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\python-fuzz.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "cf17dd549393cf8895df145a15ef306807d8e3237810dce5fdfdb212179f7e09"
+  },
+  {
+    "phase": "unchanged",
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\diff-check.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "7208d42adcdb3c3c758003f4f431ae0caed68ad8b1857212912b367c380e14d5"
+  },
+  {
+    "phase": "unchanged",
+    "name": "capture-layout-gpu",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "--manifest-path",
+      "verification/capture-layout-gpu/Cargo.toml",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\integration\\integration-checks\\capture-layout-gpu.log",
+    "rust_counts": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 1,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "1e4947db8a1a9f9b2575ae07ffabcda977463f05d97b9c9333fe0b56ffdf61ce"
+  },
+  {
+    "phase": "wheel",
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-core"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\core.log",
+    "rust_counts": {
+      "passed": 751,
+      "failed": 0,
+      "ignored": 2,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 175,
+    "nested_excluded": [
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ],
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "27"
+      ]
+    ],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "384392b4c706e3c4fc49c3bad7b3cf72ff67abf416dec0bcb03b1cb6f6cdbe89"
+  },
+  {
+    "phase": "wheel",
+    "name": "cpu-tokenizer",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-fastcpu",
+      "-p",
+      "ferro-tokenizer"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\cpu-tokenizer.log",
+    "rust_counts": {
+      "passed": 27,
+      "failed": 0,
+      "ignored": 1,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 10,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "cd5aff052f774c2c5a644fcb109592add26be51f759fe1049ddd6c662775d9b2"
+  },
+  {
+    "phase": "wheel",
+    "name": "cuda",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\cuda.log",
+    "rust_counts": {
+      "passed": 111,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 8,
+    "nested_excluded": [
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "815e75018c29bba78ec00c438187b28e31a68eef3b6ab72a2521981125440bb2"
+  },
+  {
+    "phase": "wheel",
+    "name": "cuda-check",
+    "command": [
+      "cargo",
+      "check",
+      "-j2",
+      "-p",
+      "ferro-cuda",
+      "--all-targets"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\cuda-check.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "acd14cd54603b2167185428b0f7e0f048797838034bb8fceba6a83262df843f5"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-capture",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-capture.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 69,
+    "python_skipped": [],
+    "log_sha256": "e56a9153a69db2858d0c50103cacee6ece1a3d2f57defddcd8685abb8a3fdd96"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-compiled",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_compiled_fusion_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-compiled.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "24838faffa7a1fad266180d5f1c42f75cbde364a31d9e08cef280fe96ec4a504"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-fuse",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/examples/py_fuse_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-fuse.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "eadb4a932b239e5ed84071f0b3fed39c6176b87cf30459fe4db346ef3fd6e91d"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-general",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/py_regression.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-general.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "6bb511cc657986ed9f8e6999f40268e38b815dd20bfcb3408a5ffb3720eb0df9"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-ops",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/ops_vs_torch.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-ops.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "6af95aea7dd1c6eea74cc22afc5d96d7617493d4d55cd9233720c471c8f2fecc"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-safetensors",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/safetensors_vs_python.py"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-safetensors.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "730b9cb29b20a993f62111fd50a3be6db7c3abf19c14186a3c4a656a0b27c8d4"
+  },
+  {
+    "phase": "wheel",
+    "name": "python-fuzz",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "examples/fuzz_vs_torch.py",
+      "--trials",
+      "200",
+      "--seed",
+      "0"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\python-fuzz.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "cf17dd549393cf8895df145a15ef306807d8e3237810dce5fdfdb212179f7e09"
+  },
+  {
+    "phase": "wheel",
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\diff-check.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "7208d42adcdb3c3c758003f4f431ae0caed68ad8b1857212912b367c380e14d5"
+  },
+  {
+    "phase": "wheel",
+    "name": "capture-layout-gpu",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "--manifest-path",
+      "verification/capture-layout-gpu/Cargo.toml",
+      "--",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-integration\\capture-layout-gpu.log",
+    "rust_counts": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 1,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "27c2ae5a776445ad0c7ca602929721ff2938f8e48539887b79fa61798f9d8d1c"
+  },
+  {
+    "name": "unit",
+    "phase": "unit",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--lib",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\unit\\unit.log",
+    "rust_counts": {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 1,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "be081aeb568733a8c6e3b821ecdf45887eb7772e4aec0da138687f183d0f0e3f"
+  },
+  {
+    "name": "build",
+    "phase": "build",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "maturin",
+      "develop",
+      "--release",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\build\\build.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "44a60aa7b072df65a71dde287fb9c401ff12fbd9b537033d868f99dd8d58f36c"
+  },
+  {
+    "name": "eager",
+    "phase": "eager",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/tests/test_eager_dlpack.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\eager\\eager.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 5,
+    "python_skipped": [],
+    "log_sha256": "061c5e58fd8e252f71bdea1bb8bd9d2e3cabcd31a90b1cd1b7e532f259c3a2e5"
+  },
+  {
+    "name": "snapshot",
+    "phase": "snapshot",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "crates/ferro-py/tests/test_static_snapshot_dlpack.py",
+      "-v"
+    ],
+    "exit_code": 0,
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\required-unchanged\\snapshot\\snapshot.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 1,
+    "python_skipped": [],
+    "log_sha256": "5809d0926e76b9c4052c2496feb23c292a6223110cda9817d949890130eaa8b8"
+  },
+  {
+    "name": "initial-installed",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:25:35.088789+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\initial-installed.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "c2dd06c65f6a50f6301a0ecdf7240a0115a25d475162d368eb472ae62b91667a"
+  },
+  {
+    "name": "wheel-build",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "maturin",
+      "build",
+      "--release",
+      "-j2",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--out",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\wheels",
+      "-i",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:48.831257+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-build.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "c436a1ea61af0fd629da9ea0cb8c135c00fe9aa8006a45204c3d58e93a6029f3"
+  },
+  {
+    "name": "wheel-install",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "pip",
+      "install",
+      "--force-reinstall",
+      "--no-deps",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\foundation-wave\\pr-readiness\\final\\wheels\\ferro-0.0.1-cp311-abi3-win_amd64.whl"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:49.392407+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-install.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "37f1acd395d9897b52099228a59b8c5b67f416919e7e63e2cc8d8fca49f8d0f5"
+  },
+  {
+    "name": "wheel-installed-before",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:26:49.998073+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-installed-before.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "c2dd06c65f6a50f6301a0ecdf7240a0115a25d475162d368eb472ae62b91667a"
+  },
+  {
+    "name": "cuda-default-parallel",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-cuda"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:37.510001+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\cuda-default-parallel.log",
+    "rust_counts": {
+      "passed": 111,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 8,
+    "nested_excluded": [
+      [
+        "1",
+        "0",
+        "0",
+        "0",
+        "0"
+      ]
+    ],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "d01640d4e4f1294b90f4222279d8b38b12c0545623307f889bc4b6537bd6110b"
+  },
+  {
+    "name": "python-discovery",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:44.194158+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\python-discovery.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 69,
+    "python_skipped": [],
+    "log_sha256": "2bfe4902e459ea7d9be7cb5904cad84c4b04fbf48db0aeb79011269c9070060c"
+  },
+  {
+    "name": "contracts17",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-api-contract/contract.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:54.168561+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\contracts17.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 17,
+    "python_skipped": [],
+    "log_sha256": "37ae1f8441fdc5a6657823910233e48b17b693337bb6606c44729013165492f5"
+  },
+  {
+    "name": "architecture8",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-architecture-api/test_architecture.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:54.237291+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\architecture8.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 8,
+    "python_skipped": [],
+    "log_sha256": "9ef573180780bcb5259d44edc3df71abdfe307236488fcc8db70661f4a658246"
+  },
+  {
+    "name": "training-examples",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "verification/python-architecture-api/training_examples.py"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.445337+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\training-examples.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "5596c0d92291283b77d8c49c8ff5f4db19c815f1dadbd44a950275ab155d502c"
+  },
+  {
+    "name": "wheel-installed-after",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-c",
+      "import ferro,ferro._native as n,pathlib,hashlib,json; p=pathlib.Path(ferro.__file__).parent; print(json.dumps({\"package\":str(p),\"files\":{str(x.relative_to(p)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sorted(p.rglob(\"*\")) if x.is_file() and x.suffix in (\".py\",\".pyd\")}},indent=2))"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.511945+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\wheel-installed-after.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "c2dd06c65f6a50f6301a0ecdf7240a0115a25d475162d368eb472ae62b91667a"
+  },
+  {
+    "name": "diff-check",
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "utc": "2026-09-14T20:27:55.572631+00:00",
+    "log": "verification\\foundation-wave\\pr-readiness\\final\\diff-check.log",
+    "rust_counts": {
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 0
+    },
+    "harnesses": 0,
+    "nested_excluded": [],
+    "python_tests_run": 0,
+    "python_skipped": [],
+    "log_sha256": "eafe03d44ff0399fd337414440ce8b6fbe0bbad657dadd097cde60eb13aa9e01"
+  }
+]

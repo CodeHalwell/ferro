@@ -539,6 +539,7 @@ impl CompiledChain {
             let mut inputs: Vec<_> = effective_inputs(run).iter().map(|id| slots[id]).collect();
             let mut static_shape = run.shape.clone();
             let op = match &run.forward {
+                Some(crate::autograd::ForwardOp::Sum | crate::autograd::ForwardOp::Mean) => return Err(unsupported("static scalar reduction is not supported")),
                 Some(crate::autograd::ForwardOp::MatMul) => {
                     let a = &shapes[inputs[0]];
                     let b = &shapes[inputs[1]];
@@ -646,6 +647,10 @@ impl CompiledChain {
         for &tail in &g.order {
             if leaves.contains_key(&tail) || used.contains(&tail) { continue; }
             if let Some(forward) = g.tensors[&tail].0.op.as_ref().and_then(|o| o.forward.clone()) {
+                // Scalar reduction metadata enables VJPs, not compiled execution.
+                if matches!(forward, crate::autograd::ForwardOp::Sum | crate::autograd::ForwardOp::Mean) {
+                    return Err(Error::Unsupported { op: "compile_chain", msg: format!("node {tail} has no replayable kernel tag: scalar reduction is not supported") });
+                }
                 let node = &g.nodes[&tail];
                 runs.insert(tail, CompiledRun { forward: Some(forward), output: tail, inputs: node.inputs.clone(), steps: Vec::new(), shape: node.shape.clone() });
                 used.insert(tail);
