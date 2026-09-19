@@ -260,6 +260,30 @@ def main():
     (ty * ty).sum().backward()
     check("rope grad", fx.grad, tx.grad)
 
+    # Prepared indexing and sparse composition: duplicate edges/IDs retain VJPs.
+    plan = ferro.graph.PreparedSegments([2, 0, 2], 3)
+    fx = ft(MIX, SHAPE, requires_grad=True)
+    tx = tt(MIX, SHAPE, requires_grad=True)
+    fy = plan.select(fx, 1)
+    ty = tx.index_select(1, torch.tensor([2, 0, 2]))
+    check("prepared select value", fy, ty)
+    (fy * fy).sum().backward()
+    (ty * ty).sum().backward()
+    check("prepared select grad", fx.grad, tx.grad)
+    coo = ferro.graph.COO(2, 3, [1, 0, 1], [0, 2, 0]).prepare()
+    fw = ft([0.2, 0.3, -0.1], [3], requires_grad=True)
+    fx = ft(MIX, [3, 2], requires_grad=True)
+    tw = torch.tensor([0.2, 0.3, -0.1], requires_grad=True)
+    tx = tt(MIX, [3, 2], requires_grad=True)
+    dense = torch.zeros(2, 3).index_put((torch.tensor([1, 0, 1]), torch.tensor([0, 2, 0])), tw, accumulate=True)
+    fy, ty = coo.spmm(fw, fx), dense @ tx
+    check("prepared spmm value", fy, ty)
+    (fy * fy).sum().backward()
+    (ty * ty).sum().backward()
+    check("prepared spmm value grad", fw.grad, tw.grad)
+    check("prepared spmm dense grad", fx.grad, tx.grad)
+    # Complete axis/scatter/SDDMM and empty-layout matrix lives in test_prepared_graph.py.
+
     # Error mapping: core errors surface as ValueError.
     try:
         ft(MIX, SHAPE).sum_dim(99)

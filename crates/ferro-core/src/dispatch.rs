@@ -141,6 +141,14 @@ pub trait DeviceBuffer: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// Backend-owned validated integer topology; retained across forwards/adjoints.
+pub trait SegmentPlan: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SegmentOp { Sum, SumBackward, Softmax, SoftmaxBackward }
+
 fn not_resident<T>(op: &'static str) -> Result<T> {
     Err(Error::Unsupported {
         op,
@@ -334,6 +342,18 @@ pub trait Backend: Send + Sync {
         bias: Option<&dyn DeviceBuffer>, rows: usize, cols: usize, eps: f32,
     ) -> Result<Box<dyn DeviceBuffer>> {
         self.layer_norm_dev(x, weight, bias, rows, cols, eps).map(|(y, _, _)| y)
+    }
+
+    /// Validate/prepare immutable topology once. No feature tensors are uploaded.
+    fn prepare_segments(&self, _ids: &[usize], _groups: usize) -> Result<Arc<dyn SegmentPlan>> {
+        not_resident("prepare_segments")
+    }
+
+    /// Whole contiguous f32 buffers; errors must not trigger host fallback.
+    fn segment_dev(&self, _plan: &dyn SegmentPlan, _op: SegmentOp,
+        _x: &dyn DeviceBuffer, _saved: Option<&dyn DeviceBuffer>, _width: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("segment_dev")
     }
 
     /// Row-wise softmax over the last dim of a whole contiguous device buffer

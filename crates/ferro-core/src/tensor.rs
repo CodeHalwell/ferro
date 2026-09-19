@@ -878,8 +878,10 @@ impl Tensor {
         {
             let storage = self.0.storage.read();
             let Storage::Device(buf) = &*storage else { return Ok(None); };
-            if let Ok(out) = backend.materialize_dev(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset) {
-                return Ok(Some(device_leaf(out, self.shape(), self.device())));
+            match backend.materialize_dev(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset) {
+                Ok(out) => return Ok(Some(device_leaf(out, self.shape(), self.device()))),
+                Err(Error::Unsupported { op: "materialize_dev", .. }) => {},
+                Err(e) => return Err(e),
             }
         }
         // Layout and buffer identity are immutable. Build/upload gather indices
@@ -895,13 +897,28 @@ impl Tensor {
             }
             indices.push(i64::try_from(offset).map_err(|_| Error::Unsupported { op: "reshape", msg: "layout exceeds i64 indexing".into() })?);
         }
-        let Ok(index) = backend.alloc_i64_from_host(&indices) else { return Ok(None); };
+        let index = match backend.alloc_i64_from_host(&indices) {
+            Ok(index) => index,
+            Err(Error::Unsupported { op: "alloc_i64_from_host", .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
         let storage = self.0.storage.read();
         let Storage::Device(buf) = &*storage else { unreachable!("storage identity is immutable"); };
         match backend.gather_rows_dev(buf.as_ref(), index.as_ref(), buf.len(), 1) {
             Ok(out) => Ok(Some(device_leaf(out, self.shape(), self.device()))),
-            Err(_) => Ok(None),
+            Err(Error::Unsupported { op: "gather_rows_dev", .. }) => Ok(None),
+            Err(e) => Err(e),
         }
+    }
+
+    /// Differentiable whole-buffer materialization for strict resident operators.
+    pub(crate) fn resident_contiguous(&self) -> Result<Tensor> {
+        if self.device() == Device::Cpu { return self.reshape(self.shape()); }
+        if self.device_resident_whole() { return Ok(self.clone()); }
+        let out = self.materialize_device()?.ok_or_else(|| Error::Unsupported {
+            op: "resident_contiguous", msg: "backend cannot materialize this layout on device".into(),
+        })?;
+        Ok(out.record_fn(vec![self.clone()], |g| vec![g.clone()]))
     }
 
     pub fn reshape(&self, shape: &[usize]) -> Result<Tensor> {
@@ -943,7 +960,9 @@ impl Tensor {
         let out = self.capture_layout(out)?;
         let in_shape = self.0.shape.clone();
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Reshape(shape.to_vec()), move |g| {
-            vec![Tensor::from_vec(g.to_vec(), &in_shape).unwrap()]
+            let base = g.detach_copy();
+            vec![Tensor::from_parts(base.0.storage.clone(), in_shape.clone(),
+                default_strides(&in_shape), base.0.offset, base.device(), false, None)]
         }))
     }
 
@@ -1015,6 +1034,9 @@ impl Tensor {
                 false,
                 None,
             );
+        }
+        if let Some(out) = self.materialize_device().expect("detached device materialization failed") {
+            return out;
         }
         self.detach_copy_same_dtype()
     }

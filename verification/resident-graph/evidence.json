@@ -1,0 +1,352 @@
+{
+  "provenance": {
+    "head": "73b33fc7664d7a503dadd9b240a83f9d719a68dc",
+    "python": "3.11.15 (main, Aug  7 2026, 02:24:19) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "torch": "2.6.0+cu124",
+    "native_path": "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Lib\\site-packages\\ferro\\_native.pyd",
+    "wheel_sha256": "b4fba8df9adc64072ba5deeac08b7f2ecb277cf695e0c707f1cb5480e18eade9",
+    "package_hashes": {
+      "ferro/__init__.py": "078f320c19be7fd627565b72ba69dea9eeda95c106d678a66db3a616b1555761",
+      "ferro/_grad_mode.py": "883f72c1857127297f3337d5317d3d22c62a9c1fb2f31efdcec0c3fdbc40920c",
+      "ferro/_native.pyd": "8419b508165f2d3621891f5f2834583dcdab45f564b30016b11b181fe66d2466",
+      "ferro/autograd.py": "72cbf591b80158ceccc9ac0987e325b1c97f68e395548a7fb7a89f11a0e7f2b1",
+      "ferro/basis.py": "f9d3c0ca7cdf666c3d5c54be1507c079c1fbef221b0743693ba1abbb9c275cad",
+      "ferro/checkpoint.py": "c69566badf37ddceae7f27289ccbd62353b8bf5144650f7a2b98f561ad762929",
+      "ferro/graph.py": "87e035261ed0890a72d0d158c034c4d7124b00f802f44cdc5d264d837a218ca9",
+      "ferro/nn/__init__.py": "c056e7d38aafcb766d8b8846d00ee08eec6e5050be69a852f645c207ab65c8c6",
+      "ferro/nn/functional.py": "da6ce3b90809dd422d17bd3287776eb436f4e7966cdeb8c21c71ac7f27b74f72",
+      "ferro/nn/linear.py": "39db94741b798204f656f49d2154c6523233fc7f85459330df688b30e8c23c1b",
+      "ferro/nn/losses.py": "034c50ab197250ff7ae6b42488cb5e4a4230cafec2b0d0d7931846ad9d99de08",
+      "ferro/nn/module.py": "44b7c2079d5751dde488e1765284f38b96d40f76046e0ecfb659cdc825364b08",
+      "ferro/optim.py": "4bc27817975255e048684e4f491bc2ac8642ee27c27328e749e47d0581867152",
+      "ferro/progress.py": "a68744f5382ef8e6a5d98341d8f97c37955eb038eeda803628b7d423e7cfde54",
+      "ferro/recurrent.py": "1103120911624bfde5b87c853dcad10624fe737872e728f5855ab9bedef8643d",
+      "ferro/training.py": "1604486a7a8205da50b06ecd2f2f159def18dbd2fc80757b2305534c50cf250e"
+    },
+    "proof_device": "cpu (training/restart), cuda:0 (primitives)",
+    "cuda_required": true
+  },
+  "commands": [
+    {
+      "name": "build",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-m",
+        "maturin",
+        "build",
+        "--release",
+        "-j2",
+        "--locked",
+        "--manifest-path",
+        "crates/ferro-py/Cargo.toml",
+        "--out",
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\target\\resident-graph\\run-01\\wheels"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "install",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-deps",
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\target\\resident-graph\\run-01\\wheels\\ferro-0.0.1-cp311-abi3-win_amd64.whl"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "regression",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/train_restart_regression.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "classifier",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/train_restart_classifier.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "gnn",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/train_restart_gnn.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "python",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "crates/ferro-py/tests",
+        "-v"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "core",
+      "command": [
+        "cargo",
+        "test",
+        "-j2",
+        "-p",
+        "ferro-core"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "cuda-check",
+      "command": [
+        "cargo",
+        "check",
+        "-j2",
+        "-p",
+        "ferro-cuda",
+        "--all-targets"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "cuda",
+      "command": [
+        "cargo",
+        "test",
+        "-j2",
+        "-p",
+        "ferro-cuda"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "cpu-tokenizer",
+      "command": [
+        "cargo",
+        "test",
+        "-j2",
+        "-p",
+        "ferro-fastcpu",
+        "-p",
+        "ferro-tokenizer"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "bindings",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/py_regression.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "ops",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/ops_vs_torch.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "safetensors",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/safetensors_vs_python.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "compiled",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "crates/ferro-py/examples/py_compiled_fusion_regression.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "fusion",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "crates/ferro-py/examples/py_fuse_regression.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "fuzz",
+      "command": [
+        "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-gnn\\.venv\\Scripts\\python.exe",
+        "-B",
+        "examples/fuzz_vs_torch.py",
+        "--trials",
+        "200",
+        "--seed",
+        "0"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "binding-rust",
+      "command": [
+        "cargo",
+        "test",
+        "-j2",
+        "--manifest-path",
+        "crates/ferro-py/Cargo.toml",
+        "--lib"
+      ],
+      "exit": 0
+    }
+  ],
+  "counts": {
+    "core": {
+      "passed": 776,
+      "failed": 0,
+      "ignored": 2,
+      "filtered_subprocess_passes_excluded": 9,
+      "ignored_tests": [
+        "test bmm_perf_old_vs_dispatch ... ignored",
+        "test conv_timing_im2col_vs_naive ... ignored"
+      ]
+    },
+    "cuda": {
+      "passed": 121,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_subprocess_passes_excluded": 0,
+      "ignored_tests": []
+    },
+    "cpu-tokenizer": {
+      "passed": 33,
+      "failed": 0,
+      "ignored": 2,
+      "filtered_subprocess_passes_excluded": 0,
+      "ignored_tests": [
+        "test serial_cpu_cost_probe ... ignored, serial CPU cost probe; not a historical BMM performance claim",
+        "test bmm_perf_naive_vs_fastcpu ... ignored"
+      ]
+    },
+    "binding-rust": {
+      "passed": 15,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_subprocess_passes_excluded": 0,
+      "ignored_tests": []
+    },
+    "python": {
+      "passed": 114,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "stability": {
+    "sources": 437,
+    "unchanged": true
+  },
+  "gnn": [
+    {
+      "changed_topology_restore": "rejected without mutation",
+      "final_loss": 0.00021882708824705333,
+      "gradient_max_abs_errors": {
+        "b1": 2.9802322387695312e-08,
+        "b2": 0.0,
+        "input": 1.4901161193847656e-08,
+        "w1": 2.9802322387695312e-08,
+        "w2": 5.960464477539063e-08
+      },
+      "initial_loss": 0.5868527889251709,
+      "metrics": {
+        "constant_baseline_mse": 0.2764505766476703,
+        "held_out_mse": 0.00012504383630584925,
+        "no_message_passing_mse": 0.23274818062782288,
+        "ratio": 0.0004523189563290897
+      },
+      "restart": "bit-exact",
+      "seed": 7,
+      "steps": 400,
+      "task": "gnn"
+    },
+    {
+      "changed_topology_restore": "rejected without mutation",
+      "final_loss": 0.0001203250722028315,
+      "gradient_max_abs_errors": {
+        "b1": 4.190951585769653e-09,
+        "b2": 7.450580596923828e-09,
+        "input": 8.425558917224407e-09,
+        "w1": 2.7939677238464355e-09,
+        "w2": 7.916241884231567e-09
+      },
+      "initial_loss": 0.005115639418363571,
+      "metrics": {
+        "constant_baseline_mse": 0.2764505766476703,
+        "held_out_mse": 5.61295346415136e-05,
+        "no_message_passing_mse": 0.23265521228313446,
+        "ratio": 0.0002030364172943989
+      },
+      "restart": "bit-exact",
+      "seed": 11,
+      "steps": 400,
+      "task": "gnn"
+    },
+    {
+      "changed_topology_restore": "rejected without mutation",
+      "final_loss": 0.00025560957146808505,
+      "gradient_max_abs_errors": {
+        "b1": 8.940696716308594e-08,
+        "b2": 1.1920928955078125e-07,
+        "input": 2.9802322387695312e-08,
+        "w1": 2.9802322387695312e-08,
+        "w2": 5.960464477539063e-08
+      },
+      "initial_loss": 1.1917387247085571,
+      "metrics": {
+        "constant_baseline_mse": 0.2764505766476703,
+        "held_out_mse": 0.0001432608114555478,
+        "no_message_passing_mse": 0.2326851189136505,
+        "ratio": 0.0005182149127441694
+      },
+      "restart": "bit-exact",
+      "seed": 43,
+      "steps": 400,
+      "task": "gnn"
+    }
+  ],
+  "log_sha256": {
+    "binding-rust.log": "3dbd1256da4286f1cdb87a918ca29cfe3d044edf65fbd8c04d79aa51f501793e",
+    "bindings.log": "21b71d4feab330a07c70969eaf3550a4cc593c8eaa0be6903f4dc6d38d98d4aa",
+    "build.log": "09a832429b3b5b228564d891ee5c6d697aa747c4ed38afd4de641309883e010f",
+    "classifier.log": "e19cabbb825fe250c24f2ad9fda9ed6ca7ee24dd71f224a8e006adfe5dbb2d32",
+    "compiled.log": "2c59e35c98207542c7759188d2df6a8d10acc043a344602f7f56dc8d53d0a23b",
+    "core.log": "095d5ea4bc411b446a95e7edf7403c739302393bb8c00cd21cb3ad33ad9d9ea7",
+    "cpu-tokenizer.log": "1bebfbade16822be5cdd669aa65e829a3816866d44af8c23204bdc7aac5fd16f",
+    "cuda-check.log": "2653bae6e4974e13c083f87648b251e63f88f02d79a7df7cbe39dd1585d89867",
+    "cuda.log": "2aa78a79535620e6f77f074f494e8151644102591671907aa6f7b85e2bc17adf",
+    "fusion.log": "24b4fbdb074cddf5fd77eac6ced035db4f54c35856859638387796511774fcf8",
+    "fuzz.log": "bb71216ccfc82839dfe1aebff761654b1b8fbdc98e3ecabc2b915f40f9f48922",
+    "gnn.log": "655cffa6f5127cd6b332906096e5115719e3d7de2d5b4a140a669e3128315cd0",
+    "install.log": "de1075ea02f4c45b83a65937c3a32c5701c76f6a2009b68df7eeab39bb60aa5f",
+    "ops.log": "123ae3afd053a40c28c7b9cec3946be6fd43809b489a6ce36dde1581d9820ed8",
+    "python.log": "703744114eb60b0f896a08979cdc81301dc58ff075d2e5445c7e3e889205e7e3",
+    "regression.log": "681ebbcb1e7a0ef3238209364995bfdb818400617f49e61ccc5265d7fc83c0a4",
+    "safetensors.log": "3a96ad298ba5e0685aff80327640a4bec1e597f8a43b6f84a4a81eacfe7d0686"
+  }
+}

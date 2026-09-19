@@ -1,6 +1,6 @@
 # Current capability ledger and next milestone
 
-> PR scope: CPU checkpoint/optimizer APIs and the two training/restart proofs are included. CUDA prepared segments and tiled CPU BMM described below are companion development work outside this branch. [Final isolated PR verification](../verification/architecture-restart/PR_VERIFICATION.md) supersedes broad-checkout test counts for this PR.
+> PR #26 merged the CPU checkpoint/optimizer APIs and two training/restart proofs. This follow-up branch adds prepared resident graph primitives and a CPU GNN proof. Tiled CPU BMM remains separate development work. [Graph verification](../verification/resident-graph/README.md) records the new bounded scope; [PR #26 verification](../verification/architecture-restart/PR_VERIFICATION.md) remains historical evidence.
 
 Updated 2026-09-19. This is the current roadmap status index. The
 [foundations roadmap](FOUNDATIONS_AND_ARCHITECTURE_ROADMAP.md) retains the
@@ -9,11 +9,12 @@ detailed B0-B7 acceptance criteria; [FUTURE.md](FUTURE.md) and
 
 ## Evidence boundary
 
-The original index reconciled source and archived reports. The selected CPU training/restart fixtures now have a fresh matching-build run; see the local result below. Other capability rows retain their separately scoped evidence.
-Inspected checkout HEAD: `dc13a7199c23d92be5dd766102af03a6bfcb4bc3`, with
-uncommitted implementation, tests and reports. HEAD alone does not identify
-the inspected implementation. Do not label working-tree additions released,
-merged, or verified at this commit.
+The original index reconciled source and archived reports at `dc13a71` in a dirty
+checkout. The CPU proof work subsequently merged as PR #26. This follow-up is
+based on `73b33fc7664d7a503dadd9b240a83f9d719a68dc`, with graph implementation
+and tests on `feat-resident-graph-primitives`. HEAD alone does not
+identify the tested implementation: use the graph report and source hashes.
+Do not label the follow-up additions released or merged.
 
 "Implemented" means source exists for a bounded surface. "Recorded verification"
 means the linked report records execution on its own source/build identity.
@@ -28,11 +29,11 @@ historical failure reports rather than rewriting them into current status.
 
 | Area / bundle | Implemented surface | Device, dtype and API boundary | Evidence and remaining gate |
 |---|---|---|---|
-| Tensor and first-order AD / B0-B1 | Checked shape/layout work, typed selection, storage versions, gradient contracts and Python cotangent entry points | Primary math/AD is f32; typed storage is not full typed arithmetic. Device fallback and layout behavior remain operation-specific. | Core and binding suites are recorded in [combined verification](../verification/post25/combined/README.md). A public per-op dtype/placement matrix and broader resident indexing remain open. |
+| Tensor and first-order AD / B0-B1 | Checked shape/layout work, typed selection, storage versions, gradient contracts and Python cotangent entry points | Primary math/AD is f32; typed storage is not full typed arithmetic. Device fallback and layout behavior remain operation-specific. | Core and binding suites are recorded in [combined verification](../verification/post25/combined/README.md). Prepared one-dimensional selection/scatter now supports arbitrary axes on CPU/CUDA f32, including strided inputs and duplicate adjoints; convenience index_select uses this path on capable backends. A complete dtype/placement matrix and elementwise gather/scatter remain open. |
 | Public training / B1 | Python Module registration/containers, Linear, losses, SGD/Adam/AdamW, freezing, Trainer and progress | Python convenience APIs do not imply complete torch compatibility or universal CUDA layer coverage. | [Training API tests](../crates/ferro-py/tests/test_training_api.py) and [architecture fixtures](../verification/python-architecture-api/test_architecture.py). Full model certification remains separate. |
 | Training state / B2 | Owning snapshots, immutable generations, named optimizers, ties, persistent buffers, modes/config and one explicit Generator; Python save/load/restore | Whole-training restore is paused, compatible, whole-contiguous CPU f32. Pending gradients, data cursors, optimizer groups, schedulers, extra RNG streams and arbitrary loop state are outside the Python contract. | [Python state report](../verification/post25/python-state/README.md), [checkpoint tests](../crates/ferro-py/tests/test_training_checkpoint.py), [schema tests](../crates/ferro-py/tests/test_checkpoint_schema.py). Broader state completeness and CUDA transactions remain open. |
-| Segments / B3 (CUDA work separate) | CPU sum/mean/max/softmax; prepared CUDA sum/softmax and adjoints; public Python PreparedSegments | First-order f32. CUDA topology uploads once per preparation. Nonempty softmax performs a synchronized four-byte status download; no zero-total-transfer claim. Mean/max remain CPU-only; capture unsupported. | [Native report](../verification/post25/segments/README.md), [Python prepared-plan report](../verification/post25/prepared-python/README.md). General resident indexed adjoints and additional segment kernels remain open. |
-| Sparse / B4 | Validated COO/CSR and CPU sparse algebra, with Python wrappers | CPU f32 algebra does not establish resident CUDA SpMM/SDDMM or a complete graph data pipeline. | [Sparse tests](../crates/ferro-core/tests/foundation_sparse.rs) and architecture fixtures. Graph batching, resident sparse execution and GNN/connectome/graph-transformer training/restart gates remain open. |
+| Segments / B3 | CPU sum/mean/max/softmax; prepared CUDA sum/softmax and adjoints; public Python PreparedSegments | First-order f32. CUDA topology uploads once per preparation. Nonempty softmax performs a synchronized four-byte status download; no zero-total-transfer claim. Mean/max remain CPU-only; capture unsupported. | [Native report](../verification/post25/segments/README.md), [Python prepared-plan report](../verification/post25/prepared-python/README.md). The current [graph report](../verification/resident-graph/README.md) covers prepared gather/scatter adjoints and sum/softmax. Additional segment kernels and elementwise gather/scatter remain open. |
+| Sparse / B4 | Validated COO/CSR; prepared CPU/CUDA SpMM/SDDMM and block-diagonal COO batching | First-order f32; static integer topology; prepared CUDA operations use O(edges * features) scratch. Unprepared sparse methods remain CPU. | [Graph report](../verification/resident-graph/README.md) covers Torch values/VJPs, duplicate edges, isolated nodes, empty layouts and CUDA transfer counts. The selected CPU GNN passes learning/restart; CUDA GNN, connectome and graph-transformer certification remain open. |
 | Vision, sequence, basis / B5 | Grouped convolution/window work, RNN/GRU/LSTM cells and explicit masked/reset/truncated unroll, spline basis and KAN | New architecture wrappers are CPU f32 scoped. Explicit unroll is not fused scan or bounded-memory training. | [Foundation publication](../verification/foundation-wave/pr-readiness/PR_BODY.md), architecture fixtures, recurrent/basis tests. GPU implementations, decoder breadth and full model proofs remain open. |
 | Higher-order AD / B6 | Functional gradients/VJPs and graph-building derivatives for a declared smooth subset; Python exposure | Unsupported derivative paths must reject. No general operator coverage, f64 AD, or all-PINN support claim. | [Implementation](../crates/ferro-core/src/higher_order.rs), [tests](../crates/ferro-core/tests/higher_order.rs). Mixed coordinate/parameter gradients and each scientific/adversarial architecture need separate certification. |
 | Compilation and capture | Compiled supported inference DAGs, pointwise fusion and prepared static CUDA model execution | Supported operation/layout subsets only. No automatic whole-training compiler or general torch.compile parity claim. | [Graph implementation](../crates/ferro-core/src/graph.rs), [static CUDA owner](../crates/ferro-cuda/src/static_graph.rs), combined regression report. Mutable state/RNG/restore interactions need explicit gates. |
@@ -72,14 +73,14 @@ Do not rerun archival collectors that overwrite preserved evidence.
 | P0 investigation | Historical 343812-ULP CPU discrepancy remains root-cause unresolved despite containment. | Preserve original failure; isolate cause and independently review any change that restores suspect arithmetic. Passing repetitions do not resolve it. |
 | P0 investigation | Recorded Windows 0xc000001d illegal-instruction exit remains unexplained. | Reproduce with binary/source identity and CPU feature/compiler diagnostics; distinguish environment, dispatch and arithmetic causes. |
 | P1 correctness | Re-registering CUDA replaces the registry/stream; generic copying of an older allocation can consult the new backend and fail. | The [prepared-plan report](../verification/post25/prepared-python/README.md) links an isolated tensor probe. Define initialization/ownership semantics and add a regression before changing behavior. |
-| P1 residency | General backward detaches a strided seed through a host round trip. | Add a counting-backend regression and real CUDA check for arbitrary supported seed layouts; contiguous-seed segment tests do not close this. |
+| Closed for tested f32 CUDA layouts | Strided seeds and reshape adjoints previously copied through CPU. | Counting-backend regression reproduced two uploads/two downloads; now zero. CUDA transposed seeds/features and sparse backward pass zero-transfer assertions. Other dtype/backend fallback contracts remain unchanged. |
 
 These priorities guide follow-up work; they neither reopen a historical merge
 decision automatically nor authorize merging. No incident-free claim is made.
 
-## Next milestone: CPU public training with reproducible restart
+## Completed selected milestone: CPU public training with reproducible restart
 
-Status: implemented and locally verified for the two CPU f32 fixtures; independent review and broader B7 certification remain open. The work extends existing public APIs and checkpoint
+Status: merged in PR #26 for the two CPU f32 fixtures; broader B7 certification remains open. The work extends existing public APIs and checkpoint
 regressions into two small architecture proofs before widening the device scope.
 B0/B1/B2 provide the starting surface; this closes only the selected B7 rows.
 
@@ -137,10 +138,34 @@ fusion and fuzz commands. An initial missing-NVRTC verifier failure is preserved
 the final runtime-path-corrected run passed. No CUDA training, cross-platform
 determinism, general data-cursor resume, independent review or hosted CI claim.
 
+## Current follow-up: resident graph primitives and CPU GNN proof
+
+Implemented on `feat-resident-graph-primitives`:
+
+- `PreparedSegments.gather/select/scatter_add`: one-dimensional integer IDs,
+  arbitrary selection axis, duplicate accumulation and resident CUDA adjoints.
+  `Tensor.index_select` prepares per call on capable f32 backends; tensor IDs
+  still download for validation. Reuse a prepared plan for static IDs.
+- `COO.prepare(device).spmm/sddmm`: reuse two integer topology plans, maintain
+  independent duplicate edge values and both input gradients, and support
+  strided f32 CPU/CUDA operands. No dense adjacency or host feature fallback.
+- `COO.batch(graphs)`: block-diagonal batching preserving graph/edge order,
+  rectangular shapes and isolated nodes; cumulative row/column offsets returned.
+- `examples/train_restart_gnn.py`: one-hop message passing over disconnected
+  four-node graphs. Fixed 400-step, seeds 7/11/43 learning gate; independent
+  Torch input/parameter gradients; fresh-process exact continuation and rejected
+  changed-topology restore without state mutation. CPU checkpoint contract only.
+
+See the [matching-build graph report](../verification/resident-graph/README.md)
+for executed results and source identity. This closes only this selected model
+and primitive subset, not all B3/B4/B7 acceptance criteria.
+
 ## Subsequent sequence
 
-- Complete B3 general resident indexing and B4 sparse/graph batching before
-  claiming a resident GNN or sparse graph transformer.
+- Extend B3 elementwise gather/scatter and dynamic-index validation, then certify
+  whole resident GNN training (including optimizer and loss), CUDA restart and
+  graph-transformer variants. Prepared sparse primitive residency alone does
+  not establish whole-model residency.
 - Certify CNN, recurrent and KAN training/restart independently using existing
   CPU primitives; extend to CUDA only with execution and residency evidence.
 - Certify PINN/contractive-AE/gradient-penalty models only after required mixed
