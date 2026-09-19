@@ -1,9 +1,10 @@
 //! `index_select`: pick rows along `dim` by an explicit usize index list.
 //! Forward copies contiguous `inner` blocks; backward scatter-adds grad blocks
 //! back to the input shape (add, not overwrite, so duplicate indices accumulate).
-//! Device-resident f32 weights with device-resident I64 indices take the
-//! backend's `gather_rows_dev` kernel (outer == 1, the embedding shape);
-//! everything else runs the host path.
+//! f32 backends supporting prepared segments keep forward and adjoint resident
+//! on every axis, including strided inputs. Static IDs should use PreparedSegments
+//! directly to avoid preparation per call. Partial backends retain legacy fallback;
+//! tensor IDs are still downloaded once per invocation for checked validation.
 
 use crate::device::Device;
 use crate::dispatch::backend_for;
@@ -69,6 +70,14 @@ impl Tensor {
         let mut out_shape = self.shape().to_vec();
         out_shape[dim] = idx.len();
         crate::shape::checked_numel("index_select", &out_shape)?;
+
+        if self.dtype() == DType::F32 && self.device() != Device::Cpu {
+            match crate::segment::PreparedSegments::new(&idx, dim_size, self.device()) {
+                Ok(plan) => return plan.select(self, dim),
+                Err(Error::Unsupported { op: "prepare_segments", .. }) => {},
+                Err(e) => return Err(e),
+            }
+        }
 
         // Resident fast path: whole contiguous f32 weight + i64 index buffer
         // on the same non-CPU device whose backend implements the gather.
@@ -149,6 +158,13 @@ impl Tensor {
                 op: "index_select",
                 msg: "output size overflow".into(),
             })?;
+        if self.dtype() == DType::F32 && self.device() != Device::Cpu {
+            match crate::segment::PreparedSegments::new(indices, dim_size, self.device()) {
+                Ok(plan) => return plan.select(self, dim),
+                Err(Error::Unsupported { op: "prepare_segments", .. }) => {},
+                Err(e) => return Err(e),
+            }
+        }
         // Typed materializers gather strided views without an f32 round trip.
         // The host fallback deliberately returns CPU storage for every dtype.
         macro_rules! select {

@@ -1,6 +1,7 @@
 //! Immutable sparse topology, with integer coordinates and explicit duplicate edges.
-//! Tensor operations are CPU f32, first-order autograd only; no graph replay support.
-use crate::{Error, Result, Tensor};
+//! Unprepared algebra is CPU f32; prepared algebra supports resident backends.
+//! First-order autograd only; no graph replay support.
+use crate::{DType, Device, Error, Result, Tensor};
 use crate::segment;
 
 fn invalid(op: &'static str, msg: &str) -> Error { Error::InvalidShape { op, msg: msg.into() } }
@@ -173,5 +174,69 @@ impl Coo {
             }
             vec![Tensor::from_vec(dl, &[a.shape[0],width]).unwrap(), Tensor::from_vec(dr, &[a.shape[1],width]).unwrap()]
         }))
+    }
+}
+
+/// Reusable row/column plans. O(edges * features) scratch, never a dense adjacency.
+/// Values are separate differentiable tensors; duplicates retain their own values.
+#[derive(Clone)]
+pub struct PreparedCoo {
+    topology: Coo,
+    rows: segment::PreparedSegments,
+    cols: segment::PreparedSegments,
+    device: Device,
+}
+impl Coo {
+    pub fn prepare(&self, device: Device) -> Result<PreparedCoo> {
+        Ok(PreparedCoo {
+            topology: self.clone(),
+            rows: segment::PreparedSegments::new(&self.rows, self.shape[0], device)?,
+            cols: segment::PreparedSegments::new(&self.cols, self.shape[1], device)?,
+            device,
+        })
+    }
+
+    /// Block-diagonal batching, preserving graph then edge order. Offsets include
+    /// the final row/column totals and support rectangular graphs and empty input.
+    pub fn disjoint_union(graphs: &[Coo]) -> Result<(Self, Vec<[usize; 2]>)> {
+        let mut offsets = vec![[0usize, 0usize]];
+        let mut rows = Vec::new(); let mut cols = Vec::new();
+        for g in graphs {
+            let [r,c] = *offsets.last().unwrap();
+            let nr = r.checked_add(g.shape[0]).ok_or_else(|| invalid("coo_batch", "row count overflow"))?;
+            let nc = c.checked_add(g.shape[1]).ok_or_else(|| invalid("coo_batch", "column count overflow"))?;
+            rows.extend(g.rows.iter().map(|i| r+i));
+            cols.extend(g.cols.iter().map(|i| c+i));
+            offsets.push([nr,nc]);
+        }
+        let [r,c] = *offsets.last().unwrap();
+        Ok((Self::new(r,c,rows,cols)?, offsets))
+    }
+}
+impl PreparedCoo {
+    fn validate(&self, x: &Tensor, op: &'static str) -> Result<()> {
+        if crate::capture::is_recording() { return Err(Error::Unsupported { op, msg: "sparse capture/replay is not supported".into() }); }
+        if x.device() != self.device { return Err(Error::DeviceMismatch { op, lhs: x.device(), rhs: self.device }); }
+        if x.dtype() != DType::F32 { return Err(Error::DtypeMismatch { op, expected: DType::F32, got: x.dtype() }); }
+        Ok(())
+    }
+    pub fn spmm(&self, values: &Tensor, dense: &Tensor) -> Result<Tensor> {
+        self.validate(values, "prepared_spmm")?; self.validate(dense, "prepared_spmm")?;
+        let a = &self.topology;
+        if values.shape() != [a.nnz()] || dense.ndim() != 2 || dense.shape()[0] != a.shape[1] {
+            return Err(invalid("prepared_spmm", "expected values [nnz] and dense [ncols, features]"));
+        }
+        let messages = self.cols.gather(dense)?;
+        let weights = values.resident_contiguous()?.reshape(&[a.nnz(), 1])?;
+        self.rows.sum(&messages.mul(&weights)?)
+    }
+    pub fn sddmm(&self, left: &Tensor, right: &Tensor) -> Result<Tensor> {
+        self.validate(left, "prepared_sddmm")?; self.validate(right, "prepared_sddmm")?;
+        let a = &self.topology;
+        if left.ndim() != 2 || right.ndim() != 2 || left.shape()[0] != a.shape[0]
+            || right.shape()[0] != a.shape[1] || left.shape()[1] != right.shape()[1] {
+            return Err(invalid("prepared_sddmm", "expected [nrows, features] and [ncols, features]"));
+        }
+        self.rows.gather(left)?.mul(&self.cols.gather(right)?)?.sum_dim(1, false)
     }
 }

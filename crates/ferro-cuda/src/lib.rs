@@ -16,6 +16,7 @@
 
 mod kernels;
 mod alloc;
+mod segment;
 mod static_graph;
 pub use static_graph::{StaticPointwiseGraph, StaticPointwiseRun};
 
@@ -302,6 +303,7 @@ pub struct CudaBackend {
     funcs: Mutex<HashMap<String, CudaFunction>>,
     pointwise_launches: [AtomicUsize; 3],
     layout_counters: [AtomicUsize; 3],
+    segment_counters: [AtomicUsize; 6],
     layer_norm_counters: [AtomicUsize; 3],
     // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
     // carries a clone and returns its slice here on drop.
@@ -366,6 +368,7 @@ impl CudaBackend {
             funcs: Mutex::new(HashMap::new()),
             pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
             layout_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
+            segment_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             layer_norm_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             alloc,
         })
@@ -1410,6 +1413,16 @@ impl Backend for CudaBackend {
         }
         if rows != 0 { self.layer_norm_counters[0].fetch_add(1, Ordering::Relaxed); }
         Ok(self.wrap(out))
+    }
+
+    fn prepare_segments(&self, ids: &[usize], groups: usize) -> Result<Arc<dyn ferro_core::dispatch::SegmentPlan>> {
+        self.prepare_segment_plan(ids, groups)
+    }
+
+    fn segment_dev(&self, plan: &dyn ferro_core::dispatch::SegmentPlan, op: ferro_core::dispatch::SegmentOp,
+        x: &dyn DeviceBuffer, saved: Option<&dyn DeviceBuffer>, width: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        self.run_segment(plan, op, x, saved, width)
     }
 
     fn softmax_dev(
