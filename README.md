@@ -1,5 +1,7 @@
 # ferro
 
+> Start with the [current capability ledger and next milestone](docs/CURRENT_STATUS.md). The overview below describes the earlier MVP and is not a complete inventory of the current implementation.
+
 `ferro` is a from-scratch, Rust reimplementation of a PyTorch-style tensor and
 autograd backend. It is an experiment: how far can a Rust replacement for
 PyTorch's C++ core (ATen/autograd) actually go?

@@ -88,6 +88,13 @@ class Module:
         self._buffers.pop(name, None)
 
     def register_buffer(self, name, tensor, persistent=True):
+        """Register explicit state; only persistent buffers enter checkpoints.
+
+        Training checkpoints validate persistent parameter/buffer StorageCell ties,
+        not Python wrapper identity. Matching whole-contiguous CPU f32 aliases are
+        supported; distinct aliased views are rejected. Nonpersistent buffers and
+        unregistered tensor attributes (including their alias relations) are excluded.
+        """
         if not isinstance(name, str) or not name or '.' in name or name.startswith('_'):
             raise ValueError('Buffer name must be a nonempty public attribute name without dots')
         if hasattr(self, name) or self._structure_locked:

@@ -144,8 +144,9 @@ impl Checkpoint {
     pub fn from_training_state(step: u64, module: &dyn Module,
         optimizers: &[(&str, &dyn crate::optim::OptimizerState)], rng: &crate::rng::Rng) -> Result<Self> {
         validate_optimizer_isolation(module, optimizers.iter().map(|(_,opt)| *opt))?;
+        let storage = storage_schema(module)?;
         let mut cp = Self::from_module(step, module).with_rng(rng);
-        for (key, value) in parameter_schema(module) { cp.tensors.push((key, encode_u64(value))); }
+        for (key, value) in parameter_schema(module).into_iter().chain(storage) { cp.tensors.push((key, encode_u64(value))); }
         for (name, opt) in optimizers {
             cp = cp.with_optimizer(name, *opt)?;
             for (i, index) in optimizer_binding(module, *opt)?.into_iter().enumerate() {
@@ -172,6 +173,10 @@ impl Checkpoint {
         let mut expected: std::collections::HashSet<String> = module_targets(module).into_iter().map(|(n,_)| n).collect();
         expected.extend(scalars.iter().map(|(n,_)| format!("scalars.{n}")));
         expected.insert("rng.xorshift128".into());
+        for (key, canonical) in storage_schema(module)? {
+            if decode_u64(self.tensor(&key)?)? != canonical { return Err(format_error("model storage alias topology mismatch")); }
+            expected.insert(key);
+        }
         let mut trainable = Vec::new();
         for (key, _) in parameter_schema(module) {
             let value = decode_u64(self.tensor(&key)?)?;
@@ -486,6 +491,24 @@ fn optimizer_binding(module: &dyn Module, opt: &dyn crate::optim::OptimizerState
     opt.state_parameters().ok_or_else(|| format_error("optimizer does not expose parameter identity"))?
         .iter().map(|p| named.iter().find(|(_, target)| target.identity() == p.identity())
             .map(|(n, _)| n.clone()).ok_or_else(|| format_error("optimizer parameter outside model"))).collect()
+}
+
+// StorageCell identity, not Tensor/Param wrapper identity or a device allocation address.
+// Names are sorted so registration order cannot change canonical indices.
+fn storage_schema(module: &dyn Module) -> Result<Vec<(String, u64)>> {
+    let mut named = module_targets(module);
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut canonical = std::collections::HashMap::new();
+    named.iter().enumerate().map(|(i, (name, t))| {
+        let first = *canonical.entry(t._storage_ptr()).or_insert(i as u64);
+        if first != i as u64 {
+            let original = &named[first as usize].1;
+            // Only identical whole-contiguous CPU f32 aliases have a commit protocol.
+            validate_destination(t, original)?;
+            validate_destination(original, t)?;
+        }
+        Ok((format!("storage.{name}"), first))
+    }).collect()
 }
 
 fn parameter_schema(module: &dyn Module) -> Vec<(String, u64)> {

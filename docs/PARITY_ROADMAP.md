@@ -1,5 +1,7 @@
 # ferro → PyTorch Feature Parity: Roadmap & Technical Guide
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 *Prepared August 2026 · Based on the deep-dive review of ferro (v. current state) and the 2026 Rust GPU ecosystem*
 
 ---

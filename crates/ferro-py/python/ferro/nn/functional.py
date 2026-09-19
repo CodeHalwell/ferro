@@ -37,3 +37,12 @@ def fold2d(x, output_size, kernel_size, stride=1, padding=0, dilation=1):
     """CPU columns -> NCHW; overlaps sum, not average."""
     from .._native import fold2d as native
     return native(x, _pair(output_size), _pair(kernel_size), _pair(stride), _pair(padding), _pair(dilation))
+
+
+def cross_entropy(logits, targets):
+    """Mean CPU f32 loss for [N,C] logits and I64 [N] class IDs.
+
+    Requires nonempty batches/classes. No weights, smoothing or ignore_index.
+    """
+    from .._native import cross_entropy as native
+    return native(logits, targets)

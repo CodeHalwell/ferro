@@ -1,5 +1,7 @@
 # ferro: the road from here to a world-class deep learning engine
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 This is the forward-looking master plan. It assumes the current state of the
 tree (see Status below) and lays out every major workstream between here and
 an engine that could credibly compete with PyTorch/JAX - plus the honest

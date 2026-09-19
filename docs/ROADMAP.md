@@ -1,5 +1,7 @@
 # Roadmap
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 Phases 0-5 of this plan are now largely implemented; see FUTURE.md for
 the current forward-looking master plan that supersedes the later phases.
 

@@ -1,5 +1,7 @@
 # Architecture
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 This document describes how `ferro` is structured today. It is grounded in the
 current code, not in aspirations; see `ROADMAP.md`, `DISPATCHER.md`, and
 `DLPACK.md` for where things are headed.

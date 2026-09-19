@@ -1,5 +1,7 @@
 # Training gate: end-to-end proof programs
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 Two runnable training programs prove the ferro-core stack end to end on CPU,
 using only the existing public API (nn/modules layers, ops_ext autograd ops,
 optim::AdamW, data::DataLoader, checkpoint::Checkpoint). Neither program
