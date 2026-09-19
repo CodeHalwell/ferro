@@ -1,6 +1,6 @@
 # Ferro foundations and architecture roadmap
 
-> Historical baseline roadmap, not the final implementation ledger. Its missing/in-progress milestones describe the original audit. For the frozen draft scope, verified results and OPEN fastcpu blocker, see [publication status](../verification/foundation-wave/pr-readiness/PUBLICATION.md) and [PR body](../verification/foundation-wave/pr-readiness/PR_BODY.md). Remaining architecture gates are future acceptance criteria.
+> Historical baseline and detailed B0-B7 acceptance criteria. Start with the [current capability ledger](CURRENT_STATUS.md) for reconciled status and the next milestone. Missing/in-progress entries below describe the original audit. The [foundation publication](../verification/foundation-wave/pr-readiness/PUBLICATION.md) cleared its documented blocker through containment, leaving root-cause investigation open; subsequent work is scoped separately in the current ledger. Remaining architecture gates are future acceptance criteria.
 
 ## Goal and evidence boundary
 

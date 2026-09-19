@@ -1,0 +1,124 @@
+[
+  {
+    "name": "build",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "maturin",
+      "build",
+      "--release",
+      "-j2",
+      "--locked",
+      "--manifest-path",
+      "crates/ferro-py/Cargo.toml",
+      "--out",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\architecture-restart\\run-01\\wheels"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "install",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-m",
+      "pip",
+      "install",
+      "--force-reinstall",
+      "--no-deps",
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\verification\\architecture-restart\\run-01\\wheels\\ferro-0.0.1-cp311-abi3-win_amd64.whl"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "regression",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "examples/train_restart_regression.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "classifier",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "examples/train_restart_classifier.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "python",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "crates/ferro-py/tests",
+      "-v"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "core",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-core"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "cpu-tokenizer",
+    "command": [
+      "cargo",
+      "test",
+      "-j2",
+      "-p",
+      "ferro-fastcpu",
+      "-p",
+      "ferro-tokenizer"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "bindings",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "examples/py_regression.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "ops",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "examples/ops_vs_torch.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "safetensors",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "examples/safetensors_vs_python.py"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "compiled",
+    "command": [
+      "C:\\Users\\DanielHalwell\\PythonProjects\\ferro\\crates\\ferro-py\\.venv\\Scripts\\python.exe",
+      "-B",
+      "crates/ferro-py/examples/py_compiled_fusion_regression.py"
+    ],
+    "exit": 1
+  }
+]

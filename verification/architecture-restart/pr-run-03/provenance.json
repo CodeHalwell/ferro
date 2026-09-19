@@ -1,0 +1,28 @@
+{
+  "head": "dc13a7199c23d92be5dd766102af03a6bfcb4bc3",
+  "python": "3.11.15 (main, Aug  7 2026, 02:24:19) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "torch": "2.6.0+cu124",
+  "native_path": "C:\\Users\\DanielHalwell\\PythonProjects\\ferro-pr-cpu-training-restart\\.venv\\Lib\\site-packages\\ferro\\_native.pyd",
+  "wheel_sha256": "4908feb334094ac8f5d113a236d1214ce2d96155e0373096ab9fef16f52095bc",
+  "package_hashes": {
+    "ferro/__init__.py": "a63ef71a4ad47157401ddc2baf22c5a9b1abacee7424d8be03f4f69896576426",
+    "ferro/_grad_mode.py": "883f72c1857127297f3337d5317d3d22c62a9c1fb2f31efdcec0c3fdbc40920c",
+    "ferro/_native.pyd": "797e5f993a986dd6ec2b1ed7d29a55eff50e0d5daa2b9172f9eb837f3c9babf9",
+    "ferro/autograd.py": "72cbf591b80158ceccc9ac0987e325b1c97f68e395548a7fb7a89f11a0e7f2b1",
+    "ferro/basis.py": "f9d3c0ca7cdf666c3d5c54be1507c079c1fbef221b0743693ba1abbb9c275cad",
+    "ferro/checkpoint.py": "77aa1570f6fe3c08b6a56c527f7b7e22981a0b8e1712bff610de7a75650aaf11",
+    "ferro/graph.py": "7a4bfa09d455ca46cf9336cdaa5de7daa6d351719383197035447a821263f5cc",
+    "ferro/nn/__init__.py": "c056e7d38aafcb766d8b8846d00ee08eec6e5050be69a852f645c207ab65c8c6",
+    "ferro/nn/functional.py": "ce28c38b678ced1f7aa283b70ad7d2328a26e33344832c3366f6cb7e362cf353",
+    "ferro/nn/linear.py": "39db94741b798204f656f49d2154c6523233fc7f85459330df688b30e8c23c1b",
+    "ferro/nn/losses.py": "034c50ab197250ff7ae6b42488cb5e4a4230cafec2b0d0d7931846ad9d99de08",
+    "ferro/nn/module.py": "732bc9f138ebb4481ce5f262eeebe0723449b059a50a84e6b572fb948817060d",
+    "ferro/optim.py": "294ebffbf708d290bf5964c172ac49f8f588f543d8f802a80acbc1dbd6592ade",
+    "ferro/progress.py": "a68744f5382ef8e6a5d98341d8f97c37955eb038eeda803628b7d423e7cfde54",
+    "ferro/recurrent.py": "1103120911624bfde5b87c853dcad10624fe737872e728f5855ab9bedef8643d",
+    "ferro/training.py": "1604486a7a8205da50b06ecd2f2f159def18dbd2fc80757b2305534c50cf250e"
+  },
+  "proof_device": "cpu",
+  "cuda_required": false
+}

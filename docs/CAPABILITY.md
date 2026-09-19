@@ -1,5 +1,7 @@
 # ferro: the capability plan - science, mathematics, computer science
 
+> Historical strategy/design or scoped execution record. For current implementation status, evidence boundaries and the next milestone, start with [Current capability ledger](CURRENT_STATUS.md). Unqualified status and future-work statements below reflect the document's original scope.
+
 FUTURE.md is the master plan: workstreams, sizes, sequencing, milestones.
 This document is the layer underneath it. For each axis along which ferro
 can become more capable, it lays out the theory that forces the design, the

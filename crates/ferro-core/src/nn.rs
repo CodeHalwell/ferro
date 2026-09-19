@@ -22,6 +22,9 @@ pub trait Module {
     fn named_parameters(&self) -> Vec<(String, Param)>;
 
     /// Live, stable buffer handles; containers prefix names like parameters.
+    /// Enumerate every persistent name, including aliases, without materializing
+    /// copies. Whole-training checkpoints validate StorageCell alias topology
+    /// across these handles and parameters; omitted/unregistered state is excluded.
     fn named_buffers(&self) -> Vec<(String, Tensor)> { Vec::new() }
 
     /// Exact scalar state (modes, counters, configuration bits), never f32 casts.

@@ -1,8 +1,10 @@
 mod dlpack;
+mod training_state;
 mod architecture;
 mod recurrent;
 mod basis;
 mod convolution;
+mod losses;
 
 #[cfg(test)]
 #[path = "../tests/support/dlpack_recorded_error.rs"]
@@ -951,6 +953,10 @@ impl PyParameter {
         Ok(Self { inner: ferro_core::params::Param::new(tensor.inner.clone()) })
     }
     fn tensor(&self) -> PyTensor { PyTensor::wrap(self.inner.tensor()) }
+    #[getter]
+    fn trainable(&self) -> bool { self.inner.is_trainable() }
+    #[setter]
+    fn set_trainable(&self, value: bool) { self.inner.set_trainable(value); }
     fn zero_grad(&self) { self.inner.zero_grad(); }
     #[getter]
     fn grad(&self) -> Option<PyTensor> { self.inner.grad().map(PyTensor::wrap) }
@@ -997,10 +1003,12 @@ fn enable_grad(py: Python<'_>) -> PyResult<Py<PyAny>> {
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route matmul through the optimized CPU backend for the whole process.
     ferro_fastcpu::install();
+    training_state::register(m)?;
     architecture::register(m)?;
     recurrent::register(m)?;
     basis::register(m)?;
     convolution::register(m)?;
+    losses::register(m)?;
     m.add_class::<PyTensor>()?;
     m.add_class::<PyParameter>()?;
     m.add_class::<PySgd>()?;
