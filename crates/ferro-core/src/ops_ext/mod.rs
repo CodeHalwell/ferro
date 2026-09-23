@@ -37,6 +37,7 @@ pub mod erf;
 pub mod erfc;
 pub mod exp2;
 pub mod expm1;
+pub mod flatten;
 pub mod floor;
 pub mod fmod;
 pub mod frac;
