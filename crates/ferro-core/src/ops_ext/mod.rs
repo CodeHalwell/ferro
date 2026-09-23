@@ -26,6 +26,7 @@ pub mod conv2d;
 pub mod copysign;
 pub mod cos;
 pub mod cosh;
+pub mod cosine_embedding_loss;
 pub mod cosine_similarity;
 pub mod cumsum;
 pub mod deg2rad;
