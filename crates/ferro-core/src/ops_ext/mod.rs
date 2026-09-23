@@ -82,6 +82,7 @@ pub mod prod_dim;
 pub mod reciprocal;
 pub mod relu6;
 pub mod remainder;
+pub mod rms_norm;
 pub mod rope;
 pub mod round;
 pub mod rsqrt;
