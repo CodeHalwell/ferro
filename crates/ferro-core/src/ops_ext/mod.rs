@@ -29,6 +29,7 @@ pub mod cosh;
 pub mod cosine_similarity;
 pub mod cumsum;
 pub mod deg2rad;
+pub mod diff;
 pub mod dist;
 pub mod dropout;
 pub mod elu;
