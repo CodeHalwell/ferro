@@ -35,6 +35,7 @@ fn conservative_specials_and_shape_validation() {
 
 #[test]
 fn install_only_default_backend_bmm_cannot_reenter_packed_kernel() {
+    let _registry = crate::registry_tests::lock();
     let _reset = Reset;
     install();
     for fault in [1, 2, 3, 4] {

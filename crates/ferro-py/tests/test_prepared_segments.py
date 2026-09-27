@@ -100,7 +100,9 @@ class PreparedSegmentsCUDA(PreparedSegmentsCPU):
     @classmethod
     def setUpClass(cls):
         try:
-            assert fr.cuda_init(0)
+            initialized = fr.cuda_init(0)
+            if not initialized:
+                raise RuntimeError("CUDA initialization returned false")
         except Exception as exc:
             if os.environ.get("FERRO_REQUIRE_CUDA"):
                 raise AssertionError(f"CUDA required: {exc}") from exc

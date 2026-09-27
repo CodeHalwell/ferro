@@ -24,6 +24,8 @@ pub mod elementwise;
 mod safe_bmm;
 #[cfg(test)]
 mod containment_tests;
+#[cfg(test)]
+mod registry_tests;
 
 /// Micro-kernel tile: MR x NR accumulators = 12 ymm registers under AVX2,
 /// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
@@ -527,6 +529,7 @@ mod tests {
 
     #[test]
     fn install_routes_tensor_matmul() {
+        let _registry = crate::registry_tests::lock();
         let (m, k, n) = (12, 20, 9);
         let a = lcg_fill(3, m * k);
         let b = lcg_fill(4, k * n);

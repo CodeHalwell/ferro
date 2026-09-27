@@ -33,8 +33,10 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::compile_ptx;
 use ferro_core::dispatch::{AdamWStep, DeviceBuffer, ReduceKind};
+#[cfg(test)]
+use ferro_core::register_backend;
 use ferro_core::{
-    register_backend, Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
+    Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
 };
 
 /// Cheap detection: is the CUDA driver library (libcuda) loadable? This is a
@@ -1938,17 +1940,44 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
     // Record the Arc so `cuda_backend()` can hand capture/replay handles to
     // callers that own the step loop (benchmarks, examples) and need the
     // CudaBackend surface beyond the `Backend` trait. Each install replaces it.
-    *LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend.clone());
-    register_backend(Device::Cuda(ordinal), backend);
+    // Hold the same gate used by typed readers across both publications.
+    // Backend construction stays outside it; the registry remains the source
+    // of truth when callers replace entries directly through core.
+    // Declare retired owners before the guard so unwinding releases it first
+    // too. Arbitrary backend destructors may call cuda_backend or register.
+    let retired_selection;
+    let retired_registry;
+    let mut last = LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner());
+    retired_selection = last.replace(backend.clone());
+    #[cfg(test)]
+    install_tests::publication_pause();
+    retired_registry = ferro_core::dispatch::exchange_backend(Device::Cuda(ordinal), backend);
+    drop(last);
+    drop((retired_selection, retired_registry));
     Ok(())
 }
 
 /// The most recently installed CUDA backend, for callers (benchmarks,
 /// examples) that own the training loop and need capture/replay handles
 /// (`begin_step_capture`/`end_step_capture`) not exposed on the `Backend`
-/// trait. `None` before `install` succeeds.
+/// trait. `None` before `install` succeeds or if core's registry no longer
+/// contains that exact backend. Direct `register_backend` does not select a
+/// new last-installed handle. The returned Arc is a snapshot, not a lease
+/// preventing subsequent replacement; retain it to fence its own work.
 pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
-    LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    // A direct registry replacement can make this snapshot the last owner of
+    // an arbitrary backend. Release it after the gate, including on unwind.
+    let registered;
+    let last = LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner());
+    let backend = last.as_ref()?;
+    registered = ferro_core::dispatch::backend_for(backend.device).ok()?;
+    #[cfg(test)]
+    install_tests::snapshot_pause();
+    let erased: Arc<dyn Backend> = backend.clone();
+    let selected = Arc::ptr_eq(&registered, &erased).then(|| backend.clone());
+    drop(last);
+    drop(registered);
+    selected
 }
 
 /// Block the calling thread until all work submitted on the last-installed
@@ -1956,19 +1985,20 @@ pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
 /// device->host copy), the honest primitive for GPU benchmark timing: it
 /// measures kernel completion without charging a PCIe readback. Returns `Err`
 /// if no backend is installed or the sync fails; `Ok(())` is a no-op when
-/// there is nothing in flight.
+/// there is nothing in flight. Selection is a registry-validated snapshot:
+/// concurrent replacement or later submission is not covered. This does not
+/// fence other ordinals or allocations retained from an older backend. Use
+/// their owning backend/stream for those fences. This returns an error while
+/// core directly registers a different backend for the selected ordinal.
 pub fn device_synchronize() -> std::result::Result<(), String> {
-    let b = LAST_BACKEND
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .ok_or_else(|| "no CUDA backend installed; call install() first".to_string())?;
+    let b = cuda_backend().ok_or_else(||
+        "no current CUDA backend installed (missing or replaced in registry); call install() first".to_string())?;
     b.synchronize()
 }
 
-// Mutex, not OnceLock: `install` must replace this on every call so it always
-// points at the currently registered backend/stream. A stale entry would make
-// `device_synchronize` fence the wrong stream (Codex PR#16 P1).
+// Gates install publication and typed snapshot readers, not core operations.
+// Readers validate Arc identity under this gate; direct core replacement can
+// invalidate the selection; a handle already stale at lookup is rejected.
 static LAST_BACKEND: Mutex<Option<Arc<CudaBackend>>> = Mutex::new(None);
 
 /// Raw parts for zero-copy DLPack export of a `CudaBuf`: its base device
@@ -1987,6 +2017,9 @@ pub fn exported_view(buf: &dyn DeviceBuffer) -> std::result::Result<(usize, u32)
     let (ptr, _sync) = DevicePtr::device_ptr(&*b.data, stream);
     Ok((ptr as usize, ordinal))
 }
+
+#[cfg(test)]
+mod install_tests;
 
 #[cfg(test)]
 pub(crate) static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());

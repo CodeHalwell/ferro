@@ -714,7 +714,16 @@ static BACKENDS: LazyLock<RwLock<HashMap<Device, Arc<dyn Backend>>>> = LazyLock:
 
 /// Register (or replace) the backend for a device, process-wide.
 pub fn register_backend(device: Device, backend: Arc<dyn Backend>) {
-    BACKENDS.write().unwrap().insert(device, backend);
+    drop(exchange_backend(device, backend));
+}
+
+/// Replace a registry entry, returning its previous owner after unlocking.
+/// Callers holding other locks must retain the returned Arc until those locks
+/// are released: a backend destructor may re-enter the registry or caller.
+#[must_use = "release the displaced backend only after caller locks are released"]
+pub fn exchange_backend(device: Device, backend: Arc<dyn Backend>) -> Option<Arc<dyn Backend>> {
+    let mut backends = BACKENDS.write().unwrap();
+    backends.insert(device, backend)
 }
 
 /// Look up the backend serving `device`. Cpu is always registered.
