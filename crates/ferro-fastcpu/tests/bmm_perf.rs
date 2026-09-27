@@ -1,7 +1,7 @@
 //! Ignored timing test: bmm forward throughput naive vs. the swappable
 //! single-matmul kernel (bmm still loops one backend call per batch element
 //! via the Backend::matmul_batch trait default) vs. FastCpuBackend's
-//! matmul_batch override (one thread::scope for the whole batch). Not a
+//! matmul_batch override (conservative serial arithmetic). Not a
 //! correctness check (see ferro-core's op_bmm.rs for that); run with
 //! --release to get meaningful numbers.
 
@@ -42,17 +42,15 @@ fn bmm_perf_naive_vs_fastcpu() {
     let naive_result = a.bmm(&b).unwrap();
 
     // Only the swappable single-matmul kernel installed: bmm still calls it
-    // once per batch element via the Backend::matmul_batch trait default,
-    // so this measures the per-call spawn/join overhead the batched path
-    // below is meant to eliminate.
+    // once per batch element via the Backend::matmul_batch trait default.
+    // The installed callback uses conservative serial arithmetic.
     ferro_fastcpu::install();
     let per_call_dur = best_of(5, || {
         std::hint::black_box(a.bmm(&b).unwrap());
     });
     let per_call_result = a.bmm(&b).unwrap();
 
-    // FastCpuBackend registered: matmul_batch parallelizes the whole batch
-    // under one thread::scope instead of one scope per batch element.
+    // FastCpuBackend's override runs the conservative serial batch directly.
     ferro_fastcpu::install_backend();
     let batched_dur = best_of(5, || {
         std::hint::black_box(a.bmm(&b).unwrap());

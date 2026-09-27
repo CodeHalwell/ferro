@@ -55,10 +55,9 @@ impl ForwardOp {
 /// The graph node behind every autograd-recorded tensor: the op's inputs plus a
 /// vector-Jacobian-product closure returning one gradient per input, in order.
 /// Ops that need their own output for backward (exp, sigmoid, softmax) capture
-/// a *detached* snapshot in the closure to avoid a reference cycle - detaching
-/// allocates fresh storage, so those closures are immune by construction to
-/// the version check below (mutating the live output cannot poison a copy
-/// that does not share its storage).
+/// a *detached* snapshot in the closure to avoid a reference cycle. Host and
+/// materialized device views own fresh storage; whole device snapshots share
+/// storage and rely on the public in-place alias gate to prevent mutation.
 ///
 /// `saved_versions` snapshots each input's storage version (`Tensor::version`)
 /// at record time; `Tensor::backward` asserts they are unchanged immediately

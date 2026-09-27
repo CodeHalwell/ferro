@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ferro_core::{Device, Rng, Tensor as CoreTensor};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::IntoPyObjectExt;
 use pyo3::types::{PyDict, PyEllipsis, PyList, PySlice, PyTuple};
 
 fn map_err(e: ferro_core::Error) -> PyErr {
@@ -173,9 +174,9 @@ fn expect_operand(other: &Bound<'_, PyAny>) -> PyResult<CoreTensor> {
 }
 
 /// Recursively build nested Python lists from row-major data and a shape.
-fn to_nested<'py>(py: Python<'py>, data: &[f32], shape: &[usize]) -> Bound<'py, PyAny> {
+fn to_nested<'py, T: Copy + IntoPyObject<'py>>(py: Python<'py>, data: &[T], shape: &[usize]) -> Bound<'py, PyAny> {
     if shape.is_empty() {
-        return data[0].into_pyobject(py).unwrap().into_any();
+        return data[0].into_bound_py_any(py).unwrap();
     }
     let outer = shape[0];
     let inner_shape = &shape[1..];
@@ -798,7 +799,12 @@ impl PyTensor {
     }
 
     fn tolist<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
-        to_nested(py, &self.inner.to_vec(), self.inner.shape())
+        use ferro_core::DType;
+        match self.inner.dtype() {
+            DType::I64 => to_nested(py, &self.inner.to_vec_i64(), self.inner.shape()),
+            DType::F64 => to_nested(py, &self.inner.to_vec_f64(), self.inner.shape()),
+            DType::F32 | DType::F16 | DType::BF16 => to_nested(py, &self.inner.to_vec(), self.inner.shape()),
+        }
     }
 
     fn item(&self) -> PyResult<f32> {
@@ -906,7 +912,9 @@ fn load_safetensors<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
 /// Initialise and register the CUDA backend for device `index` (default 0).
 /// Must be called before moving tensors to `cuda`/`cuda:N`. Returns `True` on
 /// success; raises with the driver/runtime error string when no usable CUDA
-/// device is present (never panics). Idempotent - a second call is a no-op.
+/// device is present (never panics). Each call replaces the registered backend.
+/// Older allocations remain readable via tolist()/cpu() on their owning stream;
+/// compute, mutation and device-to-device copies still require the owning backend.
 #[pyfunction]
 #[pyo3(signature = (index=0))]
 fn cuda_init(index: u32) -> PyResult<bool> {

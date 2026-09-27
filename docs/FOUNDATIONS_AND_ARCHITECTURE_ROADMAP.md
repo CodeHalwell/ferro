@@ -325,6 +325,28 @@ These domains remain visible, but are not silently included in the first bundle:
 | Interop/deployment | DLPack ownership/streams/producer behavior, non-CUDA backends, export, quantization, edge/wasm and serving are independent audits. Existing interop support is not universal zero-copy support. |
 | Observability and safety | Anomaly detection/hooks, source op diagnostics, memory/lifetime stress, reproducibility manifests and fuzzing for hostile shapes/files; retain zero-dependency core and explicit unsupported errors. |
 
+## Rust-authored CUDA kernels: support both authoring tracks
+
+Status: planned, not implemented or verified. Support both **cutile-rs** (tile-based kernels) and **cuda-oxide** (explicit thread-level SIMT kernels) as optional kernel-authoring paths for ferro-cuda. These are complementary routes, not a choice to permanently support only one. Keep existing cudarc orchestration and CUDA/vendor kernels as the baseline and fallback; replacing host orchestration is not an implied requirement.
+
+- **cutile-rs:** investigate regular tensor operations and fusion expressed through tiles, with compiler-managed execution mapping. An initial experiment may start here without removing the cuda-oxide commitment.
+- **cuda-oxide:** investigate operations requiring explicit thread, shared-memory and synchronisation control, with a pinned Rust compiler backend/toolchain.
+- Keep compiler-specific dependencies and build machinery outside zero-dependency ferro-core and ferro-fastcpu. Optional integrations must not make ordinary builds depend on either experimental compiler.
+- Preserve one tensor/autograd API and the existing record_fn mechanism. Kernel authoring must not create parallel storage, mutation, gradient or device semantics.
+
+### Acceptance gates for each track independently
+
+1. Pin upstream revision, compiler, CUDA/driver requirements and supported GPU targets. Establish Linux and native-Windows support separately; a Linux result does not certify the Windows/RTX 3090 environment. Reject unsupported configurations clearly, with an explicit supported fallback where appropriate.
+2. Prove interoperability with existing allocations, contexts and streams: ownership/lifetimes, alias/version protections, synchronisation, error propagation and no hidden host copies. Safe kernel syntax alone is not proof of integration safety.
+3. Exercise representative forward and backward kernels through ferro's normal dispatch and Python surface. Compare to independent numerical oracles with predeclared dtype, accumulation/precision and layout contracts; cover empty, strided, invalid and boundary inputs. Do not loosen precision silently to obtain a speedup.
+4. Test CUDA Graph capture/replay, changed inputs/weights and executable/cache lifetime. Record unsupported capture paths explicitly rather than implying graph compatibility from eager success.
+5. Separate compilation/JIT, cache-hit, first-call and warmed execution costs. Measure same-session correctness-checked A/B against existing CUDA and applicable vendor implementations; serial timing remains the default on the shared GPU. Record transfers, allocations and synchronisations as well as end-to-end time.
+6. Enable production dispatch only for independently reviewed, supported and measured operation/device subsets; preserve the baseline for unsupported or unprofitable cases. Track implementation, numerical correctness, residency, capture, performance and platform support separately for both tracks.
+
+This is a CUDA kernel-authoring direction, not AMD/Apple portability, a promised RTX 3090 speedup, or resolution of existing native failures. Upstream maturity and toolchain compatibility remain investigation gates; the foundations and native-correctness priorities above remain unchanged.
+
+Source: [NVIDIA: Introducing CUDA Rust — Two Tracks for Writing GPU Kernels](https://developer.nvidia.com/blog/introducing-cuda-rust-two-tracks-for-writing-gpu-kernels/). Recheck upstream requirements at the pinned revision rather than treating announcement-era versions as permanent contracts.
+
 ## Attention evidence: preserve, do not extrapolate
 
 `verification/attention-wave/baseline/REPORT.md` records a rebuilt measurement at source `43dc8ead5e4f2460efc7ba5bca14c2e06c3a5603` with native binding SHA256 `b157d8c18467c3a3c8ce2e936b3ab6299c3f30c9c9fd08e0eb3f6428bc41a788`. It is bounded verified evidence from the archived run, not a new run by this document's author.

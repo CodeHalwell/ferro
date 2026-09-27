@@ -35,10 +35,21 @@ fn conservative_specials_and_shape_validation() {
 
 #[test]
 fn install_only_default_backend_bmm_cannot_reenter_packed_kernel() {
+    let _registry = crate::registry_tests::lock();
     let _reset = Reset;
     install();
-    PACKED_FAULT.set(1);
-    assert_eq!(ferro_core::CpuBackend.matmul_batch(&vec![1.0;128], &vec![1.0;128], 1, 1, 128, 1), vec![128.0]);
+    for fault in [1, 2, 3, 4] {
+        PACKED_FAULT.set(fault);
+        let a = vec![1.0; 128];
+        let b = vec![1.0; 128*33];
+        let bad = matmul_batch_packed(&a, &b, 1, 1, 128, 33);
+        assert!(bad.iter().all(|v| v.to_bits() != 128.0f32.to_bits()), "inactive fault {fault}");
+        for got in [matmul_batch(&a,&b,1,1,128,33),
+            elementwise::FastCpuBackend.matmul_batch(&a,&b,1,1,128,33),
+            ferro_core::CpuBackend.matmul_batch(&a,&b,1,1,128,33)] {
+            assert_eq!(got, vec![128.0;33], "fault {fault}");
+        }
+    }
 }
 
 #[test]

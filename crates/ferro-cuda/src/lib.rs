@@ -16,6 +16,7 @@
 
 mod kernels;
 mod alloc;
+mod segment;
 mod static_graph;
 pub use static_graph::{StaticPointwiseGraph, StaticPointwiseRun};
 
@@ -32,8 +33,10 @@ use cudarc::driver::{
 };
 use cudarc::nvrtc::compile_ptx;
 use ferro_core::dispatch::{AdamWStep, DeviceBuffer, ReduceKind};
+#[cfg(test)]
+use ferro_core::register_backend;
 use ferro_core::{
-    register_backend, Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
+    Backend, BinaryKind, ChainStepRef, Device, Error, Result, UnaryKind,
 };
 
 /// Cheap detection: is the CUDA driver library (libcuda) loadable? This is a
@@ -302,6 +305,7 @@ pub struct CudaBackend {
     funcs: Mutex<HashMap<String, CudaFunction>>,
     pointwise_launches: [AtomicUsize; 3],
     layout_counters: [AtomicUsize; 3],
+    segment_counters: [AtomicUsize; 6],
     layer_norm_counters: [AtomicUsize; 3],
     // Ferro-owned caching allocator for f32 device buffers. Every CudaBuf
     // carries a clone and returns its slice here on drop.
@@ -366,6 +370,7 @@ impl CudaBackend {
             funcs: Mutex::new(HashMap::new()),
             pointwise_launches: std::array::from_fn(|_| AtomicUsize::new(0)),
             layout_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
+            segment_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             layer_norm_counters: std::array::from_fn(|_| AtomicUsize::new(0)),
             alloc,
         })
@@ -382,9 +387,8 @@ impl CudaBackend {
         Ok(backend)
     }
 
-    /// Downcast a core-provided buffer back to this backend's `CudaBuf`,
-    /// rejecting buffers from other backends or other CUDA devices.
-    fn resident<'a>(&self, op: &'static str, buf: &'a dyn DeviceBuffer) -> Result<&'a CudaBuf> {
+    /// Host reads accept older allocations on this ordinal, not foreign types/devices.
+    fn host_source<'a>(&self, op: &'static str, buf: &'a dyn DeviceBuffer) -> Result<&'a CudaBuf> {
         let buf = buf
             .as_any()
             .downcast_ref::<CudaBuf>()
@@ -401,6 +405,12 @@ impl CudaBackend {
                 ),
             });
         }
+        Ok(buf)
+    }
+
+    /// Compute, mutation and D2D still require this exact backend stream.
+    fn resident<'a>(&self, op: &'static str, buf: &'a dyn DeviceBuffer) -> Result<&'a CudaBuf> {
+        let buf = self.host_source(op, buf)?;
         if !Arc::ptr_eq(buf.data.stream(), &self.stream) {
             return Err(Error::Unsupported {
                 op, msg: "buffer belongs to a different CUDA backend stream/context".into(),
@@ -465,6 +475,7 @@ impl CudaBackend {
     /// Successful LayerNorm enqueues, f32 host uploads, f32 host downloads.
     /// Capture counts enqueues, not later CUDA graph executions. Copies via
     /// external DLPack or in-place copy_into are outside these helper counters.
+    /// Host downloads count on the receiver, including reads of older allocations.
     pub fn layer_norm_counts(&self) -> (usize, usize, usize) {
         let c = &self.layer_norm_counters;
         (c[0].load(Ordering::Relaxed), c[1].load(Ordering::Relaxed), c[2].load(Ordering::Relaxed))
@@ -606,7 +617,7 @@ impl CudaBackend {
     }
 
     fn dtoh(&self, op: &'static str, data: &CudaSlice<f32>) -> Result<Vec<f32>> {
-        let out = self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))?;
+        let out = Self::download_owned(op, data)?;
         self.layer_norm_counters[2].fetch_add(1, Ordering::Relaxed);
         Ok(out)
     }
@@ -692,7 +703,21 @@ impl CudaBackend {
     }
 
     fn dtoh_i64(&self, op: &'static str, data: &CudaSlice<i64>) -> Result<Vec<i64>> {
-        self.stream.clone_dtoh(data).map_err(|e| cuda_err(op, e))
+        Self::download_owned(op, data)
+    }
+
+    fn download_owned<T: cudarc::driver::DeviceRepr>(op: &'static str, data: &CudaSlice<T>) -> Result<Vec<T>> {
+        let stream = data.stream();
+        let ctx = stream.context();
+        // Inspect tracked dependency acquisition before cudarc's host guard can
+        // consume a recorded error while synchronizing on drop.
+        let (_, guard) = data.device_ptr(stream);
+        let copied = ctx.check_err().and_then(|()| stream.clone_dtoh(data));
+        drop(guard);
+        // clone_dtoh's host/read guards and our read guard may record errors.
+        // Drain even when acquisition or the copy already failed.
+        let drained = ctx.check_err();
+        copied.and_then(|out| drained.map(|()| out)).map_err(|e| cuda_err(op, e))
     }
 }
 
@@ -1164,7 +1189,7 @@ impl Backend for CudaBackend {
     }
 
     fn copy_to_host(&self, buf: &dyn DeviceBuffer) -> Result<Vec<f32>> {
-        self.dtoh("copy_to_host", &self.resident("copy_to_host", buf)?.data)
+        self.dtoh("copy_to_host", &self.host_source("copy_to_host", buf)?.data)
     }
 
     fn unary_dev(&self, kind: UnaryKind, x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
@@ -1412,6 +1437,16 @@ impl Backend for CudaBackend {
         Ok(self.wrap(out))
     }
 
+    fn prepare_segments(&self, ids: &[usize], groups: usize) -> Result<Arc<dyn ferro_core::dispatch::SegmentPlan>> {
+        self.prepare_segment_plan(ids, groups)
+    }
+
+    fn segment_dev(&self, plan: &dyn ferro_core::dispatch::SegmentPlan, op: ferro_core::dispatch::SegmentOp,
+        x: &dyn DeviceBuffer, saved: Option<&dyn DeviceBuffer>, width: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        self.run_segment(plan, op, x, saved, width)
+    }
+
     fn softmax_dev(
         &self,
         x: &dyn DeviceBuffer,
@@ -1655,6 +1690,26 @@ impl Backend for CudaBackend {
         self.scalar_increment_dev_inner(t, beta1, beta2)
     }
 
+    fn materialize_support_for(&self, x: &dyn DeviceBuffer, shape: &[usize], strides: &[usize], offset: usize) -> Result<ferro_core::dispatch::MaterializeSupport> {
+        use ferro_core::dispatch::MaterializeSupport;
+        if shape.len() <= 16 { return Ok(MaterializeSupport::Attempt); }
+        const OP: &str = "materialize_dev";
+        let x = self.resident(OP, x)?;
+        self.stream.context().check_err().map_err(|e| cuda_err(OP, e))?;
+        let invalid = || Error::InvalidShape { op: OP, msg: "invalid layout bounds".into() };
+        if shape.len() != strides.len() { return Err(invalid()); }
+        if shape.contains(&0) {
+            if offset > x.data.len() { return Err(invalid()); }
+        } else {
+            shape.iter().try_fold(1usize, |n, &d| n.checked_mul(d)).ok_or_else(invalid)?;
+            let max = shape.iter().zip(strides).try_fold(offset, |at, (&d, &s)| {
+                at.checked_add((d - 1).checked_mul(s)?)
+            }).ok_or_else(invalid)?;
+            if max >= x.data.len() { return Err(invalid()); }
+        }
+        Ok(MaterializeSupport::UnsupportedLayout)
+    }
+
     fn materialize_dev(&self, x: &dyn DeviceBuffer, shape: &[usize], strides: &[usize], offset: usize) -> Result<Box<dyn DeviceBuffer>> {
         const OP: &str = "materialize_dev";
         let x = self.resident(OP, x)?;
@@ -1884,18 +1939,45 @@ pub fn install(ordinal: u32) -> std::result::Result<(), String> {
     let backend = Arc::new(CudaBackend::new(ordinal)?);
     // Record the Arc so `cuda_backend()` can hand capture/replay handles to
     // callers that own the step loop (benchmarks, examples) and need the
-    // CudaBackend surface beyond the `Backend` trait. Ignore a second install.
-    *LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend.clone());
-    register_backend(Device::Cuda(ordinal), backend);
+    // CudaBackend surface beyond the `Backend` trait. Each install replaces it.
+    // Hold the same gate used by typed readers across both publications.
+    // Backend construction stays outside it; the registry remains the source
+    // of truth when callers replace entries directly through core.
+    // Declare retired owners before the guard so unwinding releases it first
+    // too. Arbitrary backend destructors may call cuda_backend or register.
+    let retired_selection;
+    let retired_registry;
+    let mut last = LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner());
+    retired_selection = last.replace(backend.clone());
+    #[cfg(test)]
+    install_tests::publication_pause();
+    retired_registry = ferro_core::dispatch::exchange_backend(Device::Cuda(ordinal), backend);
+    drop(last);
+    drop((retired_selection, retired_registry));
     Ok(())
 }
 
 /// The most recently installed CUDA backend, for callers (benchmarks,
 /// examples) that own the training loop and need capture/replay handles
 /// (`begin_step_capture`/`end_step_capture`) not exposed on the `Backend`
-/// trait. `None` before `install` succeeds.
+/// trait. `None` before `install` succeeds or if core's registry no longer
+/// contains that exact backend. Direct `register_backend` does not select a
+/// new last-installed handle. The returned Arc is a snapshot, not a lease
+/// preventing subsequent replacement; retain it to fence its own work.
 pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
-    LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    // A direct registry replacement can make this snapshot the last owner of
+    // an arbitrary backend. Release it after the gate, including on unwind.
+    let registered;
+    let last = LAST_BACKEND.lock().unwrap_or_else(|e| e.into_inner());
+    let backend = last.as_ref()?;
+    registered = ferro_core::dispatch::backend_for(backend.device).ok()?;
+    #[cfg(test)]
+    install_tests::snapshot_pause();
+    let erased: Arc<dyn Backend> = backend.clone();
+    let selected = Arc::ptr_eq(&registered, &erased).then(|| backend.clone());
+    drop(last);
+    drop(registered);
+    selected
 }
 
 /// Block the calling thread until all work submitted on the last-installed
@@ -1903,19 +1985,20 @@ pub fn cuda_backend() -> Option<Arc<CudaBackend>> {
 /// device->host copy), the honest primitive for GPU benchmark timing: it
 /// measures kernel completion without charging a PCIe readback. Returns `Err`
 /// if no backend is installed or the sync fails; `Ok(())` is a no-op when
-/// there is nothing in flight.
+/// there is nothing in flight. Selection is a registry-validated snapshot:
+/// concurrent replacement or later submission is not covered. This does not
+/// fence other ordinals or allocations retained from an older backend. Use
+/// their owning backend/stream for those fences. This returns an error while
+/// core directly registers a different backend for the selected ordinal.
 pub fn device_synchronize() -> std::result::Result<(), String> {
-    let b = LAST_BACKEND
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .ok_or_else(|| "no CUDA backend installed; call install() first".to_string())?;
+    let b = cuda_backend().ok_or_else(||
+        "no current CUDA backend installed (missing or replaced in registry); call install() first".to_string())?;
     b.synchronize()
 }
 
-// Mutex, not OnceLock: `install` must replace this on every call so it always
-// points at the currently registered backend/stream. A stale entry would make
-// `device_synchronize` fence the wrong stream (Codex PR#16 P1).
+// Gates install publication and typed snapshot readers, not core operations.
+// Readers validate Arc identity under this gate; direct core replacement can
+// invalidate the selection; a handle already stale at lookup is rejected.
 static LAST_BACKEND: Mutex<Option<Arc<CudaBackend>>> = Mutex::new(None);
 
 /// Raw parts for zero-copy DLPack export of a `CudaBuf`: its base device
@@ -1936,11 +2019,54 @@ pub fn exported_view(buf: &dyn DeviceBuffer) -> std::result::Result<(usize, u32)
 }
 
 #[cfg(test)]
+mod install_tests;
+
+#[cfg(test)]
 pub(crate) static REGISTRY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 pub(crate) fn registry_test_guard() -> std::sync::MutexGuard<'static, ()> {
     REGISTRY_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod host_read_tests {
+    use super::*;
+
+    #[test]
+    fn typed_downloads_validate_ordinal_and_drain_owner_errors() {
+        let old = match CudaBackend::new(0) {
+            Ok(b) => b,
+            Err(e) => {
+                assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+                return;
+            }
+        };
+        let mut new = CudaBackend::new(0).unwrap();
+        let x = old.alloc_from_host(&[1.0]).unwrap();
+        let ix = old.alloc_i64_from_host(&[(1_i64 << 54) + 1]).unwrap();
+        // Change only the receiver's ordinal tag to exercise validation on a
+        // single-GPU machine; no operations are submitted using that tag.
+        new.device = Device::Cuda(1);
+        for e in [new.copy_to_host(&*x).unwrap_err(), new.copy_i64_to_host(&*ix).unwrap_err()] {
+            assert!(e.to_string().contains("buffer lives on"));
+        }
+        new.device = Device::Cuda(0);
+        let before = new.layer_norm_counts();
+        for integer in [false, true] {
+            // Recorded-error injection, not a simulated native CUDA fault.
+            old.ctx.record_err::<()>(Err(cudarc::driver::DriverError(
+                cudarc::driver::sys::cudaError_enum::CUDA_ERROR_INVALID_VALUE)));
+            let result = if integer { new.copy_i64_to_host(&*ix).map(|_| ()) }
+                else { new.copy_to_host(&*x).map(|_| ()) };
+            assert!(result.unwrap_err().to_string().contains("CUDA error"));
+            assert!(old.ctx.check_err().is_ok(), "owner error was not drained");
+            assert!(new.ctx.check_err().is_ok());
+        }
+        assert_eq!(new.layer_norm_counts(), before, "failed reads must not count");
+        assert_eq!(new.copy_to_host(&*x).unwrap(), [1.0]);
+        assert_eq!(new.copy_i64_to_host(&*ix).unwrap(), [(1_i64 << 54) + 1]);
+    }
 }
 
 #[cfg(test)]

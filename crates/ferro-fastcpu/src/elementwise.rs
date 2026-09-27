@@ -228,9 +228,7 @@ fn apply2(a: &[f32], b: &[f32], out: &mut [f32], f: impl Fn(f32, f32) -> f32) {
 mod tests {
     use super::*;
     mod diagnostics { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/bmm_diagnostics.rs")); }
-    use std::sync::{Arc, Mutex};
-
-    use ferro_core::{CpuBackend, Device, Tensor};
+    use ferro_core::{CpuBackend, Tensor};
 
     fn lcg_fill(seed: u64, len: usize) -> Vec<f32> {
         let mut state = seed.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
@@ -336,20 +334,15 @@ mod tests {
         }
     }
 
-    // Registration is process-global state shared with every other test in
-    // this binary; serialize on a poison-tolerant lock and restore
-    // CpuBackend afterward so unrelated tests keep seeing the default.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
     #[test]
     fn install_backend_routes_tensor_ops() {
-        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _registry = crate::registry_tests::lock();
         crate::install_backend();
         let x = Tensor::from_vec(vec![-2.0, -0.5, 0.0, 1.5, 3.0], &[5]).unwrap();
         let y = Tensor::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0], &[5]).unwrap();
         assert_eq!(x.relu().to_vec(), vec![0.0, 0.0, 0.0, 1.5, 3.0]);
         assert_eq!(x.add(&y).unwrap().to_vec(), vec![-1.0, 1.5, 3.0, 5.5, 8.0]);
-        ferro_core::register_backend(Device::Cpu, Arc::new(CpuBackend));
+
     }
 
     // (m,k,n) mixes covering {1,5,17,64,128}, including m=1/n=1 degenerates
@@ -377,14 +370,11 @@ mod tests {
         (128, 5, 17),
     ];
 
-    // CpuBackend never overrides matmul_batch, so it always runs the trait's
-    // default (loop over batches calling `matmul`) - installing fastcpu's
-    // matmul as the swappable CPU kernel first makes that default arithmetic
-    // identical to FastCpuBackend's own single-thread::scope batched kernel,
-    // per the fixed pp-block k-accumulation order both share (see lib.rs's
-    // matmul_batch doc comment), so a bitwise comparison is meaningful.
+    // The installed CpuBackend callback and FastCpuBackend BMM both use
+    // conservative arithmetic; the default wrapper calls it once per slab.
     #[test]
     fn matmul_batch_matches_default_bitwise() {
+        let _registry = crate::registry_tests::lock();
         crate::install();
         for batch in [1usize, 3, 16] {
             for (i, &(m, k, n)) in MATMUL_BATCH_DIMS.iter().enumerate() {
@@ -403,8 +393,8 @@ mod tests {
 
     #[test]
     fn matmul_batch_is_deterministic() {
-        // Above BATCH_PAR_THRESHOLD, so this exercises the thread::scope
-        // (batch x row-chunk) split; two runs must still agree bitwise.
+        // Conservative BMM is serial even at this formerly threaded shape.
+        // Two runs must still agree bitwise.
         let (batch, m, k, n) = (16usize, 128usize, 128usize, 128usize);
         let a = lcg_fill(11, batch * m * k);
         let b = lcg_fill(13, batch * k * n);

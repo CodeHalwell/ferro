@@ -53,8 +53,13 @@ def main():
     check("python->ferro names", sorted(got) == ["ids", "prec", "w"])
     check("python->ferro f32 shape", got["w"].shape == SHAPE)
     check("python->ferro f32 values", got["w"].tolist() == torch.tensor(F32).reshape(SHAPE).tolist())
-    # tolist() casts to f32, so compare the f64/i64 payloads through a
-    # byte-exact re-save instead of the lossy cast.
+    ids = got["ids"].tolist()
+    prec = got["prec"].tolist()
+    check("python->ferro i64 tolist values", ids == I64)
+    check("python->ferro i64 tolist types", all(type(value) is int for value in ids))
+    check("python->ferro f64 tolist values", prec == [1e-300, -2.5, 3.75])
+    check("python->ferro f64 tolist types", all(type(value) is float for value in prec))
+    # Keep the byte-preserving re-save check as well as typed host reads.
     resaved = os.path.join(tmp, "resaved.safetensors")
     ferro.save_safetensors(resaved, dict(got.items()))
     back = load_file(resaved)

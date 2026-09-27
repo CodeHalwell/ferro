@@ -1,5 +1,31 @@
 use super::*;
 
+/// Immutable integer topology for reusable first-order sum/softmax.
+/// Device backends retain their original topology allocations and stream owner.
+#[pyclass(name = "PreparedSegments", module = "ferro.graph")]
+struct PyPreparedSegments { inner: ferro_core::segment::PreparedSegments }
+
+#[pymethods]
+impl PyPreparedSegments {
+    #[new]
+    #[pyo3(signature = (ids, num_segments, device="cpu"))]
+    fn new(ids: Vec<i64>, num_segments: usize, device: &str) -> PyResult<Self> {
+        let ids = ids.into_iter().map(|id| usize::try_from(id)
+            .map_err(|_| PyValueError::new_err("segment ids must be nonnegative i64 integers")))
+            .collect::<PyResult<Vec<_>>>()?;
+        ferro_core::segment::PreparedSegments::new(&ids, num_segments, parse_device(device)?)
+            .map(|inner| Self { inner }).map_err(map_err)
+    }
+
+    fn sum(&self, x: &PyTensor) -> PyResult<PyTensor> {
+        self.inner.sum(&x.inner).map(PyTensor::wrap).map_err(map_err)
+    }
+
+    fn softmax(&self, x: &PyTensor) -> PyResult<PyTensor> {
+        self.inner.softmax(&x.inner).map(PyTensor::wrap).map_err(map_err)
+    }
+}
+
 #[pyfunction]
 fn segment_sum(x: &PyTensor, ids: Vec<usize>, num_segments: usize) -> PyResult<PyTensor> {
     ferro_core::segment::sum(&x.inner, &ids, num_segments).map(PyTensor::wrap).map_err(map_err)
@@ -68,6 +94,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(segment_mean, m)?)?;
     m.add_function(wrap_pyfunction!(segment_max, m)?)?;
     m.add_function(wrap_pyfunction!(segment_softmax, m)?)?;
+    m.add_class::<PyPreparedSegments>()?;
     m.add_class::<PyCOO>()?;
     m.add_class::<PyCSR>()?;
     Ok(())

@@ -1,0 +1,147 @@
+{
+  "base": "c576e588a8609007c88d21304ce7659a00db0553",
+  "files": {
+    "bench/attention_parity.py": {
+      "raw_sha256": "ec283505f437022835ec7e17a7eb64eaa1503debcedb2c167b13cb6b7b024355",
+      "git_blob": "2bd7d2c51650a4248b4abcf8de315e4220092baa"
+    },
+    "crates/ferro-core/src/autograd.rs": {
+      "raw_sha256": "397698bf45cccd17a6344b6acb1714c6c0318d74373c760ac5cfdeac9741006a",
+      "git_blob": "0c47f9ace732e937e24ae59b1830f0fe8c37d8bf"
+    },
+    "crates/ferro-core/src/dispatch.rs": {
+      "raw_sha256": "72d74f772974ce947e86fdccc637119c6b3623baf7d51fa78c7ebf5a2b5b2508",
+      "git_blob": "353d76167ce49e0b5e23512b1b21b36c4c1eeee0"
+    },
+    "crates/ferro-core/src/error.rs": {
+      "raw_sha256": "118b8892a2bd652589d4533dd201be0345f0018aeb261f309cd236708fed30e3",
+      "git_blob": "77ece514dba4b039ec3b0d3bcd08f4f5efaa7c0e"
+    },
+    "crates/ferro-core/src/segment.rs": {
+      "raw_sha256": "1c218f66a8a92c6167abb982766f425ab072203bb8834c90d1787867881fc42e",
+      "git_blob": "18861aee70a5b62ce4039a6718d92824bcaa0239"
+    },
+    "crates/ferro-core/src/tensor.rs": {
+      "raw_sha256": "c08ebd38fad127520b2468697ff9574a362f5b22a20618cee2f937d1b0836f70",
+      "git_blob": "7c90859919a00d3e59316f71be88564572b9a7fd"
+    },
+    "crates/ferro-core/tests/segment_dispatch.rs": {
+      "raw_sha256": "789ddfaa276a83718ec8a70ae825014d5e6a8d829344c254df9ca1eb17677ec8",
+      "git_blob": "3a77a91c61b61c585e864a089b352f90858e37e7"
+    },
+    "crates/ferro-core/tests/strided_seeds.rs": {
+      "raw_sha256": "aaae01ae8199de8ef20bab01f622340217bf48f77d7959b6051d8b56f57524f9",
+      "git_blob": "5a7e122f6085ff2a057a447a10049bfe89d6e8cd"
+    },
+    "crates/ferro-cuda/examples/static_gemm_probe.rs": {
+      "raw_sha256": "713f36782c102e8c92af36f8f4cd910fa943b33fdba45656eb6f4268438e8017",
+      "git_blob": "cef0af5ac8daf8c0882ef565a525c02097f48c39"
+    },
+    "crates/ferro-cuda/src/lib.rs": {
+      "raw_sha256": "e28f07f58568e16a76a44df307f7f3fa38ce7bab7979601d4dc8121d8fcec6da",
+      "git_blob": "514b1a4817d962dae10a41fcb1feb189a7d7f159"
+    },
+    "crates/ferro-cuda/src/segment.cu": {
+      "raw_sha256": "d383ca5569eaa588dd5a94c06088ff396191cc1ab409569cbbf93b43ac612c07",
+      "git_blob": "b53518c672d04362401add565deffa6d94164f07"
+    },
+    "crates/ferro-cuda/src/segment.rs": {
+      "raw_sha256": "18efed447a8ffbc631305c0be649e1304ac9d802d5b2ddef6dbad0b7e8d312ed",
+      "git_blob": "caae56c5686b77bbbd0a4480c89b7b57f6511197"
+    },
+    "crates/ferro-cuda/tests/registry_copy.rs": {
+      "raw_sha256": "585355b3c9177f4ae61fafcf9742cb83fdbb7e785ca1726ec6edd287d481a834",
+      "git_blob": "d8323f64f54f6dc74b7181ae0e3f2839d52cd6a9"
+    },
+    "crates/ferro-cuda/tests/segments.rs": {
+      "raw_sha256": "0c4b054c212a0490a1f5347a769f6a0a130a1735a3e124d07ebec6a85735ed20",
+      "git_blob": "25bd5afe390b749f4969bd7c65dcb03ffa911272"
+    },
+    "crates/ferro-cuda/tests/strided_seed_residency.rs": {
+      "raw_sha256": "6157558fb5de433779d002474a8190967a0962ea8ac1c40230940660eb54e5fc",
+      "git_blob": "fe6a4b7fab444e24a6dedbc1c4ece28b97abe513"
+    },
+    "crates/ferro-fastcpu/examples/safe_bmm_probe.rs": {
+      "raw_sha256": "0d06789c71e32d82d81471790fc8359c476218a4015bda6fff7ed754d33e22d3",
+      "git_blob": "81fb5057e7594170c2600ccf8433d656a0e21e7b"
+    },
+    "crates/ferro-fastcpu/src/containment_tests.rs": {
+      "raw_sha256": "e857c208242f5ebaa48d0eb7f2c54c69c689b40e64b27966c622a30fcb296db0",
+      "git_blob": "17e13f8fcb45ab159dbf5384f65570f953b6d9c8"
+    },
+    "crates/ferro-fastcpu/src/lib.rs": {
+      "raw_sha256": "d62a2a7fe8c9776e1d61eeeffa455f9ed2d366ba736977044b83b444b98743c9",
+      "git_blob": "834215c03f4e1a76edab7ef8b8d6d76c713a363d"
+    },
+    "crates/ferro-fastcpu/src/safe_bmm.rs": {
+      "raw_sha256": "cb67261b39a92a7ad05358ac5c5f5e82fcd5bd84c0710594c0eafec957189088",
+      "git_blob": "15743b15face387e816810552891f8a64dd37ff0"
+    },
+    "crates/ferro-fastcpu/tests/bmm_containment.rs": {
+      "raw_sha256": "df081648f5ca8e6f43100f66ed86b0ce14173fe7bbe0ede059b356af450632a1",
+      "git_blob": "6df262bf94460c357c87462bd346140420837fb5"
+    },
+    "crates/ferro-py/python/ferro/graph.py": {
+      "raw_sha256": "1c65bb3071500329d459bd7076eb358a10f7ba08447441b27269a651725ab450",
+      "git_blob": "3e29fc6f4bd4415b5058271b12f8c10ff5fb6098"
+    },
+    "crates/ferro-py/src/architecture.rs": {
+      "raw_sha256": "3a023ef8c02b5838b27967d0e220fc46a1bad8e118b8dbbc92b380552a3cfb8d",
+      "git_blob": "5b5ffc1b7ed55b0c1adb04951dd64f0d52cb6e06"
+    },
+    "crates/ferro-py/src/lib.rs": {
+      "raw_sha256": "88927f18489ef47fb346a1623179ed3d39321916956c9b9e74ffe4de5ec29e34",
+      "git_blob": "cf9a0d0e2830ab9811ff38fca155817f3fc3b1c0"
+    },
+    "crates/ferro-py/tests/test_cuda_registry_copy.py": {
+      "raw_sha256": "18408cdceb70075e8008d1eb1e535ea0f66bf7af37ab9bdcfabe916a25e3486e",
+      "git_blob": "d9ff4ac9e30b114c1249296d47bb643b91120b09"
+    },
+    "crates/ferro-py/tests/test_prepared_segments.py": {
+      "raw_sha256": "bb084854b9db895c875baf6b4cd60da0b6c4198a39eb2c06c6f8ea8d8c98ad4a",
+      "git_blob": "c37dbe2cc7ffebbdae5c3896fad67118207547b0"
+    },
+    "crates/ferro-py/tests/test_tolist_typed.py": {
+      "raw_sha256": "38e9093451783ad1f6cfc5e12796b23236db7c8a8dedacb285f29e43878de149",
+      "git_blob": "2fab90252d35a72ad52aa8926c48a2f4ebc6673e"
+    },
+    "crates/ferro-py/tests/test_training_restart_gates.py": {
+      "raw_sha256": "c045dff32f27197e5c06ec770f9d6f9a763963d3644b38c2d3bde51494e72fa6",
+      "git_blob": "36a07743fa4258415834d7fc215c49ee3a56fa02"
+    },
+    "docs/CUDA_GRAPH_NEXT.md": {
+      "raw_sha256": "86b2c3a2bbc1d4f095c74c9f1f0c60cd405263c767c073013ece794f7b0eb45b",
+      "git_blob": "821acd6190b2a5bbee4f71f719af94bedf8403f1"
+    },
+    "docs/CURRENT_STATUS.md": {
+      "raw_sha256": "032d9300923645b56918f9884a8bdb2a2b1bfb6e8afe9cc646da476e8af81ad2",
+      "git_blob": "1513344e8121e1c1311ddb40168300e22bc0f2dc"
+    },
+    "docs/FOUNDATIONS_AND_ARCHITECTURE_ROADMAP.md": {
+      "raw_sha256": "73bbfe8638b81f627e31f8a6a77ad294c1d7e7901736bfc5d8ad0bb8fc2e4d1d",
+      "git_blob": "3342c3cbf0bcab22e286384b3b772923d4c668af"
+    },
+    "docs/STABILISATION_PUBLICATION.md": {
+      "raw_sha256": "3d82358fb7d7258b563e31003a59b10d686a872118fe61f8fb3dad94d65872c8",
+      "git_blob": "bd666919209196687ca12ddc3c16c44a0268d412"
+    },
+    "docs/STATIC_GRAPH_SAFETY_AUDIT.md": {
+      "raw_sha256": "1e7894b2b10683fa9a4e51bf6e42fb1f51d17626d774e25f69554d32a948f61e",
+      "git_blob": "7babf32f66f63b96453af55c4c7b6b1fcca5942c"
+    },
+    "examples/training_restart.py": {
+      "raw_sha256": "617e3bb88f4b2c4747ce988b1da141cc33ef319236d13d6b132cb55d676f0e15",
+      "git_blob": "e81661aa5f1871924b828cec1b6051ffa77b32e4"
+    },
+    "verification/reconciled-publication/requirements.txt": {
+      "raw_sha256": "26b4ccf5339bf6a8cdadffb0d0a832c404da80cfc2ad5bb1e7f50f244e9f0fa8",
+      "git_blob": "192e99bf010f57134de96351c69c804a74a1e753"
+    },
+    "verification/reconciled-publication/run.py": {
+      "raw_sha256": "71cbc6ab75b38e530ec45697ba37f83eda708f62cc52b6b9a1e51ed712f32cde",
+      "git_blob": "aad6e6d620348a0bdeabe5e4198504c43a08b51f"
+    },
+    "docs/STABILISATION_PUBLICATION_MANIFEST.json": null
+  },
+  "note": "Null self identity is deliberate. Raw hashes differ from Git-clean blobs on CRLF checkouts; local execution source freeze remains separate."
+}

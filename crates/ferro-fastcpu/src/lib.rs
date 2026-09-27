@@ -21,8 +21,11 @@
 use std::thread;
 
 pub mod elementwise;
+mod safe_bmm;
 #[cfg(test)]
 mod containment_tests;
+#[cfg(test)]
+mod registry_tests;
 
 /// Micro-kernel tile: MR x NR accumulators = 12 ymm registers under AVX2,
 /// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
@@ -106,11 +109,11 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
     out
 }
 
-/// Conservative BMM containment for the unresolved PR25 numerical incident.
-/// Every dot uses independent ascending-k f32 multiply then add, fresh storage,
-/// and no packed kernel, MATMUL registry, pool, or worker dispatch. The old
-/// batched optimization is test-only, with no production opt-in. This costs
-/// CPU throughput; it is isolation, not a claim of a root-cause fix.
+/// Independent BMM containment for the unresolved PR25 numerical incident.
+/// Unpacked column tiles retain ascending-k f32 multiply then add per output.
+/// Fresh storage, no packed kernel, MATMUL registry, pool, or worker dispatch.
+/// Historical packed BMM stays test-only with no production opt-in.
+/// This is software-path isolation, not a claim of a root-cause fix.
 pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
     if batch == 0 || m == 0 || n == 0 { return Vec::new(); }
     let rows = batch.checked_mul(m).expect("BMM row count overflow");
@@ -125,11 +128,7 @@ pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: u
     for (row, dst) in out.chunks_exact_mut(n).enumerate() {
         let ar = &a[row*k..(row+1)*k];
         let br = &b[(row/m)*bstride..(row/m+1)*bstride];
-        for (col, value) in dst.iter_mut().enumerate() {
-            let mut sum = 0.0f32;
-            for (p, &av) in ar.iter().enumerate() { sum += av * br[p*n+col]; }
-            *value = sum;
-        }
+        safe_bmm::row(ar, br, dst);
     }
     out
 }
@@ -217,7 +216,7 @@ fn mm_out(len: usize, k: usize) -> Vec<f32> {
 }
 
 /// Register conservative CPU matmul; this also contains default-backend BMM.
-/// Plain MATMUL-registry users pay the same scalar-throughput tradeoff.
+/// MATMUL-registry users use the same independent unpacked arithmetic.
 /// Explicit `matmul`/`matmul_with_threads` remain packed, outside this BMM policy.
 pub fn install() {
     // CpuBackend's default BMM calls MATMUL once per slab. Registering the
@@ -530,6 +529,7 @@ mod tests {
 
     #[test]
     fn install_routes_tensor_matmul() {
+        let _registry = crate::registry_tests::lock();
         let (m, k, n) = (12, 20, 9);
         let a = lcg_fill(3, m * k);
         let b = lcg_fill(4, k * n);
