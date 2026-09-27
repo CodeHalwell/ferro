@@ -15,6 +15,10 @@ pub enum Error {
     InvalidShape { op: &'static str, msg: String },
     /// An op does not yet support the given rank/config in this MVP.
     Unsupported { op: &'static str, msg: String },
+    /// The backend has no materializer; no work was attempted or source mutated.
+    /// This capability decline must never represent an operational failure.
+    /// Adding this public variant requires downstream exhaustive matches to add an arm.
+    MaterializeUnavailable,
     /// Operands live on different devices.
     DeviceMismatch {
         op: &'static str,
@@ -41,6 +45,7 @@ impl fmt::Display for Error {
             }
             Error::InvalidShape { op, msg } => write!(f, "{op}: invalid shape: {msg}"),
             Error::Unsupported { op, msg } => write!(f, "{op}: unsupported: {msg}"),
+            Error::MaterializeUnavailable => write!(f, "materialize_dev: backend materializer unavailable"),
             Error::DeviceMismatch { op, lhs, rhs } => {
                 write!(f, "{op}: operands on different devices ({lhs} vs {rhs})")
             }

@@ -513,8 +513,8 @@ impl Tensor {
     /// matching under a held guard - each `to_vec_*` call below takes its
     /// own read guard too, and nesting two same-thread reads of one RwLock
     /// can deadlock behind a queued writer (the exact hazard fixed in
-    /// `PairGuard`). Device storage never reaches here: the caller returns
-    /// via the device_resident_whole branch first.
+    /// `PairGuard`). Device views reach this host path only for non-F32
+    /// storage or an explicitly unsupported detached materialization.
     fn detach_copy_same_dtype(&self) -> Tensor {
         match self.dtype() {
             DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap(),
@@ -1004,8 +1004,11 @@ impl Tensor {
     /// through the host (which would also move the tensor to cpu) - which is
     /// why public in-place ops refuse device tensors with shared storage,
     /// and why `Param` construction goes through `owned_detach_copy`.
+    /// Non-whole F32 device views materialize directly without recording an op.
+    /// Only explicit unsupported capability/layout permits a host copy; any
+    /// operational error panics rather than silently downloading or retrying.
     pub fn detach_copy(&self) -> Tensor {
-        if self.device_resident_whole() {
+        if self.device_resident_whole() && self.storage_len() == self.numel() {
             return Tensor::from_parts(
                 self.0.storage.clone(),
                 self.0.shape.clone(),
@@ -1015,6 +1018,24 @@ impl Tensor {
                 false,
                 None,
             );
+        }
+        if self.device() != Device::Cpu && self.dtype() == DType::F32 {
+            let backend = backend_for(self.device()).expect("detached materialization backend missing");
+            let storage = self.0.storage.read();
+            if let Storage::Device(buf) = &*storage {
+                match backend.materialize_support_for(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset)
+                    .expect("detached device materialization preflight failed") {
+                    crate::dispatch::MaterializeSupport::Attempt => {
+                        match backend.materialize_dev(buf.as_ref(), self.shape(), &self.0.stride, self.0.offset) {
+                            Ok(out) => return device_leaf(out, self.shape(), self.device()),
+                            Err(Error::MaterializeUnavailable) => {},
+                            Err(error) => panic!("detached device materialization failed: {error:?}"),
+                        }
+                    }
+                    crate::dispatch::MaterializeSupport::UnsupportedBackend
+                    | crate::dispatch::MaterializeSupport::UnsupportedLayout => {}
+                }
+            }
         }
         self.detach_copy_same_dtype()
     }
@@ -1607,6 +1628,71 @@ pub(crate) fn unbroadcast(g: &Tensor, target: &[usize]) -> Tensor {
 #[cfg(test)]
 #[path = "layout_lock_tests.rs"]
 mod layout_lock_tests;
+
+#[cfg(test)]
+mod detached_layout_tests {
+    use super::*;
+    use crate::dispatch::{Backend, register_backend};
+    use std::sync::Mutex;
+    const DEV: Device = Device::Cuda(91);
+    static SERIAL: Mutex<()> = Mutex::new(());
+    struct Buf(Vec<f32>);
+    impl DeviceBuffer for Buf {
+        fn device(&self) -> Device { DEV }
+        fn len(&self) -> usize { self.0.len() }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+    }
+    struct Layout(AtomicUsize);
+    impl Backend for Layout {
+        fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { unreachable!() }
+        fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { unreachable!() }
+        fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { unreachable!() }
+        fn copy_to_host(&self, _: &dyn DeviceBuffer) -> Result<Vec<f32>> { panic!("unexpected download") }
+        fn materialize_dev(&self, buf: &dyn DeviceBuffer, shape: &[usize], strides: &[usize], offset: usize) -> Result<Box<dyn DeviceBuffer>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let data = &buf.as_any().downcast_ref::<Buf>().unwrap().0;
+            let values = (0..shape.iter().product()).map(|mut flat| {
+                let mut at = offset;
+                for d in (0..shape.len()).rev() { at += flat % shape[d] * strides[d]; flat /= shape[d]; }
+                data[at]
+            }).collect();
+            Ok(Box::new(Buf(values)))
+        }
+    }
+    #[test]
+    fn detach_internal_offsets_broadcasts_and_prefixes() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let backend = Arc::new(Layout(AtomicUsize::new(0)));
+        register_backend(DEV, backend.clone());
+        let base = device_leaf(Box::new(Buf(vec![1., 2., 3., 4., 5., 6.])), &[2, 3], DEV);
+        base.bump_version();
+        for (shape, stride, offset, expected) in [
+            (vec![2], vec![1], 0, vec![1., 2.]),
+            (vec![2], vec![2], 1, vec![2., 4.]),
+            (vec![0], vec![1], 6, vec![]),
+            (vec![], vec![], 2, vec![3.]),
+            (vec![2, 3], vec![0, 1], 0, vec![1., 2., 3., 1., 2., 3.]),
+        ] {
+            let view = Tensor::from_parts(base.0.storage.clone(), shape, stride, offset, DEV, false, None);
+            let before = backend.0.load(Ordering::SeqCst);
+            let result = view.detach_copy();
+            assert_eq!(backend.0.load(Ordering::SeqCst), before + 1);
+            assert!(result.device_resident_whole());
+            assert_eq!(result.storage_len(), result.numel());
+            assert!(!result.requires_grad());
+            assert!(result.0.op.is_none());
+            assert_eq!(result.version(), 0);
+            assert_eq!(view.version(), 1);
+            assert!(!Arc::ptr_eq(&result.0.storage, &view.0.storage));
+            let storage = result.0.storage.read();
+            let Storage::Device(buf) = &*storage else { panic!("not resident") };
+            assert_eq!(buf.as_any().downcast_ref::<Buf>().unwrap().0, expected);
+        }
+        let row = device_leaf(Box::new(Buf(vec![1., 2., 3.])), &[1, 3], DEV);
+        let broadcast = row.broadcast_to(&[2, 3]).unwrap().detach_copy();
+        assert_eq!(broadcast.storage_len(), 6);
+    }
+}
 
 #[cfg(test)]
 mod tests {

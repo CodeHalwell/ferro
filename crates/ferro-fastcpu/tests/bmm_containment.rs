@@ -38,9 +38,10 @@ fn serial_cpu_cost_probe() {
 #[test]
 fn installed_cpu_bmm_shapes_transposes_and_gradients() {
     ferro_fastcpu::install();
-    ferro_fastcpu::install_backend();
+    for fast_backend in [false, true] {
+    if fast_backend { ferro_fastcpu::install_backend(); }
     for (batch, m, k, n) in [(0,3,4,5), (2,0,4,5), (2,3,0,5), (2,3,4,0),
-        (1,1,1,1), (2,5,7,17), (3,7,17,5), (2,49,257,17)] {
+        (1,1,1,1), (2,5,7,17), (3,7,17,5), (2,49,257,17), (2,7,17,33), (1,3,257,65)] {
         let a: Vec<_> = (0..batch*m*k).map(|x| (x%7) as f32 - 3.0).collect();
         let b: Vec<_> = (0..batch*k*n).map(|x| (x%5) as f32 - 2.0).collect();
         let mut want = vec![0.0; batch*m*n];
@@ -69,7 +70,11 @@ fn installed_cpu_bmm_shapes_transposes_and_gradients() {
     let x = Tensor::from_vec(vec![0.2; 12], &[2,2,3]).unwrap();
     let y = Tensor::from_vec(vec![0.3; 12], &[2,3,2]).unwrap();
     grad_check(&[x,y], |v| v[0].bmm(&v[1]).unwrap().sum());
+    let x = Tensor::from_vec(vec![0.2, -0.3, 0.4, 0.1, 0.5, -0.2], &[1,2,3]).unwrap();
+    let y = Tensor::from_vec((0..99).map(|i| (i%11) as f32/10.0-0.4).collect(), &[1,3,33]).unwrap();
+    grad_check(&[x,y], |v| v[0].bmm(&v[1]).unwrap().sum());
     let x = Tensor::from_vec(vec![0.0; 6], &[1,2,3]).unwrap();
     let bad = Tensor::from_vec(vec![0.0; 8], &[1,4,2]).unwrap();
     assert!(x.bmm(&bad).is_err());
+    }
 }

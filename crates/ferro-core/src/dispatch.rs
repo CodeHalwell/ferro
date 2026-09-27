@@ -141,6 +141,20 @@ pub trait DeviceBuffer: Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
+/// Explicit permission to use the host path for detached device layouts.
+/// Attempt preserves existing materialize_dev implementations and propagates
+/// operational errors; Error::Unsupported alone is NOT permission to download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterializeSupport { Attempt, UnsupportedBackend, UnsupportedLayout }
+
+/// Backend-owned validated integer topology; retained across forwards/adjoints.
+pub trait SegmentPlan: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SegmentOp { Sum, SumBackward, Softmax, SoftmaxBackward }
+
 fn not_resident<T>(op: &'static str) -> Result<T> {
     Err(Error::Unsupported {
         op,
@@ -334,6 +348,18 @@ pub trait Backend: Send + Sync {
         bias: Option<&dyn DeviceBuffer>, rows: usize, cols: usize, eps: f32,
     ) -> Result<Box<dyn DeviceBuffer>> {
         self.layer_norm_dev(x, weight, bias, rows, cols, eps).map(|(y, _, _)| y)
+    }
+
+    /// Validate/prepare immutable topology once. No feature tensors are uploaded.
+    fn prepare_segments(&self, _ids: &[usize], _groups: usize) -> Result<Arc<dyn SegmentPlan>> {
+        not_resident("prepare_segments")
+    }
+
+    /// Whole contiguous f32 buffers; errors must not trigger host fallback.
+    fn segment_dev(&self, _plan: &dyn SegmentPlan, _op: SegmentOp,
+        _x: &dyn DeviceBuffer, _saved: Option<&dyn DeviceBuffer>, _width: usize,
+    ) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("segment_dev")
     }
 
     /// Row-wise softmax over the last dim of a whole contiguous device buffer
@@ -548,11 +574,27 @@ pub trait Backend: Send + Sync {
         not_resident("scalar_increment_dev")
     }
 
+    /// Preflight for detached copies only. Legacy implementations are attempted
+    /// unchanged. The inherited materialize_dev declines with a typed unavailable
+    /// error to retain host fallback; ambiguous errors still fail loudly.
+    /// UnsupportedLayout is for valid but unimplemented layouts, never invalid
+    /// bounds, context/ownership mismatch, allocation or execution failure.
+    fn materialize_support(&self, _shape: &[usize], _strides: &[usize], _offset: usize) -> MaterializeSupport {
+        MaterializeSupport::Attempt
+    }
+
+    /// Buffer-aware preflight. Validate ownership and bounds before declining a
+    /// layout; an operational error never grants permission for a host retry.
+    fn materialize_support_for(&self, _x: &dyn DeviceBuffer, shape: &[usize], strides: &[usize], offset: usize) -> Result<MaterializeSupport> {
+        Ok(self.materialize_support(shape, strides, offset))
+    }
+
     /// Materialize a strided f32 view in logical row-major order. Implementations
     /// must validate shape/stride arithmetic and storage bounds before reading.
-    /// Unsupported backends may decline without mutating the source.
+    /// The default returns MaterializeUnavailable without attempting any work.
+    /// Overrides must never use that decline for operational failures.
     fn materialize_dev(&self, _x: &dyn DeviceBuffer, _shape: &[usize], _strides: &[usize], _offset: usize) -> Result<Box<dyn DeviceBuffer>> {
-        not_resident("materialize_dev")
+        Err(Error::MaterializeUnavailable)
     }
 
     // --- i64 index buffers --------------------------------------------------

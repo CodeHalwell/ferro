@@ -160,15 +160,21 @@ def prove(task, seed):
                    '--worker-output', str(result_path)]
         subprocess.run(command, check=True, timeout=120, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
         resumed = json.loads(result_path.read_text())
-        assert resumed['losses'] == expected['losses'][STEPS // 2:], 'Restart loss trajectory differs'
-        assert resumed['next_draws'] == expected['next_draws'], 'Restart RNG differs'
-        assert resumed['state'] == expected_state, 'Restart model/optimizer/config/RNG state differs'
-        assert resumed['metrics'] == expected['metrics'], 'Restart held-out result differs'
+        if resumed['losses'] != expected['losses'][STEPS // 2:]:
+            raise AssertionError('Restart loss trajectory differs')
+        if resumed['next_draws'] != expected['next_draws']:
+            raise AssertionError('Restart RNG differs')
+        if resumed['state'] != expected_state:
+            raise AssertionError('Restart model/optimizer/config/RNG state differs')
+        if resumed['metrics'] != expected['metrics']:
+            raise AssertionError('Restart held-out result differs')
     metrics = expected['metrics']
     if task == 'regression':
-        assert metrics['ratio'] <= 0.25, metrics
+        if not metrics['ratio'] <= 0.25:
+            raise AssertionError(metrics)
     else:
-        assert metrics['held_out_accuracy'] >= 0.95, metrics
+        if not metrics['held_out_accuracy'] >= 0.95:
+            raise AssertionError(metrics)
     return {'task': task, 'seed': seed, 'steps': STEPS, 'metrics': metrics,
             'gradient_max_abs_errors': gradients, 'restart': 'bit-exact',
             'initial_loss': expected['losses'][0], 'final_loss': expected['losses'][-1]}
