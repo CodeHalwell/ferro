@@ -159,7 +159,9 @@ def test_negative_dims():
     assert t.sum_dim(-1).tolist() == [3.0, 7.0]
     assert t.mean_dim(-2).tolist() == [2.0, 3.0]
     x = ferro.Tensor([1.0, 3.0, 2.0, 4.0], [2, 2])
-    assert x.argmax(-1, keepdim=False).tolist() == [1.0, 1.0]
+    indices = x.argmax(-1, keepdim=False).tolist()
+    assert indices == [1, 1]
+    assert all(type(index) is int for index in indices)
     sm = t.softmax(-1).tolist()
     assert abs(sm[0][0] - 0.26894143) < 1e-6 and abs(sm[0][1] - 0.73105860) < 1e-6, sm
     assert ferro.cat([t, t], dim=-1).shape == [2, 4]

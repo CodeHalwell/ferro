@@ -101,6 +101,18 @@ gates. Neither benchmarks nor ignored performance tests were executed.
 FERRO_GPT2_DIR was unset: seven hermetic tokenizer bodies executed, while the
 real-vocab conditional returned early. Hosted CI is not certified here.
 
+## Hosted parity follow-up
+
+The initial hosted Python job failed in the standalone operator script, which the
+publication collector above omitted. Correct typed integer `tolist()` output met
+a stale float-cast index reference. The harness now requires exact integer values
+and types; floating tolerances and native code are unchanged. All standalone
+workflow acceptance commands were subsequently exercised locally, with setup
+failures and local/hosted environment differences disclosed in the
+[follow-up evidence](../verification/pr29-typed-parity/README.md).
+The original results above remain historical evidence, not a claim of hosted CI
+success. Current remote check status must be read from PR29.
+
 ## Boundaries and unresolved incidents
 
 Historical numerical mismatch and CPU/CUDA native-crash investigations remain

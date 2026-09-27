@@ -30,9 +30,22 @@ def tt(data, shape, requires_grad=False):
 
 
 def check(name, f, t):
-    assert torch.allclose(torch.tensor(f.tolist()), t, atol=1e-5), (
-        f"{name}: ferro={f.tolist()} torch={t.tolist()}"
-    )
+    values = f.tolist()
+    message = f"{name}: ferro={values} torch={t.tolist()}"
+    assert f.shape == list(t.shape), message
+    assert t.is_floating_point() or t.dtype == torch.int64, message
+    scalar_type = float if t.is_floating_point() else int
+    pending = [values]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, list):
+            pending.extend(value)
+        else:
+            assert type(value) is scalar_type, message
+    if t.is_floating_point():
+        assert torch.allclose(torch.tensor(values), t, atol=1e-5), message
+    else:
+        assert values == t.tolist(), message
     print(f"OK {name}")
 
 
@@ -204,7 +217,7 @@ def main():
     (tx.cumsum(1) * tx.cumsum(1)).sum().backward()
     check("cumsum grad", fx.grad, tx.grad)
 
-    # argmax/argmin: I64 outputs, compared as floats through tolist.
+    # argmax/argmin: exact I64 values and Python int leaves through tolist.
     for name, fop, top in [
         ("argmax", lambda x, d, k: x.argmax(d, k), torch.argmax),
         ("argmin", lambda x, d, k: x.argmin(d, k), torch.argmin),
@@ -213,7 +226,7 @@ def main():
             for keep in (False, True):
                 f = fop(ft(MIX, SHAPE), dim, keep)
                 t = top(tt(MIX, SHAPE), dim=dim, keepdim=keep)
-                check(f"{name} value dim={dim} keepdim={keep}", f, t.float())
+                check(f"{name} value dim={dim} keepdim={keep}", f, t)
 
     # gather: duplicate indices must accumulate grad.
     gidx = [1, 1, 0, 2, 0, 0]
@@ -230,7 +243,7 @@ def main():
     fv, fi = ft(MIX, SHAPE).topk(2, 1)
     tv, ti = tt(MIX, SHAPE).topk(2, dim=1)
     check("topk values", fv, tv)
-    check("topk indices", fi, ti.float())
+    check("topk indices", fi, ti)
     fx = ft(MIX, SHAPE, requires_grad=True)
     fv, _ = fx.topk(2, 1)
     (fv * fv).sum().backward()
