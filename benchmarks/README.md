@@ -1,4 +1,52 @@
-# ferro vs PyTorch throughput benchmark (Tier-1 gate harness)
+# ferro vs PyTorch benchmarks
+
+Two harnesses live here. The CPU suite below covers individual ops (matmul,
+elementwise, reductions, softmax, conv2d) and small training steps (MLP, CNN),
+and is driven end to end by one command. The transformer harness further down
+is the Tier-1 training-throughput gate and can be folded into the same run.
+
+## CPU suite: one command, both sides
+
+`examples/bench_suite.rs` and its twin `examples/bench_suite_torch.py` run the
+same cases with the same shapes, iteration counts and work accounting, each
+printing one JSON line per case. `compare.py` builds the Rust side in release,
+runs both, joins on case name and prints a markdown table.
+
+```
+python3 -m venv benchmarks/.venv
+benchmarks/.venv/bin/pip install torch          # any CPU-capable wheel
+python3 benchmarks/compare.py --python benchmarks/.venv/bin/python \
+    --transformer --json benchmarks/results/cpu_4t.json
+python3 benchmarks/compare.py --python benchmarks/.venv/bin/python \
+    --cpus 0 --transformer --json benchmarks/results/cpu_1t.json
+```
+
+Methodology:
+- Each case runs `--warmup` untimed iterations, then `--iters` (default 30)
+  individually timed ones; the table reports the median, the JSON also keeps
+  min and p90. Throughput is per-iteration work over the median.
+- Work accounting: matmul/conv in FLOPs (2MNK; conv fwd+bwd counted as 3x
+  forward), elementwise and reductions in bytes actually touched (12n for
+  binary, 8n for unary, 4n for sum), training steps in samples.
+- Thread budgets match by construction. ferro threads over
+  `available_parallelism()`, which honours the affinity mask; the torch twin
+  calls `torch.set_num_threads(len(os.sched_getaffinity(0)))`. `--cpus` pins
+  both processes with `taskset`, so `--cpus 0` is a clean single-thread
+  comparison.
+- ferro runs with `ferro_fastcpu::install_backend()` (packed AVX2 matmul plus
+  vectorized elementwise) by default; `--backend core` uses only the matmul
+  kernel, which is what `bench_transformer` uses.
+- Forward-only op cases run under `torch.no_grad()` on the torch side; ferro
+  inputs carry no grad, so neither side records a graph.
+- Every result file records the date, ferro commit, CPU model, thread count,
+  rustc and torch versions, so numbers from different machines are never
+  silently mixed.
+
+Results land in `results/` as JSON. `RESULTS_CPU.md` holds the current
+tables.
+
+## Transformer training step
+
 
 Trains one pre-norm transformer block (token embedding -> causal multi-head
 self-attention -> Gelu MLP at 4x width -> RMSNorm residuals -> LM head) with
@@ -8,7 +56,7 @@ twin (`examples/bench_torch.py`) build the same architecture with the same
 parameter count, same shapes, same steps, same optimizer settings
 (AdamW, lr 1e-4), so their outputs are directly comparable.
 
-## Running
+### Running
 
 Rust side (from `benchmarks/`, release build is mandatory):
 
@@ -42,14 +90,14 @@ Timing notes:
 - Step-time percentiles are per-step wall clock over the timed region.
 - tokens/sec = batch * seq * steps / total_timed_time.
 
-## Results
+### Results
 
 Machine: Windows 11, RTX 3090 (CUDA 13.1) - CPU runs below used the CPU
 backend only. Default config unless noted:
 batch=8 seq=128 d_model=256 heads=4 vocab=1024, params = 1,313,536
 (identical count on both sides). Each table states its warmup/timed steps.
 
-### Post-kernel wave (softmax/log_softmax/gelu now run as device kernels)
+#### Post-kernel wave (softmax/log_softmax/gelu now run as device kernels)
 
 warmup=10 timed=30 on both sides:
 
@@ -66,7 +114,7 @@ the CUDA step time (~2,440-2,630 tok/s before, at ~0% GPU utilisation).
 Remaining overhead is still op-graph dispatch rather than kernels; the
 remaining host-composed ops in the attention path are the next lever.
 
-### Wave 2: batched attention GEMMs on device (bmm via cuBLAS)
+#### Wave 2: batched attention GEMMs on device (bmm via cuBLAS)
 
 Profiling (`bench_transformer --profile`, plus a per-primitive op_profile
 harness) showed backward at 80.8% of the step and attention forward at 30.3%,
@@ -89,7 +137,7 @@ over the pre-kernel baseline. Remaining step time is dominated by still-host
 composed backward glue (rope, reshape-through-host for head splits) and the
 optimizer; fusing those is the next lever.
 
-### Earlier baseline (pre-kernel wave)
+#### Earlier baseline (pre-kernel wave)
 
 warmup=100 timed=500, CPU backend only:
 
@@ -110,13 +158,13 @@ op, while torch uses vectorized multithreaded ATen kernels throughout. Matmul
 goes through ferro-fastcpu's blocked AVX2 kernel; softmax/gelu now also have
 fastcpu/device paths.
 
-### Known gaps
+#### Known gaps
 
 - No fused SDPA / fused AdamW on the Rust side; every backward materializes
   full-size intermediates.
 - Reduction ops still compose on host between device launches.
 
-## Results table template
+### Results table template
 
 | Harness | Commit / version | Device | batch | seq | d_model | heads | vocab | tok/s | step mean ms | p50 | p90 | p99 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
