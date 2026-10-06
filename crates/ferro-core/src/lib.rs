@@ -14,6 +14,7 @@ pub mod dispatch;
 pub mod dtype;
 pub mod error;
 pub mod fused_ops;
+pub mod gnn;
 pub mod graph;
 pub mod half;
 pub mod inplace;
