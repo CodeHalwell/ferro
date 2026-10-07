@@ -97,3 +97,9 @@ ms columns are medians; speed > 1 means ferro is faster than torch on that case.
   get all of #32. Its torch twin is also not exactly like-for-like: ferro
   applies RoPE and tanh-GELU, while the torch twin's
   `nn.MultiheadAttention` has no RoPE and uses erf-GELU.
+- The transformer rows above were recorded while ferro's timed step applied
+  `norm1` twice and took the residual from the normalised embedding, unlike
+  the torch block. That is now fixed, so ferro's transformer step does
+  slightly less work than in these tables. A re-run on a similar VM after
+  the fix measured 0.31x on one core and 0.13x on four, inside this VM's
+  run-to-run noise, so the tables were left as recorded.

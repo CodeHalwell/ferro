@@ -181,7 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // One full training step, timed as a unit for the throughput number.
     let run_step = |opt: &mut AdamW| -> Result<(), ferro_core::Error> {
-        let h = block.attn_fwd(&block.norm1.forward(&emb.forward(&ids)?)?)?;
+        let h = block.attn_fwd(&emb.forward(&ids)?)?;
         let h = block.mlp_fwd(&h)?;
         let logits = head.forward(&h.reshape(&[n_tokens, args.d_model])?)?;
         // No loss.item(): no host sync in the timed region (matches the torch
