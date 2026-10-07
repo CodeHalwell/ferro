@@ -326,6 +326,40 @@ fn parse_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Sel>> {
     Ok(vec![one(key)?])
 }
 
+impl PyTensor {
+    fn index_view(&self, picked: &[Sel], shape: &[usize]) -> PyResult<Option<PyTensor>> {
+        let mut t = self.inner.clone();
+        let mut drop = Vec::new();
+        for (d, sel) in picked.iter().enumerate() {
+            t = match sel {
+                Sel::Idx(i) => {
+                    drop.push(d);
+                    t.narrow(d, wrap_index(*i, shape[d])?, 1).map_err(map_err)?
+                }
+                Sel::Slice(start, stop, step) => {
+                    let st = step.unwrap_or(1);
+                    let idx = slice_indices(*start, *stop, st, shape[d])?;
+                    if idx.is_empty() {
+                        return Ok(None);
+                    }
+                    if st > 0 {
+                        t.slice(d, idx[0], idx[idx.len() - 1] + 1, st as usize).map_err(map_err)?
+                    } else {
+                        t.index_select(d, &idx).map_err(map_err)?
+                    }
+                }
+            };
+        }
+        if drop.len() == shape.len() {
+            return Ok(None);
+        }
+        for &d in drop.iter().rev() {
+            t = t.squeeze(d).map_err(map_err)?;
+        }
+        Ok(Some(PyTensor::wrap(t)))
+    }
+}
+
 #[pymethods]
 impl PyTensor {
     #[new]
@@ -650,6 +684,94 @@ impl PyTensor {
             .map_err(map_err)
     }
 
+    #[pyo3(signature = (*dims))]
+    fn permute(&self, dims: Vec<isize>) -> PyResult<PyTensor> {
+        let ndim = self.inner.ndim();
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.permute(&d))
+    }
+
+    fn narrow(&self, dim: isize, start: isize, length: usize) -> PyResult<PyTensor> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        let len = self.inner.shape()[d] as isize;
+        let s = if start < 0 { start + len } else { start };
+        if s < 0 {
+            return Err(PyValueError::new_err(format!("start {start} out of range for dimension of size {len}")));
+        }
+        ok(self.inner.narrow(d, s as usize, length))
+    }
+
+    #[pyo3(signature = (split_size_or_sections, dim=0))]
+    fn split(&self, split_size_or_sections: &Bound<'_, PyAny>, dim: isize) -> PyResult<Vec<PyTensor>> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        let parts = match split_size_or_sections.extract::<usize>() {
+            Ok(size) => self.inner.split(size, d),
+            Err(_) => self.inner.split_sizes(&split_size_or_sections.extract::<Vec<usize>>()?, d),
+        };
+        Ok(parts.map_err(map_err)?.into_iter().map(PyTensor::wrap).collect())
+    }
+
+    #[pyo3(signature = (chunks, dim=0))]
+    fn chunk(&self, chunks: usize, dim: isize) -> PyResult<Vec<PyTensor>> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        Ok(self.inner.chunk(chunks, d).map_err(map_err)?.into_iter().map(PyTensor::wrap).collect())
+    }
+
+    /// torch semantics: -1 keeps an existing size; new leading dims may be added.
+    #[pyo3(signature = (*sizes))]
+    fn expand(&self, sizes: Vec<isize>) -> PyResult<PyTensor> {
+        let shape = self.inner.shape();
+        if sizes.len() < shape.len() {
+            return Err(PyValueError::new_err(format!("expand: {} sizes given for rank-{} tensor", sizes.len(), shape.len())));
+        }
+        let lead = sizes.len() - shape.len();
+        let mut out = Vec::with_capacity(sizes.len());
+        for (i, &s) in sizes.iter().enumerate() {
+            out.push(match s {
+                -1 if i >= lead => shape[i - lead],
+                s if s >= 0 => s as usize,
+                _ => return Err(PyValueError::new_err(format!("expand: invalid size {s} at dim {i}"))),
+            });
+        }
+        let src = if lead > 0 {
+            let mut v = shape.to_vec();
+            v.splice(0..0, std::iter::repeat(1).take(lead));
+            self.inner.reshape(&v).map_err(map_err)?
+        } else {
+            self.inner.clone()
+        };
+        ok(src.expand(&out))
+    }
+
+    #[pyo3(signature = (*reps))]
+    fn repeat(&self, reps: Vec<usize>) -> PyResult<PyTensor> { ok(self.inner.repeat(&reps)) }
+
+    #[pyo3(signature = (*dims))]
+    fn flip(&self, dims: Vec<isize>) -> PyResult<PyTensor> {
+        let ndim = self.inner.ndim();
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.flip(&d))
+    }
+
+    #[pyo3(signature = (shifts, dims=None))]
+    fn roll(&self, shifts: &Bound<'_, PyAny>, dims: Option<&Bound<'_, PyAny>>) -> PyResult<PyTensor> {
+        let shifts: Vec<isize> = shifts.extract::<isize>().map(|s| vec![s]).or_else(|_| shifts.extract())?;
+        let ndim = self.inner.ndim();
+        let dims: Vec<isize> = match dims {
+            None => Vec::new(),
+            Some(d) => d.extract::<isize>().map(|x| vec![x]).or_else(|_| d.extract())?,
+        };
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.roll(&shifts, &d))
+    }
+
+    fn masked_fill(&self, mask: &PyTensor, value: f32) -> PyResult<PyTensor> { ok(self.inner.masked_fill(&mask.inner, value)) }
+
+    fn index_add(&self, dim: isize, index: &PyTensor, source: &PyTensor) -> PyResult<PyTensor> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        ok(self.inner.index_add(d, &index.inner, &source.inner))
+    }
+
     #[pyo3(signature = (weight, stride=1, padding=0))]
     fn conv2d(&self, weight: &PyTensor, stride: usize, padding: usize) -> PyResult<PyTensor> {
         self.inner.conv2d(&weight.inner, stride, padding).map(PyTensor::wrap).map_err(map_err)
@@ -795,10 +917,15 @@ impl PyTensor {
     fn rope_cached(&self, base: f32) -> PyResult<PyTensor> { ok(self.inner.rope_cached(base)) }
 
     /// Basic indexing: ints and slices per dimension, negative indices/steps
-    /// supported. The result is a detached copy (no indexing autograd yet).
+    /// supported. Non-empty selections keeping at least one dim carry autograd:
+    /// positive steps are views, negative steps an index_select copy. Anything
+    /// else is a detached copy.
     fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
         let shape = self.inner.shape().to_vec();
         let picked = parse_key(key, shape.len())?;
+        if let Some(view) = self.index_view(&picked, &shape)? {
+            return Ok(view);
+        }
         let mut dims: Vec<Vec<usize>> = Vec::with_capacity(shape.len());
         let mut out_shape: Vec<usize> = Vec::new();
         for (i, len) in shape.iter().enumerate() {
@@ -1015,6 +1142,18 @@ fn cat(tensors: Vec<PyTensor>, dim: isize) -> PyResult<PyTensor> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (tensors, dim=0))]
+fn stack(tensors: Vec<PyTensor>, dim: isize) -> PyResult<PyTensor> {
+    let inners: Vec<CoreTensor> = tensors.iter().map(|t| t.inner.clone()).collect();
+    let ndim = inners.first().map(|t| t.ndim() + 1).unwrap_or(1);
+    let d = if dim < 0 { dim + ndim as isize } else { dim };
+    if d < 0 || d as usize >= ndim {
+        return Err(PyValueError::new_err(format!("dim {dim} out of range for stacking rank-{} tensors", ndim - 1)));
+    }
+    ok(CoreTensor::stack(&inners, d as usize))
+}
+
+#[pyfunction]
 #[pyo3(name = "where")]
 fn where_(cond: &PyTensor, a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
     CoreTensor::where_cond(&cond.inner, &a.inner, &b.inner).map(PyTensor::wrap).map_err(map_err)
@@ -1163,6 +1302,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Generator>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;
+    m.add_function(wrap_pyfunction!(stack, m)?)?;
     m.add_function(wrap_pyfunction!(where_, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;

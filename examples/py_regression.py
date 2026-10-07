@@ -154,6 +154,30 @@ def test_indexing():
     print("basic indexing with negatives/strides: OK")
 
 
+def test_view_ops():
+    x = ferro.Tensor([float(i) for i in range(12)], [2, 3, 2]).requires_grad_(True)
+    y = x[1, 1:, :]
+    assert y.shape == [2, 2] and y.requires_grad
+    (y.sum() + x[..., ::-1][0].sum()).backward()
+    assert x.grad.tolist() == [[[1.0, 1.0]] * 3, [[0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]], x.grad.tolist()
+    assert x[0, 0, 0].requires_grad is False  # rank-0 picks stay detached copies
+    assert x[:, 3:].shape == [2, 0, 2]
+    t = ferro.Tensor([float(i) for i in range(6)], [2, 3])
+    assert t.permute(1, 0).tolist() == t.transpose(0, 1).tolist()
+    assert [p.shape for p in t.split([1, 2], 1)] == [[2, 1], [2, 2]]
+    assert [p.shape for p in t.chunk(2, -1)] == [[2, 2], [2, 1]]
+    assert t[:, :1].expand(-1, 4).tolist() == [[0.0] * 4, [3.0] * 4]
+    assert ferro.stack([t, t], -1).shape == [2, 3, 2]
+    for bad in (lambda: t.permute(0, 0), lambda: t.narrow(0, 1, 5), lambda: t.expand(3, 3), lambda: t.permute(0, 5)):
+        try:
+            bad()
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid view op did not raise")
+    print("view ops and autograd-carrying indexing: OK")
+
+
 def test_negative_dims():
     t = ferro.Tensor([1.0, 2.0, 3.0, 4.0], [2, 2])
     assert t.sum_dim(-1).tolist() == [3.0, 7.0]
@@ -561,6 +585,7 @@ def main():
     test_neg()
     test_reflected_ops()
     test_indexing()
+    test_view_ops()
     test_negative_dims()
     test_device_api()
     test_generators()

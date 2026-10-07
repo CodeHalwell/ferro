@@ -287,6 +287,7 @@ def main():
         print("OK empty max raises ValueError")
 
     extended_ops()
+    view_ops()
     extended_losses()
     extended_modules()
     print("ALL OPS MATCH TORCH")
@@ -652,6 +653,41 @@ def extended_modules():
           torch.nn.CrossEntropyLoss()(tt(MIX, s), torch.tensor([2, 0])))
     check("module KLDivLoss batchmean", nn.KLDivLoss(reduction="batchmean")(ft(MIX, s).log_softmax(1), ft(OTHER, s).softmax(1)),
           torch.nn.KLDivLoss(reduction="batchmean")(tt(MIX, s).log_softmax(1), tt(OTHER, s).softmax(1)))
+
+
+def view_ops():
+    v = [((i * 5) % 11 - 5) * 0.37 + 0.1 for i in range(24)]
+    s = [2, 3, 4]
+    mask = [1.0 if i % 3 == 0 else 0.0 for i in range(12)]
+    cases = [
+        ("permute", lambda x: x.permute(2, 0, 1), lambda x: x.permute(2, 0, 1)),
+        ("permute neg", lambda x: x.permute(-1, -3, -2), lambda x: x.permute(-1, -3, -2)),
+        ("narrow", lambda x: x.narrow(2, 1, 2), lambda x: x.narrow(2, 1, 2)),
+        ("narrow neg start", lambda x: x.narrow(-1, -3, 2), lambda x: x.narrow(-1, -3, 2)),
+        ("getitem slices", lambda x: x[:, 1:, ::2], lambda x: x[:, 1:, ::2]),
+        ("getitem int+slice", lambda x: x[1, :, -3:], lambda x: x[1, :, -3:]),
+        ("getitem ellipsis", lambda x: x[..., 1], lambda x: x[..., 1]),
+        ("getitem neg step", lambda x: x[:, ::-1], lambda x: x.flip(1)),
+        ("split size", lambda x: ferro.cat(x.split(3, 2)[::-1], 2), lambda x: torch.cat(x.split(3, 2)[::-1], 2)),
+        ("split sections", lambda x: ferro.cat(x.split([1, 2], 1)[::-1], 1), lambda x: torch.cat(x.split([1, 2], 1)[::-1], 1)),
+        ("chunk", lambda x: ferro.cat(x.chunk(3, -1), 0), lambda x: torch.cat(x.chunk(3, -1), 0)),
+        ("expand", lambda x: x[:, :1, :].expand(2, 5, 4), lambda x: x[:, :1, :].expand(2, 5, 4)),
+        ("expand -1 new dim", lambda x: x[:1].expand(3, -1, -1, -1), lambda x: x[:1].expand(3, -1, -1, -1)),
+        ("repeat", lambda x: x.repeat(2, 1, 3), lambda x: x.repeat(2, 1, 3)),
+        ("flip", lambda x: x.flip(0, 2), lambda x: x.flip(0, 2)),
+        ("roll", lambda x: x.roll(1, 2), lambda x: x.roll(1, 2)),
+        ("roll multi", lambda x: x.roll([1, -2], [0, 2]), lambda x: x.roll((1, -2), (0, 2))),
+        ("roll flat", lambda x: x.roll(5), lambda x: x.roll(5)),
+        ("stack", lambda x: ferro.stack([x, x * 2.0], 1), lambda x: torch.stack([x, x * 2.0], 1)),
+        ("stack neg", lambda x: ferro.stack([x, x], -1), lambda x: torch.stack([x, x], -1)),
+        ("masked_fill", lambda x: x.masked_fill(ft(mask, [3, 4]), -9.0), lambda x: x.masked_fill(tt(mask, [3, 4]).bool(), -9.0)),
+    ]
+    for name, f, t in cases:
+        check_fn(name, [(v, s)], f, t)
+    idx = ferro.Tensor.from_i64([2, 0, 2], [3])
+    src = [0.5 * i - 2.0 for i in range(24)]
+    check_fn("index_add", [(v, s), (src, [2, 3, 4])],
+             lambda x, y: x.index_add(1, idx, y), lambda x, y: x.index_add(1, torch.tensor([2, 0, 2]), y))
 
 
 if __name__ == "__main__":
