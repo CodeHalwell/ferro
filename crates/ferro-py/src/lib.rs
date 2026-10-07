@@ -1280,8 +1280,10 @@ fn enable_grad(py: Python<'_>) -> PyResult<Py<PyAny>> {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Route matmul through the optimized CPU backend for the whole process.
+    // Route matmul and elementwise/reduction ops through the optimized CPU
+    // backend for the whole process.
     ferro_fastcpu::install();
+    ferro_fastcpu::install_backend();
     training_state::register(m)?;
     architecture::register(m)?;
     recurrent::register(m)?;
