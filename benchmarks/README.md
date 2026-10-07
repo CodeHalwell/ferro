@@ -35,7 +35,8 @@ Methodology:
   comparison.
 - ferro runs with `ferro_fastcpu::install_backend()` (packed AVX2 matmul plus
   vectorized elementwise) by default; `--backend core` uses only the matmul
-  kernel, which is what `bench_transformer` uses.
+  kernel. `bench_transformer` always runs the core configuration, and the
+  transformer row and JSON metadata say so.
 - Forward-only op cases run under `torch.no_grad()` on the torch side; ferro
   inputs carry no grad, so neither side records a graph.
 - Every result file records the date, ferro commit, CPU model, thread count,

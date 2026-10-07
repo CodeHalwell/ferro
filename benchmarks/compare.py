@@ -51,11 +51,11 @@ def transformer(cpus, python, warmup, steps, threads):
     }
     rows = {}
     for side, out in outs.items():
-        tps = float(re.search(r"throughput: (\d+) tokens/sec", out).group(1))
         m = re.search(r"mean=([\d.]+) p50=([\d.]+) p90=([\d.]+)", out)
         cfg = re.search(r"config: (.*)", out).group(1)
+        tokens = int(re.search(r"batch=(\d+)", cfg).group(1)) * int(re.search(r"seq=(\d+)", cfg).group(1))
         rows[side] = {"name": "transformer_train_step", "group": "model", "shape": cfg, "unit": "tokens/s",
-                      "work": tps * float(m.group(1)) / 1e3, "median_ms": float(m.group(2)),
+                      "work": tokens, "median_ms": float(m.group(2)),
                       "p90_ms": float(m.group(3)), "warmup": warmup, "iters": steps}
     return rows
 
@@ -117,20 +117,22 @@ def main():
 
     meta = machine(args.python, args.cpus, threads) | {"ferro_backend": args.backend, "warmup": args.warmup, "iters": args.iters}
     if args.transformer:
-        meta["transformer_steps"] = args.transformer_steps
+        # bench_transformer always registers the matmul kernel only, whatever --backend says.
+        meta |= {"transformer_steps": args.transformer_steps, "transformer_ferro_backend": "core"}
     lines = [
         f"{meta['date']} | ferro {meta['commit']} ({meta['ferro_backend']} backend) | torch {meta['torch']} | "
         f"{meta['cpu']}, {meta['threads']} threads (cpus: {meta['cpus']}) | warmup={args.warmup} iters={args.iters}"
-        + (f" (transformer: {args.transformer_steps} steps)" if args.transformer else ""),
+        + (f" (transformer: {args.transformer_steps} steps, core backend)" if args.transformer else ""),
         "",
         "| case | shape | ferro ms | torch ms | ferro | torch | unit | ferro / torch speed |",
         "|---|---|---:|---:|---:|---:|---|---:|",
     ]
+    if ferro.keys() != torch.keys():
+        sys.exit(f"suites disagree on cases: ferro-only {sorted(ferro.keys() - torch.keys())}, "
+                 f"torch-only {sorted(torch.keys() - ferro.keys())}")
     rows = []
     for name, f in ferro.items():
-        t = torch.get(name)
-        if t is None:
-            continue
+        t = torch[name]
         speed = t["median_ms"] / f["median_ms"]
         rows.append({"name": name, "shape": f["shape"], "unit": f["unit"], "ferro": f, "torch": t, "speed": speed})
         lines.append(f"| {name} | {f['shape']} | {f['median_ms']:.3f} | {t['median_ms']:.3f} | "
