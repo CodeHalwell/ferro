@@ -46,7 +46,10 @@ def main():
     ap.add_argument("--warmup", type=int, default=100)
     ap.add_argument("--steps", type=int, default=500)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--threads", type=int, help="torch.set_num_threads; compare.py passes the affinity count")
     args = ap.parse_args()
+    if args.threads:
+        torch.set_num_threads(args.threads)
 
     device = args.device
     if device.startswith("cuda") and not torch.cuda.is_available():

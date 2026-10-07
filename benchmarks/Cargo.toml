@@ -23,6 +23,10 @@ cuda = ["dep:ferro-cuda"]
 name = "bench_transformer"
 path = "../examples/bench_transformer.rs"
 
+[[bin]]
+name = "bench_suite"
+path = "../examples/bench_suite.rs"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -1,0 +1,467 @@
+{
+  "meta": {
+    "date": "2026-10-07T18:25Z",
+    "commit": "369f503",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpus": "all (4)",
+    "threads": 4,
+    "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)",
+    "torch": "2.14.1+cu130",
+    "os": "Linux-6.18.44-fc-v77-x86_64-with-glibc2.39",
+    "ferro_backend": "fast",
+    "warmup": 5,
+    "iters": 30,
+    "transformer_steps": 20,
+    "transformer_ferro_backend": "core"
+  },
+  "results": [
+    {
+      "name": "matmul_256",
+      "shape": "256x256@256x256",
+      "unit": "GFLOP/s",
+      "ferro": {
+        "name": "matmul_256",
+        "group": "op",
+        "shape": "256x256@256x256",
+        "work": 33554432,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.209573,
+        "min_ms": 0.199829,
+        "p90_ms": 0.289176
+      },
+      "torch": {
+        "name": "matmul_256",
+        "group": "op",
+        "shape": "256x256@256x256",
+        "work": 33554432,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.08630949997723292,
+        "min_ms": 0.08059200001753197,
+        "p90_ms": 0.16957900004399562
+      },
+      "speed": 0.4118350168067113
+    },
+    {
+      "name": "matmul_512",
+      "shape": "512x512@512x512",
+      "unit": "GFLOP/s",
+      "ferro": {
+        "name": "matmul_512",
+        "group": "op",
+        "shape": "512x512@512x512",
+        "work": 268435456,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 1.028729,
+        "min_ms": 0.896262,
+        "p90_ms": 1.202353
+      },
+      "torch": {
+        "name": "matmul_512",
+        "group": "op",
+        "shape": "512x512@512x512",
+        "work": 268435456,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.6627689999731956,
+        "min_ms": 0.5631080000512156,
+        "p90_ms": 1.150303000031272
+      },
+      "speed": 0.6442600529130564
+    },
+    {
+      "name": "matmul_1024",
+      "shape": "1024x1024@1024x1024",
+      "unit": "GFLOP/s",
+      "ferro": {
+        "name": "matmul_1024",
+        "group": "op",
+        "shape": "1024x1024@1024x1024",
+        "work": 2147483648,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 6.325223,
+        "min_ms": 5.706295,
+        "p90_ms": 7.603812
+      },
+      "torch": {
+        "name": "matmul_1024",
+        "group": "op",
+        "shape": "1024x1024@1024x1024",
+        "work": 2147483648,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 4.79463950000536,
+        "min_ms": 4.1871360000413915,
+        "p90_ms": 6.5355509999562855
+      },
+      "speed": 0.7580190453372726
+    },
+    {
+      "name": "add_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "add_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 50331648,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.709429,
+        "min_ms": 0.57544,
+        "p90_ms": 1.072859
+      },
+      "torch": {
+        "name": "add_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 50331648,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.7529200000249148,
+        "min_ms": 0.5613649999531845,
+        "p90_ms": 1.1490849999518105
+      },
+      "speed": 1.0613042320301465
+    },
+    {
+      "name": "mul_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "mul_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 50331648,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.647115,
+        "min_ms": 0.522974,
+        "p90_ms": 0.785391
+      },
+      "torch": {
+        "name": "mul_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 50331648,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.6891470000027766,
+        "min_ms": 0.5594329999212277,
+        "p90_ms": 0.9567820000029315
+      },
+      "speed": 1.064952906365602
+    },
+    {
+      "name": "relu_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "relu_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.559675,
+        "min_ms": 0.489011,
+        "p90_ms": 0.975954
+      },
+      "torch": {
+        "name": "relu_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.5309924999892246,
+        "min_ms": 0.38025699996069307,
+        "p90_ms": 1.0519969999904788
+      },
+      "speed": 0.9487515075521054
+    },
+    {
+      "name": "exp_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "exp_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.537476,
+        "min_ms": 0.434229,
+        "p90_ms": 0.6521
+      },
+      "torch": {
+        "name": "exp_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.6078619999811963,
+        "min_ms": 0.4151249999040374,
+        "p90_ms": 0.8664980000503419
+      },
+      "speed": 1.1309565450014445
+    },
+    {
+      "name": "gelu_tanh_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "gelu_tanh_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 1.289027,
+        "min_ms": 1.180228,
+        "p90_ms": 1.474383
+      },
+      "torch": {
+        "name": "gelu_tanh_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 33554432,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 3.6975299999539857,
+        "min_ms": 3.375057999960518,
+        "p90_ms": 5.833990000041922
+      },
+      "speed": 2.868465904867769
+    },
+    {
+      "name": "sum_4M",
+      "shape": "4194304",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "sum_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 16777216,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.233865,
+        "min_ms": 0.200082,
+        "p90_ms": 0.343656
+      },
+      "torch": {
+        "name": "sum_4M",
+        "group": "op",
+        "shape": "4194304",
+        "work": 16777216,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.24503450003976468,
+        "min_ms": 0.17939899998964393,
+        "p90_ms": 0.6991430000198307
+      },
+      "speed": 1.0477604602645316
+    },
+    {
+      "name": "softmax_1024x1024",
+      "shape": "1024x1024 dim=1",
+      "unit": "GB/s",
+      "ferro": {
+        "name": "softmax_1024x1024",
+        "group": "op",
+        "shape": "1024x1024 dim=1",
+        "work": 8388608,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.34025,
+        "min_ms": 0.258713,
+        "p90_ms": 0.395693
+      },
+      "torch": {
+        "name": "softmax_1024x1024",
+        "group": "op",
+        "shape": "1024x1024 dim=1",
+        "work": 8388608,
+        "unit": "GB/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 0.2767910000329721,
+        "min_ms": 0.24735199997394375,
+        "p90_ms": 0.5080480000287935
+      },
+      "speed": 0.8134930199352596
+    },
+    {
+      "name": "conv2d_fwd",
+      "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+      "unit": "GFLOP/s",
+      "ferro": {
+        "name": "conv2d_fwd",
+        "group": "op",
+        "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+        "work": 603979776,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 9.304049,
+        "min_ms": 7.126522,
+        "p90_ms": 36.057017
+      },
+      "torch": {
+        "name": "conv2d_fwd",
+        "group": "op",
+        "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+        "work": 603979776,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 2.096253999923192,
+        "min_ms": 1.6084359999695153,
+        "p90_ms": 3.6383780000051047
+      },
+      "speed": 0.22530556319331427
+    },
+    {
+      "name": "conv2d_fwd_bwd",
+      "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+      "unit": "GFLOP/s",
+      "ferro": {
+        "name": "conv2d_fwd_bwd",
+        "group": "op",
+        "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+        "work": 1811939328,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 36.993949,
+        "min_ms": 27.138779,
+        "p90_ms": 53.664099
+      },
+      "torch": {
+        "name": "conv2d_fwd_bwd",
+        "group": "op",
+        "shape": "x[16,32,32,32] w[64,32,3,3] pad=1",
+        "work": 1811939328,
+        "unit": "GFLOP/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 8.684131499990144,
+        "min_ms": 6.267167999908452,
+        "p90_ms": 15.825673999984247
+      },
+      "speed": 0.2347446470229535
+    },
+    {
+      "name": "mlp_train_step",
+      "shape": "128x784 -> 512 -> 256 -> 10, relu, CE, SGD",
+      "unit": "samples/s",
+      "ferro": {
+        "name": "mlp_train_step",
+        "group": "model",
+        "shape": "128x784 -> 512 -> 256 -> 10, relu, CE, SGD",
+        "work": 128,
+        "unit": "samples/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 6.93271,
+        "min_ms": 5.792823,
+        "p90_ms": 8.770613
+      },
+      "torch": {
+        "name": "mlp_train_step",
+        "group": "model",
+        "shape": "128x784 -> 512 -> 256 -> 10, relu, CE, SGD",
+        "work": 128,
+        "unit": "samples/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 1.995190499940236,
+        "min_ms": 1.564861000019846,
+        "p90_ms": 2.73432699998466
+      },
+      "speed": 0.2877937343319187
+    },
+    {
+      "name": "cnn_train_step",
+      "shape": "32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD",
+      "unit": "samples/s",
+      "ferro": {
+        "name": "cnn_train_step",
+        "group": "model",
+        "shape": "32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD",
+        "work": 32,
+        "unit": "samples/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 27.752424,
+        "min_ms": 22.000216,
+        "p90_ms": 31.511772
+      },
+      "torch": {
+        "name": "cnn_train_step",
+        "group": "model",
+        "shape": "32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD",
+        "work": 32,
+        "unit": "samples/s",
+        "warmup": 5,
+        "iters": 30,
+        "median_ms": 4.5648449999475815,
+        "min_ms": 3.888222999989921,
+        "p90_ms": 7.779927000001408
+      },
+      "speed": 0.16448455096922637
+    },
+    {
+      "name": "transformer_train_step",
+      "shape": "batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536",
+      "unit": "tokens/s",
+      "ferro": {
+        "name": "transformer_train_step",
+        "group": "model",
+        "shape": "batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536",
+        "unit": "tokens/s",
+        "work": 1024,
+        "median_ms": 273.91,
+        "p90_ms": 310.6,
+        "warmup": 5,
+        "iters": 20
+      },
+      "torch": {
+        "name": "transformer_train_step",
+        "group": "model",
+        "shape": "batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536",
+        "unit": "tokens/s",
+        "work": 1024,
+        "median_ms": 51.8,
+        "p90_ms": 98.87,
+        "warmup": 5,
+        "iters": 20
+      },
+      "speed": 0.18911321236902628
+    }
+  ]
+}
