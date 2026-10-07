@@ -35,8 +35,9 @@ impl Tensor {
                 vec![g.sub(&s).unwrap().mul(&y).unwrap()]
             }));
         }
-        let x = self.to_vec();
-        let y_data = softmax_forward(&x, &shape, dim);
+        let cpu = crate::dispatch::backend_for(crate::Device::Cpu)?;
+        let rows = shape[..dim].iter().product();
+        let y_data = self.with_host_f32(|x| if dim + 1 == ndim { cpu.softmax(x, rows, shape[dim]) } else { softmax_forward(x, &shape, dim) });
         // Host-composed op: return to the input's device so chained
         // device-resident ops stay on-device.
         let out = Tensor::from_vec(y_data, &shape)?.to_device(self.device())?;
@@ -62,7 +63,7 @@ fn slice_dims(shape: &[usize], dim: usize) -> (usize, usize, usize) {
     (outer, size, stride)
 }
 
-fn softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
+pub(crate) fn softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
     let (outer, size, stride) = slice_dims(shape, dim);
     let mut y = vec![0.0f32; x.len()];
     for o in 0..outer {

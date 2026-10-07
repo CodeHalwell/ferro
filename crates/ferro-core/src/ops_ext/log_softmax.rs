@@ -34,30 +34,11 @@ impl Tensor {
             }));
         }
         let shape = self.shape().to_vec();
-        let x = self.to_vec();
         let n = shape[dim];
         let stride = shape[dim + 1..].iter().product::<usize>();
         let outer = shape[..dim].iter().product::<usize>();
-
-        let mut y = vec![0.0f32; x.len()];
-        let mut exps = vec![0.0f32; x.len()];
-        for o in 0..outer {
-            for i in 0..stride {
-                let base = o * n * stride + i;
-                let mut m = f32::NEG_INFINITY;
-                for k in 0..n {
-                    m = m.max(x[base + k * stride]);
-                }
-                for k in 0..n {
-                    exps[base + k * stride] = (x[base + k * stride] - m).exp();
-                }
-                let sum = pairwise_sum_strided(&exps, base, n, stride);
-                let lse = m + sum.ln();
-                for k in 0..n {
-                    y[base + k * stride] = x[base + k * stride] - lse;
-                }
-            }
-        }
+        let cpu = crate::dispatch::backend_for(crate::Device::Cpu)?;
+        let y = self.with_host_f32(|x| if dim + 1 == ndim { cpu.log_softmax(x, outer, n) } else { log_softmax_forward(x, &shape, dim) });
 
         if !self.requires_grad() {
             let out = Tensor::from_vec(y, &shape)?;
@@ -87,4 +68,30 @@ impl Tensor {
             vec![Tensor::from_vec(dx, &shape).unwrap()]
         }))
     }
+}
+
+pub(crate) fn log_softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
+    let n = shape[dim];
+    let stride = shape[dim + 1..].iter().product::<usize>();
+    let outer = shape[..dim].iter().product::<usize>();
+    let mut y = vec![0.0f32; x.len()];
+    let mut exps = vec![0.0f32; x.len()];
+    for o in 0..outer {
+        for i in 0..stride {
+            let base = o * n * stride + i;
+            let mut m = f32::NEG_INFINITY;
+            for k in 0..n {
+                m = m.max(x[base + k * stride]);
+            }
+            for k in 0..n {
+                exps[base + k * stride] = (x[base + k * stride] - m).exp();
+            }
+            let sum = pairwise_sum_strided(&exps, base, n, stride);
+            let lse = m + sum.ln();
+            for k in 0..n {
+                y[base + k * stride] = x[base + k * stride] - lse;
+            }
+        }
+    }
+    y
 }
