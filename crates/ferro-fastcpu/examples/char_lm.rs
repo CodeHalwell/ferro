@@ -60,6 +60,7 @@ impl Module for CharLm {
 
 fn main() {
     ferro_fastcpu::install();
+    ferro_fastcpu::install_backend();
 
     let chars: Vec<char> = {
         let mut c: Vec<char> = TEXT.chars().collect();

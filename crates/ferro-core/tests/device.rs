@@ -736,3 +736,38 @@ fn cross_entropy_on_device_logits_and_targets() {
         assert!((a - b).abs() < 1e-5, "{a} vs {b}");
     }
 }
+
+#[test]
+fn device_prefix_view_is_not_the_whole_buffer() {
+    let _serial = setup();
+    let x = Tensor::from_vec(vec![-1.0, 2.0, -3.0, 4.0, -5.0, 6.0], &[3, 2]).unwrap();
+    // narrow(0, 0, 1) has offset 0 and is contiguous but covers 2 of 6
+    // elements: a device kernel handed the raw buffer would return 6 values.
+    let p = x.to_device(DEV).unwrap().narrow(0, 0, 1).unwrap();
+    assert_eq!(p.device(), DEV);
+    assert_eq!(p.relu().to_vec(), vec![0.0, 2.0]);
+    assert_eq!(p.mul(&p).unwrap().to_vec(), vec![1.0, 4.0]);
+    assert_eq!(p.sum().item(), 1.0);
+}
+
+#[test]
+fn view_ops_on_device_keep_device_and_grads() {
+    let _serial = setup();
+    let host = Tensor::from_vec(vec![0.5, -1.0, 2.0, 1.5, -0.25, 0.75], &[2, 3]).unwrap();
+    let d = host.to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let c = host.requires_grad_(true).unwrap();
+    let f = |t: &Tensor| {
+        let v = t.permute(&[1, 0]).unwrap().slice(0, 0, 3, 2).unwrap();
+        let e = t.narrow(1, 1, 1).unwrap().expand(&[2, 4]).unwrap();
+        v.mul(&v).unwrap().sum().add(&e.mul(&e).unwrap().sum()).unwrap()
+    };
+    let (ld, lc) = (f(&d), f(&c));
+    assert!((ld.item() - lc.item()).abs() < 1e-5);
+    assert_eq!(d.permute(&[1, 0]).unwrap().device(), DEV);
+    assert_eq!(d.expand(&[4, 2, 3]).unwrap().device(), DEV);
+    ld.backward();
+    lc.backward();
+    let gd = d.grad().unwrap();
+    assert_eq!(gd.device(), DEV);
+    assert_eq!(gd.to_vec(), c.grad().unwrap().to_vec());
+}

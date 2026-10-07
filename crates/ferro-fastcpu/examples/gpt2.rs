@@ -129,6 +129,7 @@ fn forward(w: &Weights, ids: &[i64]) -> Result<Tensor> {
 
 fn main() {
     ferro_fastcpu::install();
+    ferro_fastcpu::install_backend();
 
     let dir = PathBuf::from(std::env::var("FERRO_GPT2_DIR").expect(
         "set FERRO_GPT2_DIR to a directory holding model.safetensors, vocab.json, merges.txt \

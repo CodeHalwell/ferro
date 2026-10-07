@@ -44,7 +44,7 @@ pub enum UnaryKind {
 /// erf for f32 inputs via Abramowitz-Stegun 7.1.26 evaluated in f64
 /// (max absolute error ~1.5e-7, below f32 resolution over most of the
 /// range). Exported so every host backend computes the exact-erf GELU with
-/// one shared formula - fastcpu's bitwise-parity contract depends on it.
+/// one shared formula (fastcpu's scalar fallback is bitwise CpuBackend).
 /// CUDA uses the hardware `erff`, which agrees to about a ulp of true erf;
 /// device-vs-host comparisons stay within the usual 1e-5 tolerances.
 pub fn erf_f32(x: f32) -> f32 {
@@ -245,6 +245,30 @@ pub trait Backend: Send + Sync {
             crate::pool::give(c);
         }
         out
+    }
+
+    /// Host full-buffer sum. The default is core's fixed-shape pairwise tree
+    /// (reduce.rs); an override must keep that tree so results stay
+    /// reproducible and independent of thread count.
+    fn sum(&self, x: &[f32]) -> f32 {
+        crate::reduce::pairwise_sum(x)
+    }
+
+    /// Host sum over `dim` of a contiguous row-major buffer of `shape`; output
+    /// is the keepdim layout. Same tree contract as `sum`, per output slot.
+    fn sum_dim(&self, x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
+        crate::reduce::sum_dim_host(x, shape, dim)
+    }
+
+    /// Host row-wise softmax over the last dim of a contiguous `rows` x `cols`
+    /// buffer. Overrides may approximate exp to a documented tolerance.
+    fn softmax(&self, x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+        crate::ops_ext::softmax::softmax_forward(x, &[rows, cols], 1)
+    }
+
+    /// Host row-wise log_softmax; same contract as `softmax`.
+    fn log_softmax(&self, x: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+        crate::ops_ext::log_softmax::log_softmax_forward(x, &[rows, cols], 1)
     }
 
     fn alloc_from_host(&self, _data: &[f32]) -> Result<Box<dyn DeviceBuffer>> {

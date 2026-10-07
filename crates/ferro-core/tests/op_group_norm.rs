@@ -77,3 +77,14 @@ fn group_norm_grad_rank4() {
         weighted_loss(t[0].group_norm(1, &t[1], &t[2], 1e-5).unwrap())
     });
 }
+
+#[test]
+fn group_norm_rank3_matches_rank4() {
+    let a = Tensor::randn(&[2, 4, 3], &ferro_core::Rng::new(19));
+    let w = Tensor::from_vec(vec![1.1, 0.7, -0.6, 0.9], &[4]).unwrap();
+    let b = Tensor::from_vec(vec![0.2, -0.4, 0.3, -0.1], &[4]).unwrap();
+    let got = a.group_norm(2, &w, &b, 1e-5).unwrap().to_vec();
+    let want = a.reshape(&[2, 4, 3, 1]).unwrap().group_norm(2, &w, &b, 1e-5).unwrap().to_vec();
+    assert_eq!(got, want);
+    grad_check(&[a, w, b], |t| weighted_loss(t[0].group_norm(2, &t[1], &t[2], 1e-5).unwrap()));
+}
