@@ -1,12 +1,17 @@
-//! Serial production-path probe; exact scalar oracle, median raw samples.
+//! Production-path probe; exact scalar oracle (the documented per-output
+//! chain: fused multiply-add on SIMD paths), raw samples.
 use ferro_core::{Tensor, CpuBackend, dispatch::Backend};
 use std::{hint::black_box, time::Instant};
 
 fn scalar(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    let fused = ferro_fastcpu::gemm::Isa::detect() != ferro_fastcpu::gemm::Isa::Scalar;
     let mut out = vec![0.0; batch*m*n];
     for bi in 0..batch { for i in 0..m { for j in 0..n {
         let mut s = 0.0;
-        for p in 0..k { s += a[(bi*m+i)*k+p] * b[(bi*k+p)*n+j]; }
+        for p in 0..k {
+            let (x, y) = (a[(bi*m+i)*k+p], b[(bi*k+p)*n+j]);
+            s = if fused { x.mul_add(y, s) } else { s + x*y };
+        }
         out[(bi*m+i)*n+j] = s;
     } } }
     out

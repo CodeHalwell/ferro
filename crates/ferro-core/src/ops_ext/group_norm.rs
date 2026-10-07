@@ -1,5 +1,5 @@
 //! `group_norm`: normalizes each (sample, channel-group) block over its
-//! channels and spatial extent. Rank-2 [N, C] or rank-4 NCHW; num_groups must
+//! channels and spatial extent. Rank-2 [N, C], rank-3 [N, C, L] or rank-4 NCHW; num_groups must
 //! divide C. Same affine/biased-variance convention as layer_norm.
 //!
 //! Backward per block over m elements, with xhat and dxh = g * w:
@@ -23,7 +23,7 @@ impl Tensor {
         if !(2..=4).contains(&ndim) {
             return Err(Error::Unsupported {
                 op,
-                msg: format!("expected rank 2 or 4 input, got rank {ndim}"),
+                msg: format!("expected rank 2, 3 or 4 input, got rank {ndim}"),
             });
         }
         let shape = self.shape().to_vec();
@@ -46,7 +46,7 @@ impl Tensor {
             });
         }
 
-        let spatial: usize = if ndim == 4 { shape[2] * shape[3] } else { 1 };
+        let spatial: usize = shape[2..].iter().product();
         let gc = c / num_groups;
         let block = gc * spatial;
         let x = self.to_vec();
