@@ -2,6 +2,7 @@ use ferro_core::gnn::{scatter, Aggr, EdgeIndex, GcnConv, GraphModule, MessagePas
 use ferro_core::nn::{cross_entropy_indices, load_module, save_module, Module};
 use ferro_core::optim::Adam;
 use ferro_core::testkit::grad_check;
+use ferro_core::checkpoint::Checkpoint;
 use ferro_core::{Rng, Tensor};
 
 fn t(v: &[f32], shape: &[usize]) -> Tensor { Tensor::from_vec(v.to_vec(), shape).unwrap() }
@@ -219,4 +220,15 @@ fn gcn_state_round_trips_through_save_module() {
     std::fs::remove_file(&path).unwrap();
     close(&b.forward_graph(&x, &e).unwrap().to_vec(), &a.forward_graph(&x, &e).unwrap().to_vec());
     assert!(Module::forward(&a, &x).is_err());
+}
+
+#[test]
+fn gcn_checkpoint_rejects_self_loop_mismatch() {
+    let a = GcnConv::new(3, 4, &Rng::new(5)).with_self_loops(false);
+    let cp = Checkpoint::from_module(1, &a);
+    assert!(cp.load_into_module(&GcnConv::new(3, 4, &Rng::new(6))).is_err());
+    let b = GcnConv::new(3, 4, &Rng::new(6)).with_self_loops(false);
+    cp.load_into_module(&b).unwrap();
+    let (e, x) = (toy(), t(&features(5, 3), &[5, 3]));
+    close(&b.forward_graph(&x, &e).unwrap().to_vec(), &a.forward_graph(&x, &e).unwrap().to_vec());
 }

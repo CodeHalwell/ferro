@@ -204,4 +204,14 @@ impl Module for GcnConv {
     fn named_parameters(&self) -> Vec<(String, Param)> {
         vec![("weight".into(), self.weight.clone()), ("bias".into(), self.bias.clone())]
     }
+
+    fn snapshot_scalars(&self) -> Vec<(String, u64)> { vec![("self_loops".into(), self.self_loops as u64)] }
+
+    fn validate_scalars(&self, state: &[(String, u64)]) -> Result<()> {
+        crate::nn::validate_scalar_keys(&self.snapshot_scalars(), state)?;
+        if crate::nn::scalar(state, "self_loops") != self.self_loops as u64 {
+            return Err(Error::Format { op: "module_state", msg: "gcn_conv self_loops mismatch".into() });
+        }
+        Ok(())
+    }
 }
