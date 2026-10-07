@@ -7,7 +7,7 @@
 //! capture/replay support, matching `segment`.
 
 use crate::error::{Error, Result};
-use crate::nn::Init;
+use crate::nn::{Init, Module};
 use crate::params::Param;
 use crate::rng::Rng;
 use crate::segment;
@@ -28,6 +28,9 @@ impl EdgeIndex {
     pub fn new(num_nodes: usize, src: Vec<usize>, dst: Vec<usize>) -> Result<Self> {
         if src.len() != dst.len() {
             return Err(invalid("edge_index", format!("{} sources but {} targets", src.len(), dst.len())));
+        }
+        if i64::try_from(num_nodes).is_err() {
+            return Err(invalid("edge_index", format!("{num_nodes} nodes exceed the I64 topology format")));
         }
         if let Some(&bad) = src.iter().chain(&dst).find(|&&n| n >= num_nodes) {
             return Err(invalid("edge_index", format!("node {bad} out of range for {num_nodes} nodes")));
@@ -146,13 +149,12 @@ pub trait MessagePassing {
     }
 }
 
-/// A layer whose forward needs the graph as well as node features.
-pub trait GraphModule {
-    fn forward(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor>;
-
-    fn named_parameters(&self) -> Vec<(String, Param)>;
-
-    fn parameters(&self) -> Vec<Param> { self.named_parameters().into_iter().map(|(_, p)| p).collect() }
+/// A layer whose forward needs the graph as well as node features. The
+/// `Module` supertrait carries the state contract (parameters, buffers,
+/// save_module/load_module, training checkpoints); its single-tensor
+/// `forward` has no graph to run on, so graph layers reject it.
+pub trait GraphModule: Module {
+    fn forward_graph(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor>;
 }
 
 /// Kipf & Welling graph convolution, `D^-1/2 (A + I) D^-1/2 X W + b`, matching
@@ -183,7 +185,7 @@ impl MessagePassing for GcnConv {
 }
 
 impl GraphModule for GcnConv {
-    fn forward(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor> {
+    fn forward_graph(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor> {
         let w = self.weight.tensor();
         if x.ndim() != 2 || x.shape()[1] != w.shape()[0] {
             return Err(invalid("gcn_conv", format!("expected [nodes, {}] features, got {:?}", w.shape()[0], x.shape())));
@@ -191,6 +193,12 @@ impl GraphModule for GcnConv {
         let h = x.matmul(&w)?;
         let out = if self.self_loops { self.propagate(&h, &edges.add_remaining_self_loops())? } else { self.propagate(&h, edges)? };
         out.add(&self.bias.tensor())
+    }
+}
+
+impl Module for GcnConv {
+    fn forward(&self, _x: &Tensor) -> Result<Tensor> {
+        Err(Error::Unsupported { op: "gcn_conv", msg: "graph layers need edges; call forward_graph".into() })
     }
 
     fn named_parameters(&self) -> Vec<(String, Param)> {

@@ -1,5 +1,5 @@
 use ferro_core::gnn::{scatter, Aggr, EdgeIndex, GcnConv, GraphModule, MessagePassing};
-use ferro_core::nn::cross_entropy_indices;
+use ferro_core::nn::{cross_entropy_indices, load_module, save_module, Module};
 use ferro_core::optim::Adam;
 use ferro_core::testkit::grad_check;
 use ferro_core::{Rng, Tensor};
@@ -55,6 +55,7 @@ fn scatter_reductions_zero_fill_and_gradients() {
 fn edge_index_validation_self_loops_and_round_trip() {
     assert!(EdgeIndex::new(3, vec![0, 1], vec![2]).is_err());
     assert!(EdgeIndex::new(3, vec![0, 3], vec![1, 2]).is_err());
+    assert!(EdgeIndex::new(usize::MAX, vec![], vec![]).is_err());
     assert!(EdgeIndex::from_tensor(&Tensor::from_vec_i64(vec![0, -1], &[2, 1]).unwrap(), 2).is_err());
     assert!(EdgeIndex::from_tensor(&Tensor::from_vec_i64(vec![0, 1, 1], &[3, 1]).unwrap(), 2).is_err());
     assert!(EdgeIndex::from_tensor(&t(&[0., 1.], &[2, 1]), 2).is_err());
@@ -84,7 +85,7 @@ fn gcn_matches_dense_reference_values_and_gradients() {
     let probe = t(&features(5, 4), &[5, 4]);
 
     let x = t(&features(5, 3), &[5, 3]).requires_grad_(true).unwrap();
-    let out = gcn.forward(&x, &e).unwrap();
+    let out = gcn.forward_graph(&x, &e).unwrap();
     out.mul(&probe).unwrap().sum().backward();
 
     let x2 = x.detach_copy().requires_grad_(true).unwrap();
@@ -101,18 +102,18 @@ fn gcn_matches_dense_reference_values_and_gradients() {
     close(&out.to_vec()[16..], &x.index_select(0, &[4]).unwrap().matmul(&w).unwrap().add(&b).unwrap().to_vec());
 
     grad_check(&[t(&features(5, 3), &[5, 3])], |xs| {
-        let y = gcn.forward(&xs[0], &e).unwrap();
+        let y = gcn.forward_graph(&xs[0], &e).unwrap();
         y.mul(&y).unwrap().sum()
     });
-    assert!(gcn.forward(&t(&features(4, 3), &[4, 3]), &e).is_err());
-    assert!(gcn.forward(&t(&features(5, 2), &[5, 2]), &e).is_err());
+    assert!(gcn.forward_graph(&t(&features(4, 3), &[4, 3]), &e).is_err());
+    assert!(gcn.forward_graph(&t(&features(5, 2), &[5, 2]), &e).is_err());
 }
 
 #[test]
 fn gcn_without_self_loops_zeroes_sourceless_nodes() {
     let e = EdgeIndex::new(3, vec![0, 1], vec![1, 2]).unwrap();
     let gcn = GcnConv::new(2, 2, &Rng::new(1)).with_self_loops(false);
-    let out = gcn.forward(&t(&features(3, 2), &[3, 2]), &e).unwrap().to_vec();
+    let out = gcn.forward_graph(&t(&features(3, 2), &[3, 2]), &e).unwrap().to_vec();
     // Node 0 receives nothing; node 2 hears node 1 at weight deg(1)^-1/2 deg(2)^-1/2 = 1.
     close(&out[..2], &[0., 0.]);
     assert!(out[4..].iter().all(|v| v.is_finite()));
@@ -128,8 +129,8 @@ fn gcn_is_node_permutation_equivariant() {
     for (i, &p) in perm.iter().enumerate() { inv[p] = i; }
     let pe = EdgeIndex::new(5, e.src().iter().map(|&s| inv[s]).collect(), e.dst().iter().map(|&d| inv[d]).collect()).unwrap();
     let px: Vec<f32> = perm.iter().flat_map(|&p| x[p * 3..p * 3 + 3].to_vec()).collect();
-    let out = gcn.forward(&t(&x, &[5, 3]), &e).unwrap();
-    let pout = gcn.forward(&t(&px, &[5, 3]), &pe).unwrap();
+    let out = gcn.forward_graph(&t(&x, &[5, 3]), &e).unwrap();
+    let pout = gcn.forward_graph(&t(&px, &[5, 3]), &pe).unwrap();
     close(&pout.to_vec(), &out.index_select(0, &perm).unwrap().to_vec());
 }
 
@@ -141,8 +142,8 @@ fn batched_graphs_match_separate_forwards_and_pool() {
     let (xa, xb) = (t(&features(5, 3), &[5, 3]), t(&features(3, 3), &[3, 3]).neg());
     let (edges, owner) = EdgeIndex::batch(&[a.clone(), b.clone()]);
     assert_eq!(owner, vec![0, 0, 0, 0, 0, 1, 1, 1]);
-    let joint = gcn.forward(&Tensor::cat(&[xa.clone(), xb.clone()], 0).unwrap(), &edges).unwrap();
-    let separate = Tensor::cat(&[gcn.forward(&xa, &a).unwrap(), gcn.forward(&xb, &b).unwrap()], 0).unwrap();
+    let joint = gcn.forward_graph(&Tensor::cat(&[xa.clone(), xb.clone()], 0).unwrap(), &edges).unwrap();
+    let separate = Tensor::cat(&[gcn.forward_graph(&xa, &a).unwrap(), gcn.forward_graph(&xb, &b).unwrap()], 0).unwrap();
     close(&joint.to_vec(), &separate.to_vec());
     let pooled = scatter(&joint, &owner, 2, Aggr::Mean).unwrap().to_vec();
     let sep = separate.to_vec();
@@ -196,13 +197,26 @@ fn two_layer_gcn_separates_two_communities() {
     let mut losses = Vec::new();
     for _ in 0..60 {
         opt.zero_grad();
-        let logits = l2.forward(&l1.forward(&x, &e).unwrap().relu(), &e).unwrap();
+        let logits = l2.forward_graph(&l1.forward_graph(&x, &e).unwrap().relu(), &e).unwrap();
         let loss = cross_entropy_indices(&logits, &labels).unwrap();
         losses.push(loss.item());
         loss.backward();
         opt.step();
     }
     assert!(losses[59] < 0.1 * losses[0], "loss {} -> {}", losses[0], losses[59]);
-    let logits = l2.forward(&l1.forward(&x, &e).unwrap().relu(), &e).unwrap().to_vec();
+    let logits = l2.forward_graph(&l1.forward_graph(&x, &e).unwrap().relu(), &e).unwrap().to_vec();
     for n in 0..8 { assert_eq!((logits[n * 2 + 1] > logits[n * 2]) as usize, n / 4, "node {n}"); }
+}
+
+#[test]
+fn gcn_state_round_trips_through_save_module() {
+    let e = toy();
+    let x = t(&features(5, 3), &[5, 3]);
+    let (a, b) = (GcnConv::new(3, 4, &Rng::new(5)), GcnConv::new(3, 4, &Rng::new(6)));
+    let path = std::env::temp_dir().join(format!("ferro_gcn_state_{}.safetensors", std::process::id()));
+    save_module(&path, &a).unwrap();
+    load_module(&path, &b).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    close(&b.forward_graph(&x, &e).unwrap().to_vec(), &a.forward_graph(&x, &e).unwrap().to_vec());
+    assert!(Module::forward(&a, &x).is_err());
 }
