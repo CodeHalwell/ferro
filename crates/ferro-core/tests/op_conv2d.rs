@@ -355,3 +355,79 @@ fn conv_timing_im2col_vs_naive() {
         "im2col+gemm should be faster than naive direct conv"
     );
 }
+
+// Big enough that conv2d splits the batch into several column chunks (2 + 2 + 1
+// images per group here) and threads unfold/fold; checked against a direct
+// f64 convolution and its adjoints with a K*eps-scaled bound.
+#[test]
+fn conv2d_chunked_grouped_matches_direct_f64_forward_and_backward() {
+    let (n, cin, cout, h, w, k, groups) = (5, 4, 6, 160, 200, 7, 2);
+    let (stride, pad, dil) = ([1, 2], [3, 2], [1, 2]);
+    let (ic, oc) = (cin / groups, cout / groups);
+    let oh = (h + 2 * pad[0] - dil[0] * (k - 1) - 1) / stride[0] + 1;
+    let ow = (w + 2 * pad[1] - dil[1] * (k - 1) - 1) / stride[1] + 1;
+    let xv = seq_rand(1, n * cin * h * w);
+    let wv = seq_rand(2, cout * ic * k * k);
+    let cv = seq_rand(3, n * cout * oh * ow);
+    let x = Tensor::from_vec(xv.clone(), &[n, cin, h, w]).unwrap().requires_grad_(true).unwrap();
+    let wt = Tensor::from_vec(wv.clone(), &[cout, ic, k, k]).unwrap().requires_grad_(true).unwrap();
+    let y = x.conv2d_with_options(&wt, stride, pad, dil, groups).unwrap();
+    assert_eq!(y.shape(), &[n, cout, oh, ow]);
+    y.mul(&Tensor::from_vec(cv.clone(), y.shape()).unwrap()).unwrap().sum().backward();
+    let (mut fy, mut my) = (vec![0f64; n * cout * oh * ow], vec![0f64; n * cout * oh * ow]);
+    let (mut fdx, mut mdx) = (vec![0f64; xv.len()], vec![0f64; xv.len()]);
+    let (mut fdw, mut mdw) = (vec![0f64; wv.len()], vec![0f64; wv.len()]);
+    for b in 0..n {
+        for o in 0..cout {
+            let g = o / oc;
+            for yy in 0..oh {
+                for xx in 0..ow {
+                    let yi = ((b * cout + o) * oh + yy) * ow + xx;
+                    let c = cv[yi] as f64;
+                    for ci in 0..ic {
+                        for r in 0..k {
+                            let iy = (yy * stride[0] + r * dil[0]).wrapping_sub(pad[0]);
+                            if iy >= h {
+                                continue;
+                            }
+                            for s in 0..k {
+                                let ix = (xx * stride[1] + s * dil[1]).wrapping_sub(pad[1]);
+                                if ix >= w {
+                                    continue;
+                                }
+                                let xi = ((b * cin + g * ic + ci) * h + iy) * w + ix;
+                                let wi = ((o * ic + ci) * k + r) * k + s;
+                                let (xf, wf) = (xv[xi] as f64, wv[wi] as f64);
+                                fy[yi] += xf * wf;
+                                my[yi] += (xf * wf).abs();
+                                fdx[xi] += c * wf;
+                                mdx[xi] += (c * wf).abs();
+                                fdw[wi] += c * xf;
+                                mdw[wi] += (c * xf).abs();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let close = |got: Vec<f32>, want: &[f64], mag: &[f64], terms: usize, what: &str| {
+        let bound = 2.0 * terms as f64 * f32::EPSILON as f64;
+        for (i, ((&g, &e), &m)) in got.iter().zip(want).zip(mag).enumerate() {
+            assert!((g as f64 - e).abs() <= bound * m + 1e-30, "{what}[{i}]: {g} vs {e} (mag {m})");
+        }
+    };
+    close(y.to_vec(), &fy, &my, ic * k * k, "y");
+    close(x.grad().unwrap().to_vec(), &fdx, &mdx, oc * k * k, "dx");
+    close(wt.grad().unwrap().to_vec(), &fdw, &mdw, n * oh * ow, "dw");
+}
+
+fn seq_rand(seed: u64, len: usize) -> Vec<f32> {
+    let mut s = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1);
+    (0..len)
+        .map(|_| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        })
+        .collect()
+}

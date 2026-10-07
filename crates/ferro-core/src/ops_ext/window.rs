@@ -108,47 +108,96 @@ impl Window2d {
         )
     }
 
-    // Both directions share this mapping, including the padding mask.
-    fn visit(&self, channels: usize, mut f: impl FnMut(usize, usize)) {
-        let [h, w] = self.input;
-        let [kh, kw] = self.kernel;
-        let [oh, ow] = self.output;
-        for ci in 0..channels {
-            for r in 0..kh {
-                for c in 0..kw {
-                    for y in 0..oh {
-                        let Some(iy) = (y * self.stride[0] + r * self.dilation[0])
-                            .checked_sub(self.padding[0])
-                        else {
-                            continue;
-                        };
-                        if iy >= h {
-                            continue;
-                        }
-                        for x in 0..ow {
-                            let Some(ix) = (x * self.stride[1] + c * self.dilation[1])
-                                .checked_sub(self.padding[1])
-                            else {
-                                continue;
-                            };
-                            if ix < w {
-                                f(
-                                    ((ci * kh + r) * kw + c) * oh * ow + y * ow + x,
-                                    (ci * h + iy) * w + ix,
-                                );
-                            }
+    /// In-bounds output columns [x0, x1) for kernel column `c`, and the
+    /// input column of x = 0 plus padding (ix = x*sw + base - pw).
+    fn columns(&self, c: usize) -> (usize, usize, usize) {
+        let ([w, ow], sw, pw) = ([self.input[1], self.output[1]], self.stride[1], self.padding[1]);
+        let off = c * self.dilation[1];
+        let x0 = pw.saturating_sub(off).div_ceil(sw).min(ow);
+        let x1 = if w + pw > off { ((w + pw - off - 1) / sw + 1).min(ow) } else { 0 };
+        (x0, x1.max(x0), off)
+    }
+
+    /// Input row for kernel row `r` at output row `y`, if in bounds.
+    fn input_row(&self, r: usize, y: usize) -> Option<usize> {
+        (y * self.stride[0] + r * self.dilation[0]).checked_sub(self.padding[0]).filter(|&iy| iy < self.input[0])
+    }
+
+    /// Both directions share this mapping, including the padding mask. For
+    /// tap t = r*KW + c and output row y with an in-bounds input row,
+    /// `f(t, y*OW + x0, src, len)` receives the in-bounds column range, with
+    /// `src` the input offset of x0 inside the channel plane (consecutive x
+    /// step by the width stride).
+    fn rows(&self, mut f: impl FnMut(usize, usize, usize, usize)) {
+        let (w, [kh, kw], [oh, ow]) = (self.input[1], self.kernel, self.output);
+        let (sw, pw) = (self.stride[1], self.padding[1]);
+        for r in 0..kh {
+            for c in 0..kw {
+                let (x0, x1, off) = self.columns(c);
+                if x0 == x1 {
+                    continue;
+                }
+                for y in 0..oh {
+                    if let Some(iy) = self.input_row(r, y) {
+                        f(r * kw + c, y * ow + x0, iy * w + x0 * sw + off - pw, x1 - x0);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Unfold channel `ci` of `image` into KH*KW column rows of `col`
+    /// spaced `ld` apart (row t starts at `col[t*ld]`, holding OH*OW values).
+    /// Every slot is written exactly once (padding as zero).
+    pub(crate) fn unfold_channel(&self, image: &[f32], ci: usize, col: &mut [f32], ld: usize) {
+        let ([h, w], [kh, kw], [oh, ow]) = (self.input, self.kernel, self.output);
+        let (sw, pw) = (self.stride[1], self.padding[1]);
+        let src = &image[ci * h * w..(ci + 1) * h * w];
+        for r in 0..kh {
+            for c in 0..kw {
+                let (x0, x1, off) = self.columns(c);
+                let row = &mut col[(r * kw + c) * ld..][..oh * ow];
+                for (y, seg) in row.chunks_exact_mut(ow).enumerate() {
+                    let Some(iy) = self.input_row(r, y) else {
+                        seg.fill(0.0);
+                        continue;
+                    };
+                    seg[..x0].fill(0.0);
+                    seg[x1..].fill(0.0);
+                    if x0 < x1 {
+                        let s = &src[iy * w + x0 * sw + off - pw..];
+                        if sw == 1 {
+                            seg[x0..x1].iter_mut().zip(s).for_each(|(o, &v)| *o = v);
+                        } else {
+                            seg[x0..x1].iter_mut().zip(s.iter().step_by(sw)).for_each(|(o, &v)| *o = v);
                         }
                     }
                 }
             }
         }
     }
+
+    /// Adjoint of `unfold_channel`: accumulate the column rows into channel `ci`.
+    pub(crate) fn fold_channel_add(&self, col: &[f32], ld: usize, ci: usize, image: &mut [f32]) {
+        let (plane, sw) = (self.input[0] * self.input[1], self.stride[1]);
+        let dst = &mut image[ci * plane..(ci + 1) * plane];
+        self.rows(|t, src, d, len| {
+            let s = &col[t * ld + src..][..len];
+            dst[d..].iter_mut().step_by(sw).zip(s).for_each(|(o, &v)| *o += v);
+        });
+    }
+
     pub(crate) fn unfold_into(&self, image: &[f32], channels: usize, col: &mut [f32]) {
-        col.fill(0.0);
-        self.visit(channels, |dst, src| col[dst] = image[src]);
+        let rows = self.kernel_area() * self.positions();
+        for ci in 0..channels {
+            self.unfold_channel(image, ci, &mut col[ci * rows..(ci + 1) * rows], self.positions());
+        }
     }
     pub(crate) fn fold_add(&self, col: &[f32], channels: usize, image: &mut [f32]) {
-        self.visit(channels, |src, dst| image[dst] += col[src]);
+        let rows = self.kernel_area() * self.positions();
+        for ci in 0..channels {
+            self.fold_channel_add(&col[ci * rows..(ci + 1) * rows], self.positions(), ci, image);
+        }
     }
 }
 

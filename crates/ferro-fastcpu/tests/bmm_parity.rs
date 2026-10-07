@@ -1,4 +1,6 @@
 //! Independent scalar oracle: no registry, pool, packing, or backend reference.
+//! It replays the documented per-output chain: fused multiply-add in
+//! ascending k on the SIMD paths, separate multiply/add on the scalar one.
 use ferro_fastcpu::{matmul_batch, matmul_with_threads};
 #[path = "support/bmm_diagnostics.rs"]
 mod diagnostics;
@@ -36,7 +38,7 @@ fn injected_historical_coordinate_omission_retains_operands() {
     let a = input(2556, batch*m*k);
     let b = input(3556, batch*k*n);
     let mut evidence = diagnostics::Capture::new(&a, &b, [batch, m, k, n], [2556, 3556], 0, None);
-    let want = oracle(&a, &b, batch, m, k, n);
+    let want = oracle_with(false, &a, &b, batch, m, k, n);
     evidence.before_fast(&a, &b, &want);
     // Deliberately omit p=90 in ONE test output coordinate; never modify a kernel.
     let mut got = want.clone();
@@ -86,13 +88,18 @@ fn input(seed: u64, len: usize) -> Vec<f32> {
 }
 
 fn oracle(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    oracle_with(ferro_fastcpu::gemm::Isa::detect() != ferro_fastcpu::gemm::Isa::Scalar, a, b, batch, m, k, n)
+}
+
+fn oracle_with(fused: bool, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0; batch * m * n];
     for bi in 0..batch {
         for row in 0..m {
             for col in 0..n {
                 let mut sum = 0.0f32;
                 for p in 0..k {
-                    sum += a[(bi * m + row) * k + p] * b[(bi * k + p) * n + col];
+                    let (x, y) = (a[(bi * m + row) * k + p], b[(bi * k + p) * n + col]);
+                    sum = if fused { x.mul_add(y, sum) } else { sum + x * y };
                 }
                 out[(bi * m + row) * n + col] = sum;
             }

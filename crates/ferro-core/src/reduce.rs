@@ -35,6 +35,22 @@ pub(crate) fn pairwise_sum_strided(x: &[f32], offset: usize, n: usize, stride: u
     left + right
 }
 
+/// Sum over `dim` of a contiguous row-major buffer of `shape` into the
+/// keepdim layout (row-major over the other dims): one strided pairwise tree
+/// per output slot.
+pub(crate) fn sum_dim_host(x: &[f32], shape: &[usize], dim: usize) -> Vec<f32> {
+    let n = shape[dim];
+    let inner: usize = shape[dim + 1..].iter().product();
+    let outer: usize = shape[..dim].iter().product();
+    // Every slot is assigned below, so the buffer may come back uninit.
+    let mut out = crate::pool::take_uninit(outer * inner);
+    for (j, slot) in out.iter_mut().enumerate() {
+        let (o, i) = (j / inner, j % inner);
+        *slot = pairwise_sum_strided(x, o * n * inner + i, n, inner);
+    }
+    out
+}
+
 fn base_sum(x: &[f32], offset: usize, n: usize, stride: usize) -> f32 {
     let mut acc = [0.0f32; LANES];
     let chunks = n / LANES;

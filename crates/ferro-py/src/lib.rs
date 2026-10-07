@@ -5,6 +5,7 @@ mod recurrent;
 mod basis;
 mod convolution;
 mod losses;
+mod data;
 
 #[cfg(test)]
 #[path = "../tests/support/dlpack_recorded_error.rs"]
@@ -20,6 +21,10 @@ use pyo3::types::{PyDict, PyEllipsis, PyList, PySlice, PyTuple};
 
 fn map_err(e: ferro_core::Error) -> PyErr {
     PyValueError::new_err(e.to_string())
+}
+
+fn ok(r: ferro_core::Result<CoreTensor>) -> PyResult<PyTensor> {
+    r.map(PyTensor::wrap).map_err(map_err)
 }
 
 fn validate_dlpack_stream(device: Device, stream: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
@@ -319,6 +324,40 @@ fn parse_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Sel>> {
         return Ok(sels);
     }
     Ok(vec![one(key)?])
+}
+
+impl PyTensor {
+    fn index_view(&self, picked: &[Sel], shape: &[usize]) -> PyResult<Option<PyTensor>> {
+        let mut t = self.inner.clone();
+        let mut drop = Vec::new();
+        for (d, sel) in picked.iter().enumerate() {
+            t = match sel {
+                Sel::Idx(i) => {
+                    drop.push(d);
+                    t.narrow(d, wrap_index(*i, shape[d])?, 1).map_err(map_err)?
+                }
+                Sel::Slice(start, stop, step) => {
+                    let st = step.unwrap_or(1);
+                    let idx = slice_indices(*start, *stop, st, shape[d])?;
+                    if idx.is_empty() {
+                        return Ok(None);
+                    }
+                    if st > 0 {
+                        t.slice(d, idx[0], idx[idx.len() - 1] + 1, st as usize).map_err(map_err)?
+                    } else {
+                        t.index_select(d, &idx).map_err(map_err)?
+                    }
+                }
+            };
+        }
+        if drop.len() == shape.len() {
+            return Ok(None);
+        }
+        for &d in drop.iter().rev() {
+            t = t.squeeze(d).map_err(map_err)?;
+        }
+        Ok(Some(PyTensor::wrap(t)))
+    }
 }
 
 #[pymethods]
@@ -645,6 +684,94 @@ impl PyTensor {
             .map_err(map_err)
     }
 
+    #[pyo3(signature = (*dims))]
+    fn permute(&self, dims: Vec<isize>) -> PyResult<PyTensor> {
+        let ndim = self.inner.ndim();
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.permute(&d))
+    }
+
+    fn narrow(&self, dim: isize, start: isize, length: usize) -> PyResult<PyTensor> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        let len = self.inner.shape()[d] as isize;
+        let s = if start < 0 { start + len } else { start };
+        if s < 0 {
+            return Err(PyValueError::new_err(format!("start {start} out of range for dimension of size {len}")));
+        }
+        ok(self.inner.narrow(d, s as usize, length))
+    }
+
+    #[pyo3(signature = (split_size_or_sections, dim=0))]
+    fn split(&self, split_size_or_sections: &Bound<'_, PyAny>, dim: isize) -> PyResult<Vec<PyTensor>> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        let parts = match split_size_or_sections.extract::<usize>() {
+            Ok(size) => self.inner.split(size, d),
+            Err(_) => self.inner.split_sizes(&split_size_or_sections.extract::<Vec<usize>>()?, d),
+        };
+        Ok(parts.map_err(map_err)?.into_iter().map(PyTensor::wrap).collect())
+    }
+
+    #[pyo3(signature = (chunks, dim=0))]
+    fn chunk(&self, chunks: usize, dim: isize) -> PyResult<Vec<PyTensor>> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        Ok(self.inner.chunk(chunks, d).map_err(map_err)?.into_iter().map(PyTensor::wrap).collect())
+    }
+
+    /// torch semantics: -1 keeps an existing size; new leading dims may be added.
+    #[pyo3(signature = (*sizes))]
+    fn expand(&self, sizes: Vec<isize>) -> PyResult<PyTensor> {
+        let shape = self.inner.shape();
+        if sizes.len() < shape.len() {
+            return Err(PyValueError::new_err(format!("expand: {} sizes given for rank-{} tensor", sizes.len(), shape.len())));
+        }
+        let lead = sizes.len() - shape.len();
+        let mut out = Vec::with_capacity(sizes.len());
+        for (i, &s) in sizes.iter().enumerate() {
+            out.push(match s {
+                -1 if i >= lead => shape[i - lead],
+                s if s >= 0 => s as usize,
+                _ => return Err(PyValueError::new_err(format!("expand: invalid size {s} at dim {i}"))),
+            });
+        }
+        let src = if lead > 0 {
+            let mut v = shape.to_vec();
+            v.splice(0..0, std::iter::repeat(1).take(lead));
+            self.inner.reshape(&v).map_err(map_err)?
+        } else {
+            self.inner.clone()
+        };
+        ok(src.expand(&out))
+    }
+
+    #[pyo3(signature = (*reps))]
+    fn repeat(&self, reps: Vec<usize>) -> PyResult<PyTensor> { ok(self.inner.repeat(&reps)) }
+
+    #[pyo3(signature = (*dims))]
+    fn flip(&self, dims: Vec<isize>) -> PyResult<PyTensor> {
+        let ndim = self.inner.ndim();
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.flip(&d))
+    }
+
+    #[pyo3(signature = (shifts, dims=None))]
+    fn roll(&self, shifts: &Bound<'_, PyAny>, dims: Option<&Bound<'_, PyAny>>) -> PyResult<PyTensor> {
+        let shifts: Vec<isize> = shifts.extract::<isize>().map(|s| vec![s]).or_else(|_| shifts.extract())?;
+        let ndim = self.inner.ndim();
+        let dims: Vec<isize> = match dims {
+            None => Vec::new(),
+            Some(d) => d.extract::<isize>().map(|x| vec![x]).or_else(|_| d.extract())?,
+        };
+        let d: Vec<usize> = dims.iter().map(|&x| norm_dim(x, ndim)).collect::<PyResult<_>>()?;
+        ok(self.inner.roll(&shifts, &d))
+    }
+
+    fn masked_fill(&self, mask: &PyTensor, value: f32) -> PyResult<PyTensor> { ok(self.inner.masked_fill(&mask.inner, value)) }
+
+    fn index_add(&self, dim: isize, index: &PyTensor, source: &PyTensor) -> PyResult<PyTensor> {
+        let d = norm_dim(dim, self.inner.ndim())?;
+        ok(self.inner.index_add(d, &index.inner, &source.inner))
+    }
+
     #[pyo3(signature = (weight, stride=1, padding=0))]
     fn conv2d(&self, weight: &PyTensor, stride: usize, padding: usize) -> PyResult<PyTensor> {
         self.inner.conv2d(&weight.inner, stride, padding).map(PyTensor::wrap).map_err(map_err)
@@ -662,11 +789,143 @@ impl PyTensor {
         PyTensor::wrap(self.inner.mean())
     }
 
+    fn acos(&self) -> PyResult<PyTensor> { ok(self.inner.acos()) }
+    fn acosh(&self) -> PyResult<PyTensor> { ok(self.inner.acosh()) }
+    fn asin(&self) -> PyResult<PyTensor> { ok(self.inner.asin()) }
+    fn asinh(&self) -> PyResult<PyTensor> { ok(self.inner.asinh()) }
+    fn atan(&self) -> PyResult<PyTensor> { ok(self.inner.atan()) }
+    fn atanh(&self) -> PyResult<PyTensor> { ok(self.inner.atanh()) }
+    fn cos(&self) -> PyResult<PyTensor> { ok(self.inner.cos()) }
+    fn cosh(&self) -> PyResult<PyTensor> { ok(self.inner.cosh()) }
+    fn sin(&self) -> PyResult<PyTensor> { ok(self.inner.sin()) }
+    fn sinh(&self) -> PyResult<PyTensor> { ok(self.inner.sinh()) }
+    fn tan(&self) -> PyResult<PyTensor> { ok(self.inner.tan()) }
+    fn sinc(&self) -> PyResult<PyTensor> { ok(self.inner.sinc()) }
+    fn deg2rad(&self) -> PyResult<PyTensor> { ok(self.inner.deg2rad()) }
+    fn rad2deg(&self) -> PyResult<PyTensor> { ok(self.inner.rad2deg()) }
+    fn erf(&self) -> PyResult<PyTensor> { ok(self.inner.erf()) }
+    fn erfc(&self) -> PyResult<PyTensor> { ok(self.inner.erfc()) }
+    fn exp2(&self) -> PyResult<PyTensor> { ok(self.inner.exp2()) }
+    fn expm1(&self) -> PyResult<PyTensor> { ok(self.inner.expm1()) }
+    fn log10(&self) -> PyResult<PyTensor> { ok(self.inner.log10()) }
+    fn log1p(&self) -> PyResult<PyTensor> { ok(self.inner.log1p()) }
+    fn log2(&self) -> PyResult<PyTensor> { ok(self.inner.log2()) }
+    fn logit(&self) -> PyResult<PyTensor> { ok(self.inner.logit()) }
+    fn reciprocal(&self) -> PyResult<PyTensor> { ok(self.inner.reciprocal()) }
+    fn rsqrt(&self) -> PyResult<PyTensor> { ok(self.inner.rsqrt()) }
+    fn square(&self) -> PyResult<PyTensor> { ok(self.inner.square()) }
+    fn sign(&self) -> PyResult<PyTensor> { ok(self.inner.sign()) }
+    fn ceil(&self) -> PyResult<PyTensor> { ok(self.inner.ceil()) }
+    fn floor(&self) -> PyResult<PyTensor> { ok(self.inner.floor()) }
+    fn round(&self) -> PyResult<PyTensor> { ok(self.inner.round()) }
+    fn trunc(&self) -> PyResult<PyTensor> { ok(self.inner.trunc()) }
+    fn frac(&self) -> PyResult<PyTensor> { ok(self.inner.frac()) }
+    fn trace(&self) -> PyResult<PyTensor> { ok(self.inner.trace()) }
+    fn silu(&self) -> PyTensor { PyTensor::wrap(self.inner.silu()) }
+    fn gelu_erf(&self) -> PyTensor { PyTensor::wrap(self.inner.gelu_erf()) }
+    fn mish(&self) -> PyResult<PyTensor> { ok(self.inner.mish()) }
+    fn selu(&self) -> PyResult<PyTensor> { ok(self.inner.selu()) }
+    fn relu6(&self) -> PyResult<PyTensor> { ok(self.inner.relu6()) }
+    fn hardsigmoid(&self) -> PyResult<PyTensor> { ok(self.inner.hardsigmoid()) }
+    fn hardswish(&self) -> PyResult<PyTensor> { ok(self.inner.hardswish()) }
+    fn log_sigmoid(&self) -> PyResult<PyTensor> { ok(self.inner.log_sigmoid()) }
+    fn softplus(&self) -> PyResult<PyTensor> { ok(self.inner.softplus()) }
+    fn softsign(&self) -> PyResult<PyTensor> { ok(self.inner.softsign()) }
+    fn tanhshrink(&self) -> PyResult<PyTensor> { ok(self.inner.tanhshrink()) }
+    #[pyo3(signature = (alpha=1.0))]
+    fn elu(&self, alpha: f32) -> PyResult<PyTensor> { ok(self.inner.elu(alpha)) }
+    #[pyo3(signature = (alpha=1.0))]
+    fn celu(&self, alpha: f32) -> PyResult<PyTensor> { ok(self.inner.celu(alpha)) }
+    #[pyo3(signature = (negative_slope=0.01))]
+    fn leaky_relu(&self, negative_slope: f32) -> PyResult<PyTensor> { ok(self.inner.leaky_relu(negative_slope)) }
+    #[pyo3(signature = (lambd=0.5))]
+    fn hardshrink(&self, lambd: f32) -> PyResult<PyTensor> { ok(self.inner.hardshrink(lambd)) }
+    #[pyo3(signature = (lambd=0.5))]
+    fn softshrink(&self, lambd: f32) -> PyResult<PyTensor> { ok(self.inner.softshrink(lambd)) }
+    #[pyo3(signature = (min_val=-1.0, max_val=1.0))]
+    fn hardtanh(&self, min_val: f32, max_val: f32) -> PyResult<PyTensor> { ok(self.inner.hardtanh(min_val, max_val)) }
+    fn threshold(&self, threshold: f32, value: f32) -> PyResult<PyTensor> { ok(self.inner.threshold(threshold, value)) }
+
+    fn atan2(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.atan2(&expect_operand(other)?)) }
+    fn copysign(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.copysign(&expect_operand(other)?)) }
+    fn fmod(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.fmod(&expect_operand(other)?)) }
+    fn remainder(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.remainder(&expect_operand(other)?)) }
+    fn hypot(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.hypot(&expect_operand(other)?)) }
+    fn heaviside(&self, values: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.heaviside(&expect_operand(values)?)) }
+    fn logaddexp(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.logaddexp(&expect_operand(other)?)) }
+    fn maximum(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.maximum(&expect_operand(other)?)) }
+    fn minimum(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.minimum(&expect_operand(other)?)) }
+    fn xlogy(&self, other: &Bound<'_, PyAny>) -> PyResult<PyTensor> { ok(self.inner.xlogy(&expect_operand(other)?)) }
+    fn outer(&self, other: &PyTensor) -> PyResult<PyTensor> { ok(self.inner.outer(&other.inner)) }
+    fn lerp(&self, end: &PyTensor, weight: f32) -> PyResult<PyTensor> { ok(self.inner.lerp(&end.inner, weight)) }
+    #[pyo3(signature = (tensor1, tensor2, value=1.0))]
+    fn addcmul(&self, tensor1: &PyTensor, tensor2: &PyTensor, value: f32) -> PyResult<PyTensor> { ok(self.inner.addcmul(&tensor1.inner, &tensor2.inner, value)) }
+    #[pyo3(signature = (tensor1, tensor2, value=1.0))]
+    fn addcdiv(&self, tensor1: &PyTensor, tensor2: &PyTensor, value: f32) -> PyResult<PyTensor> { ok(self.inner.addcdiv(&tensor1.inner, &tensor2.inner, value)) }
+    #[pyo3(signature = (other, p=2.0))]
+    fn dist(&self, other: &PyTensor, p: f32) -> PyResult<PyTensor> { ok(self.inner.dist(&other.inner, p)) }
+
+    fn logsumexp(&self, dim: isize) -> PyResult<PyTensor> { ok(self.inner.logsumexp(norm_dim(dim, self.inner.ndim())?)) }
+    fn softmin(&self, dim: isize) -> PyResult<PyTensor> { ok(self.inner.softmin(norm_dim(dim, self.inner.ndim())?)) }
+    #[pyo3(signature = (dim=-1))]
+    fn diff(&self, dim: isize) -> PyResult<PyTensor> { ok(self.inner.diff(norm_dim(dim, self.inner.ndim())?)) }
+    #[pyo3(signature = (dim, keepdim=false))]
+    fn prod_dim(&self, dim: isize, keepdim: bool) -> PyResult<PyTensor> { ok(self.inner.prod_dim(norm_dim(dim, self.inner.ndim())?, keepdim)) }
+    #[pyo3(signature = (dim, correction=1, keepdim=false))]
+    fn var_dim(&self, dim: isize, correction: usize, keepdim: bool) -> PyResult<PyTensor> { ok(self.inner.var_dim(norm_dim(dim, self.inner.ndim())?, correction, keepdim)) }
+    #[pyo3(signature = (dim, correction=1, keepdim=false))]
+    fn std_dim(&self, dim: isize, correction: usize, keepdim: bool) -> PyResult<PyTensor> { ok(self.inner.std_dim(norm_dim(dim, self.inner.ndim())?, correction, keepdim)) }
+    #[pyo3(signature = (dim=1, eps=1e-12))]
+    fn normalize(&self, dim: isize, eps: f32) -> PyResult<PyTensor> { ok(self.inner.normalize(norm_dim(dim, self.inner.ndim())?, eps)) }
+    #[pyo3(signature = (other, dim=1, eps=1e-8))]
+    fn cosine_similarity(&self, other: &PyTensor, dim: isize, eps: f32) -> PyResult<PyTensor> { ok(self.inner.cosine_similarity(&other.inner, norm_dim(dim, self.inner.ndim())?, eps)) }
+    #[pyo3(signature = (other, p=2.0, eps=1e-6))]
+    fn pairwise_distance(&self, other: &PyTensor, p: f32, eps: f32) -> PyResult<PyTensor> { ok(self.inner.pairwise_distance(&other.inner, p, eps)) }
+    #[pyo3(signature = (start_dim=0, end_dim=-1))]
+    fn flatten(&self, start_dim: isize, end_dim: isize) -> PyResult<PyTensor> {
+        let n = self.inner.ndim().max(1);
+        ok(self.inner.flatten(norm_dim(start_dim, n)?, norm_dim(end_dim, n)?))
+    }
+    #[pyo3(signature = (diagonal=0))]
+    fn triu(&self, diagonal: i64) -> PyResult<PyTensor> { ok(self.inner.triu(diagonal)) }
+    #[pyo3(signature = (diagonal=0))]
+    fn tril(&self, diagonal: i64) -> PyResult<PyTensor> { ok(self.inner.tril(diagonal)) }
+    /// `pads` holds one (before, after) pair per dimension in dim order
+    /// (not torch's last-dim-first order; `ferro.nn.functional.pad` converts).
+    #[pyo3(signature = (pads, value=0.0))]
+    fn pad_constant(&self, pads: Vec<usize>, value: f32) -> PyResult<PyTensor> { ok(self.inner.pad_constant(&pads, value)) }
+    fn scatter(&self, dim: isize, index: &PyTensor, src: &PyTensor) -> PyResult<PyTensor> { ok(self.inner.scatter(norm_dim(dim, self.inner.ndim())?, &index.inner, &src.inner)) }
+    fn scatter_add(&self, dim: isize, index: &PyTensor, src: &PyTensor) -> PyResult<PyTensor> { ok(self.inner.scatter_add(norm_dim(dim, self.inner.ndim())?, &index.inner, &src.inner)) }
+    #[pyo3(signature = (kernel, stride=None))]
+    fn avg_pool2d(&self, kernel: usize, stride: Option<usize>) -> PyResult<PyTensor> { ok(self.inner.avg_pool2d(kernel, stride.unwrap_or(kernel))) }
+    #[pyo3(signature = (weight=None, eps=1e-6))]
+    fn rms_norm(&self, weight: Option<&PyTensor>, eps: f32) -> PyResult<PyTensor> { ok(self.inner.rms_norm(weight.map(|t| &t.inner), eps)) }
+    #[pyo3(signature = (num_groups, weight, bias, eps=1e-5))]
+    fn group_norm(&self, num_groups: usize, weight: &PyTensor, bias: &PyTensor, eps: f32) -> PyResult<PyTensor> { ok(self.inner.group_norm(num_groups, &weight.inner, &bias.inner, eps)) }
+    /// Returns (output, new_running_mean, new_running_var); inputs are not mutated.
+    #[pyo3(signature = (weight, bias, running_mean, running_var, training, momentum=0.1, eps=1e-5))]
+    fn batch_norm(&self, weight: &PyTensor, bias: &PyTensor, running_mean: &PyTensor, running_var: &PyTensor, training: bool, momentum: f32, eps: f32) -> PyResult<(PyTensor, PyTensor, PyTensor)> {
+        let r = self.inner.batch_norm(&weight.inner, &bias.inner, &running_mean.inner, &running_var.inner, eps, training, momentum).map_err(map_err)?;
+        Ok((PyTensor::wrap(r.output), PyTensor::wrap(r.running_mean), PyTensor::wrap(r.running_var)))
+    }
+    /// Counter-based (Philox) inverted dropout: the mask is a pure function of
+    /// (seed, offset, element index); callers advance `offset` between steps.
+    #[pyo3(signature = (p, training, seed, offset=0))]
+    fn dropout(&self, p: f32, training: bool, seed: u64, offset: u64) -> PyResult<PyTensor> { ok(self.inner.dropout(p, training, seed, offset)) }
+    /// RoPE at positions 0..seq over [batch, seq, head_dim] from the shared table cache.
+    #[pyo3(signature = (base=10000.0))]
+    fn rope_cached(&self, base: f32) -> PyResult<PyTensor> { ok(self.inner.rope_cached(base)) }
+
     /// Basic indexing: ints and slices per dimension, negative indices/steps
-    /// supported. The result is a detached copy (no indexing autograd yet).
+    /// supported. Non-empty selections keeping at least one dim carry autograd:
+    /// positive steps are views, negative steps an index_select copy. Anything
+    /// else is a detached copy.
     fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
         let shape = self.inner.shape().to_vec();
         let picked = parse_key(key, shape.len())?;
+        if let Some(view) = self.index_view(&picked, &shape)? {
+            return Ok(view);
+        }
         let mut dims: Vec<Vec<usize>> = Vec::with_capacity(shape.len());
         let mut out_shape: Vec<usize> = Vec::new();
         for (i, len) in shape.iter().enumerate() {
@@ -883,6 +1142,18 @@ fn cat(tensors: Vec<PyTensor>, dim: isize) -> PyResult<PyTensor> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (tensors, dim=0))]
+fn stack(tensors: Vec<PyTensor>, dim: isize) -> PyResult<PyTensor> {
+    let inners: Vec<CoreTensor> = tensors.iter().map(|t| t.inner.clone()).collect();
+    let ndim = inners.first().map(|t| t.ndim() + 1).unwrap_or(1);
+    let d = if dim < 0 { dim + ndim as isize } else { dim };
+    if d < 0 || d as usize >= ndim {
+        return Err(PyValueError::new_err(format!("dim {dim} out of range for stacking rank-{} tensors", ndim - 1)));
+    }
+    ok(CoreTensor::stack(&inners, d as usize))
+}
+
+#[pyfunction]
 #[pyo3(name = "where")]
 fn where_(cond: &PyTensor, a: &PyTensor, b: &PyTensor) -> PyResult<PyTensor> {
     CoreTensor::where_cond(&cond.inner, &a.inner, &b.inner).map(PyTensor::wrap).map_err(map_err)
@@ -1009,14 +1280,17 @@ fn enable_grad(py: Python<'_>) -> PyResult<Py<PyAny>> {
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Route matmul through the optimized CPU backend for the whole process.
+    // Route matmul and elementwise/reduction ops through the optimized CPU
+    // backend for the whole process.
     ferro_fastcpu::install();
+    ferro_fastcpu::install_backend();
     training_state::register(m)?;
     architecture::register(m)?;
     recurrent::register(m)?;
     basis::register(m)?;
     convolution::register(m)?;
     losses::register(m)?;
+    data::register(m)?;
     m.add_class::<PyTensor>()?;
     m.add_class::<PyParameter>()?;
     m.add_class::<PySgd>()?;
@@ -1030,6 +1304,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Generator>()?;
     m.add_function(wrap_pyfunction!(from_dlpack, m)?)?;
     m.add_function(wrap_pyfunction!(cat, m)?)?;
+    m.add_function(wrap_pyfunction!(stack, m)?)?;
     m.add_function(wrap_pyfunction!(where_, m)?)?;
     m.add_function(wrap_pyfunction!(save_safetensors, m)?)?;
     m.add_function(wrap_pyfunction!(load_safetensors, m)?)?;
