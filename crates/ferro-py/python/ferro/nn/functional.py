@@ -268,8 +268,12 @@ def _reduce(loss, reduction, count):
     if reduction == 'mean':
         return loss
     if reduction == 'sum':
-        # An empty sum is 0, but the native mean over nothing is NaN.
-        return Tensor.zeros(loss.shape) if count == 0 else loss * float(count)
+        if count == 0:
+            # An empty sum is 0, but the native mean over nothing is NaN; `where`
+            # keeps the result on the graph so inputs still get (empty) grads.
+            zero = Tensor.zeros(loss.shape)
+            return _native.where(zero, loss, zero)
+        return loss * float(count)
     raise ValueError("reduction must be 'mean' or 'sum' (native losses are mean-reduced; 'none' is unsupported)")
 
 
@@ -325,7 +329,10 @@ def kl_div(input, target, reduction='mean', log_target=False):
         raise NotImplementedError('log_target=True is unsupported')
     n = _numel(input, target)
     loss = _native.kl_div_loss(input, target)
-    return loss * float(n / input.shape[0]) if reduction == 'batchmean' else _reduce(loss, reduction, n)
+    if reduction == 'batchmean':
+        # Empty batch: n == 0 and the native mean is already NaN, as in torch.
+        return loss * float(n / input.shape[0]) if input.shape[0] else loss
+    return _reduce(loss, reduction, n)
 
 
 def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-8, reduction='mean'):

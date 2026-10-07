@@ -476,7 +476,13 @@ def test_empty_sum_losses():
     import ferro.nn.functional as F
     e = ferro.Tensor.zeros([0, 3])
     for f in (F.l1_loss, F.huber_loss, F.smooth_l1_loss, F.binary_cross_entropy_with_logits):
-        assert f(e, e, reduction="sum").tolist() == 0.0, f.__name__
+        x = ferro.Tensor.zeros([0, 3]).requires_grad_(True)
+        y = f(x, e, reduction="sum")
+        assert y.tolist() == 0.0, f.__name__
+        y.backward()
+        assert x.grad is not None and x.grad.shape == [0, 3], f.__name__
+    kl = F.kl_div(ferro.Tensor.zeros([0, 3]), e, reduction="batchmean").tolist()
+    assert kl != kl, kl  # NaN, as torch gives for an empty batchmean
     print("empty inputs sum-reduce to 0 like torch: OK")
 
 
