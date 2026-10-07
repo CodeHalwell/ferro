@@ -22,8 +22,9 @@ def main():
     ap.add_argument("--iters", type=int, default=30)
     ap.add_argument("--filter", default="")
     # Default matches ferro, which threads over available_parallelism() (the
-    # process affinity mask); torch otherwise picks its own count.
-    ap.add_argument("--threads", type=int, default=len(os.sched_getaffinity(0)))
+    # process affinity mask where the OS has one); torch otherwise picks its own count.
+    affinity = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+    ap.add_argument("--threads", type=int, default=affinity)
     args = ap.parse_args()
     torch.set_num_threads(args.threads)
     torch.manual_seed(42)

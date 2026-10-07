@@ -8,7 +8,8 @@ runs under --python (which must have torch installed).
 
 --cpus pins BOTH processes to the same CPU set via taskset; ferro threads over
 available_parallelism() (which honours the affinity mask) and the torch twin
-sets torch.set_num_threads to the same count, so thread budgets always match.
+sets torch.set_num_threads to the same count (passed as --threads to both
+torch scripts), so thread budgets always match. --cpus needs Linux taskset.
 """
 
 import argparse
@@ -42,11 +43,11 @@ def throughput(r):
     return r["work"] / (r["median_ms"] / 1e3) / scale
 
 
-def transformer(cpus, python, steps):
-    flags = ["--warmup", "3", "--steps", str(steps)]
+def transformer(cpus, python, warmup, steps, threads):
+    flags = ["--warmup", str(warmup), "--steps", str(steps)]
     outs = {
         "ferro": sh(pinned([str(BENCH / "target/release/bench_transformer"), *flags], cpus)),
-        "torch": sh(pinned([python, str(ROOT / "examples/bench_torch.py"), *flags], cpus)),
+        "torch": sh(pinned([python, str(ROOT / "examples/bench_torch.py"), *flags, "--threads", str(threads)], cpus)),
     }
     rows = {}
     for side, out in outs.items():
@@ -55,20 +56,31 @@ def transformer(cpus, python, steps):
         cfg = re.search(r"config: (.*)", out).group(1)
         rows[side] = {"name": "transformer_train_step", "group": "model", "shape": cfg, "unit": "tokens/s",
                       "work": tps * float(m.group(1)) / 1e3, "median_ms": float(m.group(2)),
-                      "p90_ms": float(m.group(3)), "warmup": 3, "iters": steps}
+                      "p90_ms": float(m.group(3)), "warmup": warmup, "iters": steps}
     return rows
 
 
-def machine(python, cpus):
-    cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), platform.processor())
+def cpu_model():
+    try:
+        return next(l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name"))
+    except (OSError, StopIteration):
+        return platform.processor() or platform.machine()
+
+
+def thread_count(cpus):
+    probe = "import os;print(len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count())"
+    return int(sh(pinned([sys.executable, "-c", probe], cpus)))
+
+
+def machine(python, cpus, threads):
     git = sh(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]).strip()
     dirty = bool(sh(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]).strip())
     return {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "commit": git + ("-dirty" if dirty else ""),
-        "cpu": cpu,
+        "cpu": cpu_model(),
         "cpus": cpus or f"all ({os.cpu_count()})",
-        "threads": len(os.sched_getaffinity(0)) if not cpus else int(sh(pinned([sys.executable, "-c", "import os;print(len(os.sched_getaffinity(0)))"], cpus))),
+        "threads": threads,
         "rustc": sh(["rustc", "--version"]).strip(),
         "torch": sh([python, "-c", "import torch;print(torch.__version__)"]).strip(),
         "os": platform.platform(),
@@ -92,20 +104,24 @@ def main():
     bins = ["--bin", "bench_suite"] + (["--bin", "bench_transformer"] if args.transformer else [])
     subprocess.run(["cargo", "build", "--release", "--quiet", "--manifest-path", str(BENCH / "Cargo.toml"), *bins], check=True)
 
+    threads = thread_count(args.cpus)
     common = ["--warmup", str(args.warmup), "--iters", str(args.iters), "--filter", args.filter]
     print("running ferro suite...", file=sys.stderr)
     ferro = json_lines(sh(pinned([str(BENCH / "target/release/bench_suite"), *common, "--backend", args.backend], args.cpus)))
     print("running torch suite...", file=sys.stderr)
-    torch = json_lines(sh(pinned([args.python, str(ROOT / "examples/bench_suite_torch.py"), *common], args.cpus)))
+    torch = json_lines(sh(pinned([args.python, str(ROOT / "examples/bench_suite_torch.py"), *common, "--threads", str(threads)], args.cpus)))
     if args.transformer:
         print("running transformer step...", file=sys.stderr)
-        t = transformer(args.cpus, args.python, args.transformer_steps)
+        t = transformer(args.cpus, args.python, args.warmup, args.transformer_steps, threads)
         ferro[t["ferro"]["name"]], torch[t["torch"]["name"]] = t["ferro"], t["torch"]
 
-    meta = machine(args.python, args.cpus) | {"ferro_backend": args.backend, "warmup": args.warmup, "iters": args.iters}
+    meta = machine(args.python, args.cpus, threads) | {"ferro_backend": args.backend, "warmup": args.warmup, "iters": args.iters}
+    if args.transformer:
+        meta["transformer_steps"] = args.transformer_steps
     lines = [
         f"{meta['date']} | ferro {meta['commit']} ({meta['ferro_backend']} backend) | torch {meta['torch']} | "
-        f"{meta['cpu']}, {meta['threads']} threads (cpus: {meta['cpus']}) | warmup={args.warmup} iters={args.iters}",
+        f"{meta['cpu']}, {meta['threads']} threads (cpus: {meta['cpus']}) | warmup={args.warmup} iters={args.iters}"
+        + (f" (transformer: {args.transformer_steps} steps)" if args.transformer else ""),
         "",
         "| case | shape | ferro ms | torch ms | ferro | torch | unit | ferro / torch speed |",
         "|---|---|---:|---:|---:|---:|---|---:|",
