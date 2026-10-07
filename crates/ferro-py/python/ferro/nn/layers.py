@@ -165,7 +165,7 @@ class RMSNorm(Module):
 
 
 class GroupNorm(Module):
-    """[N, C] or NCHW input."""
+    """[N, C], [N, C, L] or NCHW input."""
     _builtin_init = True
 
     def __init__(self, num_groups, num_channels, eps=1e-5, affine=True):
@@ -178,6 +178,8 @@ class GroupNorm(Module):
         self.bias = Parameter(Tensor.zeros([num_channels])) if affine else None
 
     def forward(self, x):
+        if not 2 <= len(x.shape) <= 4 or x.shape[1] != self.num_channels:
+            raise ValueError(f'GroupNorm expects [N, {self.num_channels}, *] input of rank 2-4, got {x.shape}')
         return F.group_norm(x, self.num_groups, None if self.weight is None else self.weight.tensor(),
                             None if self.bias is None else self.bias.tensor(), self.eps)
 

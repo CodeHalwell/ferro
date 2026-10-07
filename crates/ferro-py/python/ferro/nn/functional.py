@@ -272,6 +272,13 @@ def _reduce(loss, reduction, count):
     raise ValueError("reduction must be 'mean' or 'sum' (native losses are mean-reduced; 'none' is unsupported)")
 
 
+def _numel(*tensors):
+    """Element count of the broadcast of `tensors`, which native losses mean over."""
+    rank = max(len(t.shape) for t in tensors)
+    dims = [[1] * (rank - len(t.shape)) + list(t.shape) for t in tensors]
+    return math.prod(max(col) if min(col) != 0 else 0 for col in zip(*dims))
+
+
 def _rows(x):
     return x.shape[0] if len(x.shape) > 1 else 1
 
@@ -290,34 +297,34 @@ def nll_loss(input, target, reduction='mean'):
 
 
 def l1_loss(input, target, reduction='mean'):
-    return _reduce(_native.l1_loss(input, target), reduction, math.prod(input.shape))
+    return _reduce(_native.l1_loss(input, target), reduction, _numel(input, target))
 
 
 def binary_cross_entropy(input, target, weight=None, reduction='mean'):
     if weight is not None:
         raise NotImplementedError('weight is unsupported')
-    return _reduce(_native.bce_loss(input, target), reduction, math.prod(input.shape))
+    return _reduce(_native.bce_loss(input, target), reduction, _numel(input, target))
 
 
 def binary_cross_entropy_with_logits(input, target, weight=None, reduction='mean', pos_weight=None):
     if weight is not None or pos_weight is not None:
         raise NotImplementedError('weight and pos_weight are unsupported')
-    return _reduce(_native.bce_with_logits_loss(input, target), reduction, math.prod(input.shape))
+    return _reduce(_native.bce_with_logits_loss(input, target), reduction, _numel(input, target))
 
 
 def huber_loss(input, target, reduction='mean', delta=1.0):
-    return _reduce(_native.huber_loss(input, target, delta), reduction, math.prod(input.shape))
+    return _reduce(_native.huber_loss(input, target, delta), reduction, _numel(input, target))
 
 
 def smooth_l1_loss(input, target, reduction='mean', beta=1.0):
-    return _reduce(_native.smooth_l1_loss(input, target, beta), reduction, math.prod(input.shape))
+    return _reduce(_native.smooth_l1_loss(input, target, beta), reduction, _numel(input, target))
 
 
 def kl_div(input, target, reduction='mean', log_target=False):
     """input is log-probabilities, target probabilities; also 'batchmean'."""
     if log_target:
         raise NotImplementedError('log_target=True is unsupported')
-    n = math.prod(input.shape)
+    n = _numel(input, target)
     loss = _native.kl_div_loss(input, target)
     return loss * float(n / input.shape[0]) if reduction == 'batchmean' else _reduce(loss, reduction, n)
 
@@ -325,19 +332,19 @@ def kl_div(input, target, reduction='mean', log_target=False):
 def poisson_nll_loss(input, target, log_input=True, full=False, eps=1e-8, reduction='mean'):
     if not log_input or full:
         raise NotImplementedError('only log_input=True, full=False is supported')
-    return _reduce(_native.poisson_nll_loss(input, target), reduction, math.prod(input.shape))
+    return _reduce(_native.poisson_nll_loss(input, target), reduction, _numel(input, target))
 
 
 def soft_margin_loss(input, target, reduction='mean'):
-    return _reduce(_native.soft_margin_loss(input, target), reduction, math.prod(input.shape))
+    return _reduce(_native.soft_margin_loss(input, target), reduction, _numel(input, target))
 
 
 def hinge_embedding_loss(input, target, margin=1.0, reduction='mean'):
-    return _reduce(_native.hinge_embedding_loss(input, target, margin), reduction, math.prod(input.shape))
+    return _reduce(_native.hinge_embedding_loss(input, target, margin), reduction, _numel(input, target))
 
 
 def margin_ranking_loss(input1, input2, target, margin=0.0, reduction='mean'):
-    return _reduce(_native.margin_ranking_loss(input1, input2, target, margin), reduction, math.prod(input1.shape))
+    return _reduce(_native.margin_ranking_loss(input1, input2, target, margin), reduction, _numel(input1, input2, target))
 
 
 def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction='mean', eps=1e-8):

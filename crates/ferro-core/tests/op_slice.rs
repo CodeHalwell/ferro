@@ -51,6 +51,7 @@ fn slice_errors() {
     assert!(a.narrow(1, 3, 3).is_err());
     assert!(a.narrow(1, usize::MAX, 2).is_err());
     assert!(a.narrow(2, 0, 1).is_err());
+    assert!(a.slice(0, 0, 3, usize::MAX).is_err());
 }
 
 #[test]

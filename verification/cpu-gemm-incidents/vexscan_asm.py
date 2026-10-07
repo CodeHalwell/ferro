@@ -1,6 +1,8 @@
 """Scan rustc --emit=asm output (any target) for AVX-encoded instructions.
 Functions are delimited by top-level labels; reports each function holding
-VEX/EVEX mnemonics and every call into such a function.
+VEX/EVEX mnemonics and every direct, symbol-named call or jump into such a
+function. Indirect calls (function pointers, vtables) cannot be attributed;
+those paths need separate review, as for the GEMM kernel table in gemm.rs.
 
 usage: python3 vexscan_asm.py file.s
 """

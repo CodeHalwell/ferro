@@ -69,8 +69,10 @@ Hypothesis tested: AVX/FMA code reachable without a runtime feature check
 - For the new code the scan shows VEX/EVEX only in `gemm::avx2_kernel::<R>`,
   `gemm::avx512_kernel::<R>`, the out-of-line `core::arch` intrinsic shims
   they call (debug builds do not inline those) and the elementwise AVX2
-  functions. The kernels are reached only through `Isa::params`, after
-  `sgemm_isa` asserts `Isa::supported()`.
+  functions. The kernels are called indirectly through the `Params.kernels`
+  function-pointer table, which the scan cannot attribute; by code review,
+  that table is only built by `Isa::params`, after `sgemm_isa` asserts
+  `Isa::supported()`.
 
 Ruled out: ungated SIMD in ferro-fastcpu or ferro-core for the crashing
 build configuration. Not ruled out: host CPU instability (section 1), or a

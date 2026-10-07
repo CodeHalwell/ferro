@@ -647,6 +647,10 @@ def extended_modules():
         (nn.MarginRankingLoss(margin=0.1), torch.nn.MarginRankingLoss(margin=0.1), [(MIX, s), (OTHER, s), (SIGNS, s)]),
         (nn.TripletMarginLoss(margin=2.0), torch.nn.TripletMarginLoss(margin=2.0), [(MIX, s), (OTHER, s), (ROUNDING, s)]),
     ]
+    losses += [
+        (nn.L1Loss(reduction="sum"), torch.nn.L1Loss(reduction="sum"), [([0.5, -1.0], [2, 1]), (MIX, s)]),
+        (nn.HuberLoss(reduction="sum"), torch.nn.HuberLoss(reduction="sum"), [([0.5, -1.0], [2, 1]), (MIX, s)]),
+    ]
     for fm, tm, args in losses:
         check_fn(f"module {type(tm).__name__} {tm.reduction}", args, fm, tm, grad=False)
     check("module CrossEntropyLoss", nn.CrossEntropyLoss()(ft(MIX, s), ferro.Tensor.from_i64([2, 0], [2])),

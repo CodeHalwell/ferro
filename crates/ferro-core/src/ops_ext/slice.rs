@@ -27,7 +27,7 @@ impl Tensor {
         // An empty view addresses nothing; keeping the base offset keeps it
         // inside the buffer for the contiguous slicing fast paths.
         let offset = if len == 0 { self.0.offset } else { self.0.offset + start * stride[dim] };
-        stride[dim] *= step;
+        stride[dim] = stride[dim].checked_mul(step).ok_or_else(|| Error::InvalidShape { op: "slice", msg: format!("step {step} overflows the stride") })?;
         let view = Tensor::from_parts(self.0.storage.clone(), shape.clone(), stride, offset, self.0.device, false, None);
         let out = self.capture_layout(view)?;
         let in_shape = self.0.shape.clone();
@@ -36,7 +36,7 @@ impl Tensor {
             // the matching element of the contiguous input-shaped gradient.
             let mut strides = default_strides(&in_shape);
             let base = start * strides[dim];
-            strides[dim] *= step;
+            strides[dim] = strides[dim].saturating_mul(step);
             let mut gx = vec![0.0f32; in_shape.iter().product()];
             let mut idx = vec![0usize; shape.len()];
             for v in g.to_vec() {

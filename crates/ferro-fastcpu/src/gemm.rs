@@ -153,7 +153,11 @@ pub fn sgemm_isa(isa: Isa, a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usi
 /// Batched GEMM over contiguous slabs. Whole batch elements go to threads
 /// when there are enough of them; otherwise each element is threaded.
 pub fn sgemm_batch(a: &[f32], b: &[f32], c: &mut [f32], batch: usize, m: usize, k: usize, n: usize, threads: usize) {
-    let (mk, kn, mn) = (m * k, k * n, m * n);
+    let dims = (m.checked_mul(k), k.checked_mul(n), m.checked_mul(n));
+    let (Some(mk), Some(kn), Some(mn)) = dims else { panic!("sgemm_batch size overflow") };
+    let totals = (batch.checked_mul(mk), batch.checked_mul(kn), batch.checked_mul(mn));
+    let (Some(ta), Some(tb), Some(tc)) = totals else { panic!("sgemm_batch size overflow") };
+    assert!(a.len() >= ta && b.len() >= tb && c.len() >= tc, "sgemm_batch buffer too short");
     if batch == 0 || mn == 0 {
         return;
     }
