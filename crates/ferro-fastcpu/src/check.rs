@@ -28,9 +28,13 @@ pub(crate) fn verify(a: &[f32], b: &[f32], out: &[f32], batch: usize, m: usize, 
 
 /// Ok, or a report naming the first breaches. Dots whose inputs are
 /// non-finite, or whose |products| sum past f32::MAX, cannot be bounded and
-/// are skipped.
+/// are skipped, as is everything when k*u >= 1 (the gamma(k) bound needs
+/// k*u < 1).
 pub fn check(a: &[f32], b: &[f32], out: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Result<(), String> {
     let u = f64::powi(2.0, -24);
+    if k as f64 * u >= 1.0 {
+        return Ok(());
+    }
     let gamma = k as f64 * u / (1.0 - k as f64 * u);
     let (mut count, mut report) = (0usize, String::new());
     for bi in 0..batch {

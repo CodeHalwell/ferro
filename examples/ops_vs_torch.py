@@ -650,6 +650,10 @@ def extended_modules():
     losses += [
         (nn.L1Loss(reduction="sum"), torch.nn.L1Loss(reduction="sum"), [([0.5, -1.0], [2, 1]), (MIX, s)]),
         (nn.HuberLoss(reduction="sum"), torch.nn.HuberLoss(reduction="sum"), [([0.5, -1.0], [2, 1]), (MIX, s)]),
+        (nn.CosineEmbeddingLoss(reduction="sum"), torch.nn.CosineEmbeddingLoss(reduction="sum"),
+         [([0.3, -1.2, 0.8], [1, 3]), (MIX, s), ([1.0, -1.0], [2])]),
+        (nn.TripletMarginLoss(reduction="sum"), torch.nn.TripletMarginLoss(reduction="sum"),
+         [([0.3, -1.2, 0.8], [1, 3]), (MIX, s), (OTHER, s)]),
     ]
     for fm, tm, args in losses:
         check_fn(f"module {type(tm).__name__} {tm.reduction}", args, fm, tm, grad=False)

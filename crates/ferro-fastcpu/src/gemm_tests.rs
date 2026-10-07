@@ -179,6 +179,15 @@ fn historical_fixture_is_exact_and_its_omission_fingerprint_breaches_the_check()
 }
 
 #[test]
+fn check_skips_k_beyond_gamma_domain() {
+    // At k = 2^24 + 1, gamma(k) is negative; a sequential f32 sum of ones
+    // stalls at 2^24 and is still a correct fused-chain result.
+    let k = (1 << 24) + 1;
+    let ones = vec![1.0f32; k];
+    assert!(check::check(&ones, &ones, &[16777216.0], 1, 1, k, 1).is_ok());
+}
+
+#[test]
 fn shape_validation() {
     for shape in [(0, 3, 4, 5), (2, 0, 4, 5), (2, 3, 4, 0)] {
         assert!(matmul_batch(&[], &[], shape.0, shape.1, shape.2, shape.3).is_empty());

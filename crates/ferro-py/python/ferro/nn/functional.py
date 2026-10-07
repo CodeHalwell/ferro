@@ -273,15 +273,13 @@ def _reduce(loss, reduction, count):
     raise ValueError("reduction must be 'mean' or 'sum' (native losses are mean-reduced; 'none' is unsupported)")
 
 
-def _numel(*tensors):
-    """Element count of the broadcast of `tensors`, which native losses mean over."""
-    rank = max(len(t.shape) for t in tensors)
-    dims = [[1] * (rank - len(t.shape)) + list(t.shape) for t in tensors]
+def _numel(*operands):
+    """Element count of the broadcast of `operands` (tensors or shapes), which
+    native losses mean over."""
+    shapes = [list(t) if isinstance(t, (list, tuple)) else list(t.shape) for t in operands]
+    rank = max(len(s) for s in shapes)
+    dims = [[1] * (rank - len(s)) + s for s in shapes]
     return math.prod(max(col) if min(col) != 0 else 0 for col in zip(*dims))
-
-
-def _rows(x):
-    return x.shape[0] if len(x.shape) > 1 else 1
 
 
 def cross_entropy(input, target, reduction='mean'):
@@ -349,10 +347,12 @@ def margin_ranking_loss(input1, input2, target, margin=0.0, reduction='mean'):
 
 
 def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction='mean', eps=1e-8):
-    return _reduce(_native.cosine_embedding_loss(input1, input2, target, margin, eps), reduction, _rows(input1))
+    return _reduce(_native.cosine_embedding_loss(input1, input2, target, margin, eps), reduction,
+                   _numel(input1.shape[:-1], input2.shape[:-1], target))
 
 
 def triplet_margin_loss(anchor, positive, negative, margin=1.0, p=2.0, eps=1e-6, swap=False, reduction='mean'):
     if swap:
         raise NotImplementedError('swap=True is unsupported')
-    return _reduce(_native.triplet_margin_loss(anchor, positive, negative, margin, p, eps), reduction, _rows(anchor))
+    return _reduce(_native.triplet_margin_loss(anchor, positive, negative, margin, p, eps), reduction,
+                   _numel(anchor.shape[:-1], positive.shape[:-1], negative.shape[:-1]))
