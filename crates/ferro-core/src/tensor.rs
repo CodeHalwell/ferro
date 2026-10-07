@@ -748,7 +748,7 @@ impl Tensor {
     /// the whole buffer in natural order. Only the f32 flavor counts - i64
     /// index buffers have their own gather seam.
     pub(crate) fn device_resident_whole(&self) -> bool {
-        matches!(&*self.0.storage.read(), Storage::Device(_))
+        matches!(&*self.0.storage.read(), Storage::Device(b) if b.len() == self.numel())
             && self.0.offset == 0
             && self.is_contiguous()
     }
@@ -825,10 +825,6 @@ impl Tensor {
     }
 
     // --- views (share storage) -------------------------------------------
-    // Future work: narrow/as_strided (docs/CAPABILITY.md 2.2) must carry
-    // gradient through record_fn like the indexing ops do - its VJP
-    // scatter-adds the incoming gradient through the view's strided odometer
-    // into a zeros base, so slicing reduces rather than reshapes.
     /// Broadcast to `shape` without copying (inserts zero strides). Detached:
     /// broadcasting's gradient is handled by reducing in backward.
     pub(crate) fn broadcast_to(&self, shape: &[usize]) -> Result<Tensor> {
@@ -975,7 +971,7 @@ impl Tensor {
     // inputs already forbid public mutation through their op history. Copy into
     // a NEW cell, preserving layout; never relax ordinary alias/snapshot gates.
     // Replay disables capture and pays no copy.
-    fn capture_layout(&self, out: Tensor) -> Result<Tensor> {
+    pub(crate) fn capture_layout(&self, out: Tensor) -> Result<Tensor> {
         if !crate::capture::is_recording() || self.requires_grad() || self.0.op.is_some()
             || !Arc::ptr_eq(&self.0.storage, &out.0.storage) { return Ok(out); }
         let storage = out.0.storage.read();
