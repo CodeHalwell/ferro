@@ -74,7 +74,7 @@ def thread_count(cpus):
 
 def machine(python, cpus, threads):
     git = sh(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"]).strip()
-    dirty = bool(sh(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"]).strip())
+    dirty = bool(sh(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no", "--", ".", ":!benchmarks/results"]).strip())
     return {
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"),
         "commit": git + ("-dirty" if dirty else ""),
