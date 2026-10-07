@@ -1,405 +1,63 @@
-//! Optimized f32 CPU matmul backend for ferro-core, registered through the
-//! kernel dispatch seam (`ferro_core::dispatch::set_matmul_kernel`) without
-//! touching core. Pure std, no external deps. Full Goto/van de Geijn (BLIS)
-//! blocking structure around a 6x16 register-blocked micro-kernel:
-//! - B is packed into contiguous (KC x NR) panels once per k-block, before
-//!   the row sweep, so the micro-kernel always reads sequential memory
-//! - A is packed into contiguous (MC x KC) panels (MR-row slivers) once per
-//!   (row-block, k-block) pair, so A loads never stride by k
-//! - the MC loop is the L2 blocking level: the packed A panel for one
-//!   (row-block, k-block) pair is swept over every n-tile before moving on,
-//!   so it stays L2-resident across that whole sweep
-//! - edge M/N tiles are zero-padded in the packed buffers so the
-//!   micro-kernel always runs a full MR x NR update, with a masked
-//!   writeback for the valid rows/cols - there is no scalar remainder path
-//! - runtime AVX2+FMA dispatch via #[target_feature]; plain `cargo` builds
-//!   target baseline SSE2, so this is what unlocks the wide FMA units
-//! - std::thread::scope splits M across available_parallelism() for large
-//!   problems; each thread packs its own A/B panels into buffers allocated
-//!   once per thread call and reused across blocks (never shared)
-
-use std::thread;
+//! Optimized f32 CPU backend for ferro-core, registered through the kernel
+//! dispatch seam without touching core. Pure std, no external deps.
+//! Matmul and batched matmul run the packed BLIS-style SGEMM in gemm.rs
+//! (runtime-dispatched AVX-512 / AVX2+FMA / scalar micro-kernels, threaded
+//! over row or column blocks on the worker pool above a work threshold). See
+//! gemm.rs for the numerical contract and verification/cpu-gemm-incidents/
+//! for why the former conservative BMM containment was retired.
 
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+pub mod check;
 pub mod elementwise;
+pub mod gemm;
 mod workers;
-mod safe_bmm;
 #[cfg(test)]
-mod containment_tests;
+mod gemm_tests;
 #[cfg(test)]
 mod registry_tests;
 
-/// Micro-kernel tile: MR x NR accumulators = 12 ymm registers under AVX2,
-/// leaving room for B loads and A broadcasts (tuned: beats 4x16/8x16/6x32).
-const MR: usize = 6;
-const NR: usize = 16;
-/// K block: (KC x NR) packed B panel is 16KB, resident in L1 across the
-/// inner micro-kernel sweep.
-const KC: usize = 256;
-/// M block: the (MC x KC) packed A panel is resident in L2 across the whole
-/// n sweep for that block. Tuned by measuring 1024^3 and 2048^3 single- and
-/// multi-threaded GFLOP/s across {48, 72, 96, 120, 144, 192} (all multiples
-/// of MR, so a full block's last A tile never needs edge padding), plus the
-/// skinny (2048, 64, 2048) shape: 48 won cleanly and consistently across the
-/// whole grid, not just within noise - e.g. ~40 vs ~36-37 GFLOP/s at 1024^3
-/// single-threaded, and >2x on the skinny shape where larger MC values waste
-/// L2 traffic re-sweeping mostly-empty (mc x 64) panels. The smallest
-/// candidate wins here because KC=256 already keeps the panel L1/L2-small;
-/// a bigger MC just adds re-pack/re-read cost without a matching reuse win
-/// at these problem sizes.
-const MC: usize = 48;
-const _: () = assert!(MC % MR == 0, "pack_a sizes its panels in whole MR-row slivers");
-/// Below this many multiply-adds (m*k*n), thread spawn overhead dominates.
-const PAR_THRESHOLD: usize = 1 << 18;
-/// Below this many total multiply-adds (batch*m*k*n), `matmul_batch` skips
-/// thread::scope entirely and runs every batch element serially in one
-/// thread. Measured by timing `matmul_batch`'s serial and threaded paths
-/// directly (bypassing this threshold) across batch*m*k*n from 2^20 to 2^27
-/// on the 4-core dev box: threading is still a net loss at 2^21 (e.g.
-/// ~135us serial vs ~150us parallel) and a consistent win from 2^22 onward
-/// (~220us vs ~180us, widening to >3x by 2^27) - one thread::scope now costs
-/// one spawn/join total instead of one per batch element, but that one
-/// spawn/join still needs enough aggregate work to amortize. 2^21 (matching
-/// elementwise.rs's PAR_THRESHOLD) sits right at the crossover with a small
-/// safety margin against the loss side.
-#[cfg(test)]
-const BATCH_PAR_THRESHOLD: usize = 1 << 21;
-
-/// Row-major (m,k) @ (k,n) -> (m,n).
+/// Row-major (m,k) @ (k,n) -> (m,n), threaded above a work threshold.
 pub fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
-    // Pool-backed output. k == 0 never enters the k-block loop, so nothing
-    // would overwrite a recycled buffer's contents: that case must be zeroed
-    // (the mathematical result). k > 0 writes every element in the first
-    // k-block iteration.
-    let mut out = mm_out(m * n, k);
-    if m * k * n <= PAR_THRESHOLD {
-        matmul_rows(a, b, &mut out, k, n, 0);
-        return out;
-    }
-    let threads = thread::available_parallelism().map_or(1, |p| p.get()).min(m);
-    let rows_per = m.div_ceil(threads);
-    thread::scope(|s| {
-        for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
-            s.spawn(move || matmul_rows(a, b, chunk, k, n, t * rows_per));
-        }
-    });
-    out
+    matmul_with_threads(a, b, m, k, n, gemm::auto_threads(m.saturating_mul(k).saturating_mul(n)))
 }
 
-/// Like `matmul` but with an explicit thread count in place of the
-/// PAR_THRESHOLD/available_parallelism heuristic - a benchmarking knob (see
-/// src/bin/bench.rs) for measuring single- vs multi-threaded throughput at
-/// a fixed problem size. `threads <= 1` runs inline with no spawn, matching
-/// `matmul`'s small-problem path.
+/// `matmul` with an explicit thread count (benchmarking knob; results are
+/// bitwise identical for every count).
 pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, threads: usize) -> Vec<f32> {
-    let mut out = mm_out(m * n, k);
-    // Empty output: chunks_mut(rows_per * n) would panic on a zero chunk size.
-    if out.is_empty() {
-        return out;
-    }
-    let threads = threads.clamp(1, m.max(1));
-    if threads == 1 {
-        matmul_rows(a, b, &mut out, k, n, 0);
-        return out;
-    }
-    let rows_per = m.div_ceil(threads);
-    thread::scope(|s| {
-        for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
-            s.spawn(move || matmul_rows(a, b, chunk, k, n, t * rows_per));
-        }
-    });
-    out
+    matmul_batch_with_threads(a, b, 1, m, k, n, threads)
 }
 
-/// Independent BMM containment for the unresolved PR25 numerical incident.
-/// Unpacked column tiles retain ascending-k f32 multiply then add per output.
-/// Fresh storage, no packed kernel, MATMUL registry, pool, or worker dispatch.
-/// Historical packed BMM stays test-only with no production opt-in.
-/// This is software-path isolation, not a claim of a root-cause fix.
+/// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n).
 pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
+    let work = [batch, m, k, n].iter().fold(1usize, |w, &d| w.saturating_mul(d));
+    matmul_batch_with_threads(a, b, batch, m, k, n, gemm::auto_threads(work))
+}
+
+fn matmul_batch_with_threads(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize, threads: usize) -> Vec<f32> {
     if batch == 0 || m == 0 || n == 0 { return Vec::new(); }
     let rows = batch.checked_mul(m).expect("BMM row count overflow");
     let alen = rows.checked_mul(k).expect("BMM input size overflow");
-    let bstride = k.checked_mul(n).expect("BMM input size overflow");
-    let blen = batch.checked_mul(bstride).expect("BMM input size overflow");
+    let blen = k.checked_mul(n).and_then(|s| s.checked_mul(batch)).expect("BMM input size overflow");
     let olen = rows.checked_mul(n).expect("BMM output size overflow");
     assert!(a.len() >= alen, "BMM A buffer too short");
     assert!(b.len() >= blen, "BMM B buffer too short");
-    let mut out = vec![0.0f32; olen];
-    if k == 0 { return out; }
-    for (row, dst) in out.chunks_exact_mut(n).enumerate() {
-        let ar = &a[row*k..(row+1)*k];
-        let br = &b[(row/m)*bstride..(row/m+1)*bstride];
-        safe_bmm::row(ar, br, dst);
-    }
+    let mut out = ferro_core::pool::take_uninit(olen);
+    gemm::sgemm_batch(a, b, &mut out, batch, m, k, n, threads);
+    check::verify(a, b, &out, batch, m, k, n);
     out
 }
 
-/// Historical packed BMM, retained only for diagnostics.
-/// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n): batch independent
-/// GEMMs sharing a single std::thread::scope, instead of the trait default's
-/// one scope per batch element (see ferro-core's `Backend::matmul_batch`).
-/// The batch*m row space is flattened and split into `threads` contiguous
-/// groups; each group's worker packs its own A/B scratch once and reuses it
-/// across every (batch, row-chunk) item in the group (splitting at a batch
-/// boundary only when a group's row range straddles two batches), so packing
-/// buffers are never shared across threads. Per output row, k is always
-/// swept in the same pp-block order regardless of how work was chunked
-/// (mirrors `matmul`'s row-split determinism), so results are bitwise
-/// independent of thread count and batch decomposition.
-#[cfg(test)]
-fn matmul_batch_packed(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
-    assert!(a.len() >= batch * m * k, "a has {} elements, need batch*m*k = {}", a.len(), batch * m * k);
-    assert!(b.len() >= batch * k * n, "b has {} elements, need batch*k*n = {}", b.len(), batch * k * n);
-    let mut out = mm_out(batch * m * n, k);
-    if batch == 0 || m == 0 || n == 0 {
-        return out;
-    }
-    let total_rows = batch * m;
-    let threads = thread::available_parallelism().map_or(1, |p| p.get()).min(total_rows);
-    // Work estimate in u128: the usize product can wrap for extreme shapes,
-    // which would make the serial-vs-threaded choice arbitrary.
-    let work = batch as u128 * m as u128 * k as u128 * n as u128;
-    if work <= BATCH_PAR_THRESHOLD as u128 || threads <= 1 {
-        matmul_batch_group(a, b, &mut out, m, k, n, 0, total_rows);
-        return out;
-    }
-    let rows_per = total_rows.div_ceil(threads);
-    thread::scope(|s| {
-        let mut g0 = 0;
-        for chunk in out.chunks_mut(rows_per * n) {
-            let group_rows = chunk.len() / n;
-            s.spawn(move || matmul_batch_group(a, b, chunk, m, k, n, g0, group_rows));
-            g0 += group_rows;
-        }
-    });
-    out
-}
-
-/// Computes flattened rows g0..g0+group_rows of the (batch*m, n) output
-/// space (row index = bi*m + local row) into `out`, one packing-buffer pair
-/// allocated for the whole call and reused across every batch the group
-/// touches.
-#[cfg(test)]
-fn matmul_batch_group(a: &[f32], b: &[f32], out: &mut [f32], m: usize, k: usize, n: usize, g0: usize, group_rows: usize) {
-    let njtiles = n.div_ceil(NR);
-    let mut packed_b = vec![0f32; njtiles * KC * NR];
-    let mut packed_a = vec![0f32; (MC / MR) * KC * MR];
-    let mut g = g0;
-    let gend = g0 + group_rows;
-    while g < gend {
-        let bi = g / m;
-        let local0 = g % m;
-        let len = (gend - g).min(m - local0);
-        let (ao, bo) = (bi * m * k, bi * k * n);
-        let oo = (g - g0) * n;
-        matmul_rows_scratch(
-            &a[ao..ao + m * k],
-            &b[bo..bo + k * n],
-            &mut out[oo..oo + len * n],
-            k,
-            n,
-            local0,
-            &mut packed_a,
-            &mut packed_b,
-        );
-        g += len;
-    }
-}
-
-/// Matmul output buffer from ferro-core's host pool: uninit when the
-/// k-sweep will write every element, zeroed for the empty-k edge case.
-fn mm_out(len: usize, k: usize) -> Vec<f32> {
-    if k == 0 {
-        ferro_core::pool::take_zeroed(len)
-    } else {
-        ferro_core::pool::take_uninit(len)
-    }
-}
-
-/// Register conservative CPU matmul; this also contains default-backend BMM.
-/// MATMUL-registry users use the same independent unpacked arithmetic.
-/// Explicit `matmul`/`matmul_with_threads` remain packed, outside this BMM policy.
+/// Register the fast matmul kernel for CpuBackend (its default BMM calls it
+/// once per slab).
 pub fn install() {
-    // CpuBackend's default BMM calls MATMUL once per slab. Registering the
-    // packed kernel here would bypass containment for install-only callers.
-    ferro_core::dispatch::set_matmul_kernel(|a, b, m, k, n| matmul_batch(a, b, 1, m, k, n));
+    ferro_core::dispatch::set_matmul_kernel(matmul);
 }
 
 /// Register the vectorized/threaded elementwise backend process-wide for
 /// Device::Cpu.
 pub fn install_backend() {
     ferro_core::register_backend(ferro_core::Device::Cpu, std::sync::Arc::new(elementwise::FastCpuBackend));
-}
-
-/// Computes global rows i0..i0+out.len()/n of A@B into `out`.
-fn matmul_rows(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize) {
-    #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        // SAFETY: avx2 and fma were just detected at runtime.
-        unsafe { matmul_rows_avx2(a, b, out, k, n, i0) };
-        return;
-    }
-    matmul_rows_body(a, b, out, k, n, i0);
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-fn matmul_rows_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize) {
-    matmul_rows_body(a, b, out, k, n, i0);
-}
-
-/// Like `matmul_rows` but with caller-supplied packing scratch in place of a
-/// fresh per-call allocation - lets `matmul_batch`'s per-thread worker reuse
-/// one pair of buffers across every (batch, row-chunk) item it handles
-/// instead of paying one allocation per item.
-#[cfg(test)]
-fn matmul_rows_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
-    #[cfg(target_arch = "x86_64")]
-    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
-        // SAFETY: avx2 and fma were just detected at runtime.
-        unsafe { matmul_rows_scratch_avx2(a, b, out, k, n, i0, packed_a, packed_b) };
-        return;
-    }
-    matmul_rows_body_scratch(a, b, out, k, n, i0, packed_a, packed_b);
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,fma")]
-#[cfg(test)]
-fn matmul_rows_scratch_avx2(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
-    matmul_rows_body_scratch(a, b, out, k, n, i0, packed_a, packed_b);
-}
-
-/// Packs the (kc x n) row-block of B starting at k-offset `pp` into `dst` as
-/// `njtiles` contiguous (kc x NR) panels, zero-padding the last panel's
-/// tail columns when n isn't a multiple of NR.
-#[inline(always)]
-fn pack_b(dst: &mut [f32], b: &[f32], n: usize, pp: usize, kc: usize, njtiles: usize) {
-    for jt in 0..njtiles {
-        let jj = jt * NR;
-        let ncols = NR.min(n - jj);
-        let base = jt * kc * NR;
-        for p in 0..kc {
-            let src = (pp + p) * n + jj;
-            let dstp = base + p * NR;
-            dst[dstp..dstp + ncols].copy_from_slice(&b[src..src + ncols]);
-            if ncols < NR {
-                dst[dstp + ncols..dstp + NR].fill(0.0);
-            }
-        }
-    }
-}
-
-/// Packs the (mc x kc) block of A (global rows i0..i0+mc, k-offset `pp`)
-/// into `dst` as `mtiles` contiguous (kc x MR) panels:
-/// `dst[t][p*MR+r] = A[(i0+t*MR+r)*k+pp+p]`, zero-padding the last panel's
-/// tail rows when mc isn't a multiple of MR. Reads a contiguous kc-run of
-/// `a` per row, so the stride-k gather happens once here instead of on
-/// every micro-kernel call.
-#[inline(always)]
-fn pack_a(dst: &mut [f32], a: &[f32], k: usize, i0: usize, pp: usize, kc: usize, mc: usize, mtiles: usize) {
-    for t in 0..mtiles {
-        let r0 = t * MR;
-        let mr = MR.min(mc - r0);
-        let base = t * kc * MR;
-        for r in 0..mr {
-            let arow = (i0 + r0 + r) * k + pp;
-            for p in 0..kc {
-                dst[base + p * MR + r] = a[arow + p];
-            }
-        }
-        for r in mr..MR {
-            for p in 0..kc {
-                dst[base + p * MR + r] = 0.0;
-            }
-        }
-    }
-}
-
-/// Rank-kc update of a full MRxNR register tile from packed panels. Both
-/// panels are always full size (edge rows/cols zero-padded by the packer),
-/// so this is the only micro-kernel shape - no scalar remainder variant.
-#[inline(always)]
-fn micro_packed(pa: &[f32], pb: &[f32], kc: usize, acc: &mut [[f32; NR]; MR]) {
-    for p in 0..kc {
-        #[cfg(test)]
-        if containment_tests::PACKED_FAULT.get() == 1 && p == 90 { continue; }
-        let av: &[f32; MR] = (&pa[p * MR..p * MR + MR]).try_into().unwrap();
-        let bv: &[f32; NR] = (&pb[p * NR..p * NR + NR]).try_into().unwrap();
-        for r in 0..MR {
-            let ar = av[r];
-            for j in 0..NR {
-                acc[r][j] += ar * bv[j];
-                #[cfg(test)]
-                match containment_tests::PACKED_FAULT.get() {
-                    2 => acc[r][j] = f32::NAN,
-                    3 => acc[r][j] = f32::INFINITY,
-                    4 => acc[r][j] = -999.0,
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-#[inline(always)]
-fn matmul_rows_body(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize) {
-    if n == 0 || out.is_empty() {
-        return;
-    }
-    let njtiles = n.div_ceil(NR);
-    // Allocated once per thread call, reused (fully overwritten) across
-    // every k-block/row-block iteration below - never shared across threads.
-    let mut packed_b = vec![0f32; njtiles * KC * NR];
-    let mut packed_a = vec![0f32; (MC / MR) * KC * MR];
-    matmul_rows_body_scratch(a, b, out, k, n, i0, &mut packed_a, &mut packed_b);
-}
-
-/// Shared inner loop for `matmul_rows_body`/`matmul_rows_scratch`: packing
-/// buffers come from the caller instead of being allocated here, so a
-/// batched-matmul worker can amortize one pair of buffers across many calls.
-#[inline(always)]
-fn matmul_rows_body_scratch(a: &[f32], b: &[f32], out: &mut [f32], k: usize, n: usize, i0: usize, packed_a: &mut [f32], packed_b: &mut [f32]) {
-    if n == 0 || out.is_empty() {
-        return;
-    }
-    let rows = out.len() / n;
-    let njtiles = n.div_ceil(NR);
-    for pp in (0..k).step_by(KC) {
-        let pend = (pp + KC).min(k);
-        let kc = pend - pp;
-        pack_b(packed_b, b, n, pp, kc, njtiles);
-        let mut r0 = 0;
-        while r0 < rows {
-            let mc = MC.min(rows - r0);
-            let mtiles = mc.div_ceil(MR);
-            pack_a(packed_a, a, k, i0 + r0, pp, kc, mc, mtiles);
-            for jt in 0..njtiles {
-                let jj = jt * NR;
-                let ncols = NR.min(n - jj);
-                let pb = &packed_b[jt * kc * NR..][..kc * NR];
-                let mut r = 0;
-                while r < mc {
-                    let mr = MR.min(mc - r);
-                    let pa = &packed_a[(r / MR) * kc * MR..][..kc * MR];
-                    let mut acc = [[0f32; NR]; MR];
-                    if pp > 0 {
-                        for rr in 0..mr {
-                            acc[rr][..ncols].copy_from_slice(&out[(r0 + r + rr) * n + jj..][..ncols]);
-                        }
-                    }
-                    micro_packed(pa, pb, kc, &mut acc);
-                    for rr in 0..mr {
-                        out[(r0 + r + rr) * n + jj..][..ncols].copy_from_slice(&acc[rr][..ncols]);
-                    }
-                    r += MR;
-                }
-            }
-            r0 += mc;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -464,7 +122,7 @@ mod tests {
 
     #[test]
     fn matches_naive_threaded_path() {
-        // m*k*n > PAR_THRESHOLD: exercises the std::thread::scope row split.
+        // m*k*n > GRAIN: exercises the std::thread::scope split.
         check_shape(160, 96, 80);
     }
 
@@ -487,46 +145,10 @@ mod tests {
 
     #[test]
     fn matches_naive_packed_remainders_threaded() {
-        // Same remainder stress, sized above PAR_THRESHOLD to also exercise
-        // the multi-threaded row split with packed edge tiles.
+        // Same remainder stress, sized to also exercise the multi-threaded
+        // split with packed edge tiles.
         for (m, k, n) in [(129, 257, 65), (127, 300, 129), (65, 256, 127)] {
-            assert!(m * k * n > PAR_THRESHOLD);
             check_shape(m, k, n);
-        }
-    }
-
-    #[test]
-    fn batch_group_splits_match_scalar_oracle() {
-        for (batch, m, k, n) in [(16, 128, 128, 128), (3, 49, 257, 17), (3, 7, 0, 17)] {
-            let a: Vec<_> = lcg_fill(2556, batch * m * k).into_iter().map(|x| x * 4.0).collect();
-            let b: Vec<_> = lcg_fill(3556, batch * k * n).into_iter().map(|x| x * 4.0).collect();
-            let want: Vec<f32> = (0..batch * m * n).map(|idx| {
-                let (bi, row, col) = (idx / (m * n), idx / n % m, idx % n);
-                let mut sum = 0.0;
-                for p in 0..k {
-                    sum += a[(bi * m + row) * k + p] * b[(bi * k + p) * n + col];
-                }
-                sum
-            }).collect();
-            for threads in [1, 3, 7, 31, 32, 33] {
-                let mut got = vec![if k == 0 { 0.0 } else { f32::NAN }; want.len()];
-                if threads == 1 {
-                    // Bypass the host heuristic: exercise the actual serial BMM worker.
-                    matmul_batch_group(&a, &b, &mut got, m, k, n, 0, batch * m);
-                } else {
-                    let rows_per = (batch * m).div_ceil(threads);
-                    thread::scope(|scope| {
-                        for (group, chunk) in got.chunks_mut(rows_per * n).enumerate() {
-                            let (a, b) = (&a, &b);
-                            let rows = chunk.len() / n;
-                            scope.spawn(move || matmul_batch_group(a, b, chunk, m, k, n, group * rows_per, rows));
-                        }
-                    });
-                }
-                for (idx, (x, y)) in got.iter().zip(&want).enumerate() {
-                    assert_eq!(x.to_bits(), y.to_bits(), "shape={batch},{m},{k},{n} threads={threads} index={idx}: {x} vs scalar {y}");
-                }
-            }
         }
     }
 
