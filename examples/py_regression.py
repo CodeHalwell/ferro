@@ -472,6 +472,14 @@ def test_loss_modules():
     print("loss modules: forward + input gradients: OK")
 
 
+def test_empty_sum_losses():
+    import ferro.nn.functional as F
+    e = ferro.Tensor.zeros([0, 3])
+    for f in (F.l1_loss, F.huber_loss, F.smooth_l1_loss, F.binary_cross_entropy_with_logits):
+        assert f(e, e, reduction="sum").tolist() == 0.0, f.__name__
+    print("empty inputs sum-reduce to 0 like torch: OK")
+
+
 def test_train_eval_modes():
     nn = ferro.nn
     x = ferro.Tensor([1.0] * 4000, [40, 100])
@@ -594,6 +602,7 @@ def main():
     test_functional_bindings()
     test_nn_modules()
     test_loss_modules()
+    test_empty_sum_losses()
     test_train_eval_modes()
     test_optimizers_see_module_parameters()
     test_dataloader()

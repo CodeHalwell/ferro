@@ -268,7 +268,8 @@ def _reduce(loss, reduction, count):
     if reduction == 'mean':
         return loss
     if reduction == 'sum':
-        return loss * float(count)
+        # An empty sum is 0, but the native mean over nothing is NaN.
+        return Tensor.zeros(loss.shape) if count == 0 else loss * float(count)
     raise ValueError("reduction must be 'mean' or 'sum' (native losses are mean-reduced; 'none' is unsupported)")
 
 
