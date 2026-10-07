@@ -6,81 +6,94 @@ methodology). Raw numbers, with min/p90 and full machine metadata, are in
 
 Machine: shared 4-vCPU cloud VM (Intel Xeon @ 2.10GHz, AVX2+FMA), Linux.
 torch is the stock PyPI 2.14.1 wheel running on CPU. The single-thread table
-is the more stable one (ratios agree within about 10% across runs on
-different days); the 4-thread numbers depend on neighbour load on this VM
-(torch's 1024 matmul ranged from 380 to 580 GFLOP/s between runs), so read
-those ratios as rough. The two sides run one after the other, so a load
-burst lands on one side only: one 1-thread run here had ferro's add drop to
-0.6x and was discarded after a re-run put it back at parity. If a ratio
+is the more stable one; the 4-thread numbers depend on neighbour load on this
+VM (torch's 1024 matmul ranged from 380 to 580 GFLOP/s between runs), so read
+those ratios as rough. The two sides run one after the other, so a load burst
+lands on one side only. Twice a 1-thread run had ferro's add drop to 0.6-0.7x
+and was discarded after an immediate re-run put it back at parity. If a ratio
 jumps, re-run before believing it.
+
+## Effect of #32 (vectorised maths, packed SGEMM)
+
+Single-thread ferro/torch speed before #32 (e78baae) and after it (merged
+into this branch at 369f503). Above 1.00x ferro is faster.
+
+| case | before | after |
+|---|---:|---:|
+| matmul_1024 | 0.30x | 0.79x |
+| exp_4M | 0.12x | 0.84x |
+| gelu_tanh_4M | 0.08x | 1.77x |
+| sum_4M | 0.39x | 0.89x |
+| softmax_1024x1024 | 0.10x | 0.91x |
+| conv2d_fwd | 0.18x | 0.50x |
+| mlp_train_step | 0.26x | 0.48x |
+| cnn_train_step | 0.23x | 0.44x |
+| transformer_train_step | 0.13x | 0.35x |
 
 ## 4 threads
 
-2026-10-07T18:20Z | ferro 7083423 (fast backend) | torch 2.14.1+cu130 | Intel(R) Xeon(R) Processor @ 2.10GHz, 4 threads (cpus: all (4)) | warmup=5 iters=30 (transformer: 20 steps, core backend)
+2026-10-07T18:25Z | ferro 369f503 (fast backend) | torch 2.14.1+cu130 | Intel(R) Xeon(R) Processor @ 2.10GHz, 4 threads (cpus: all (4)) | warmup=5 iters=30 (transformer: 20 steps, core backend)
 
 | case | shape | ferro ms | torch ms | ferro | torch | unit | ferro / torch speed |
 |---|---|---:|---:|---:|---:|---|---:|
-| matmul_256 | 256x256@256x256 | 0.510 | 0.082 | 65.9 | 410.6 | GFLOP/s | 0.16x |
-| matmul_512 | 512x512@512x512 | 2.490 | 0.675 | 107.8 | 397.6 | GFLOP/s | 0.27x |
-| matmul_1024 | 1024x1024@1024x1024 | 14.399 | 5.052 | 149.1 | 425.1 | GFLOP/s | 0.35x |
-| add_4M | 4194304 | 0.866 | 0.652 | 58.1 | 77.2 | GB/s | 0.75x |
-| mul_4M | 4194304 | 0.776 | 0.639 | 64.8 | 78.8 | GB/s | 0.82x |
-| relu_4M | 4194304 | 0.777 | 0.489 | 43.2 | 68.6 | GB/s | 0.63x |
-| exp_4M | 4194304 | 4.587 | 0.476 | 7.3 | 70.4 | GB/s | 0.10x |
-| gelu_tanh_4M | 4194304 | 32.691 | 3.716 | 1.0 | 9.0 | GB/s | 0.11x |
-| sum_4M | 4194304 | 1.739 | 0.225 | 9.6 | 74.7 | GB/s | 0.13x |
-| softmax_1024x1024 | 1024x1024 dim=1 | 10.499 | 0.285 | 0.8 | 29.4 | GB/s | 0.03x |
-| conv2d_fwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 25.112 | 1.324 | 24.1 | 456.2 | GFLOP/s | 0.05x |
-| conv2d_fwd_bwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 87.876 | 4.755 | 20.6 | 381.0 | GFLOP/s | 0.05x |
-| mlp_train_step | 128x784 -> 512 -> 256 -> 10, relu, CE, SGD | 14.014 | 1.839 | 9133.6 | 69602.5 | samples/s | 0.13x |
-| cnn_train_step | 32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD | 84.062 | 5.371 | 380.7 | 5958.2 | samples/s | 0.06x |
-| transformer_train_step | batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536 | 734.540 | 50.670 | 1394.1 | 20209.2 | tokens/s | 0.07x |
+| matmul_256 | 256x256@256x256 | 0.210 | 0.086 | 160.1 | 388.8 | GFLOP/s | 0.41x |
+| matmul_512 | 512x512@512x512 | 1.029 | 0.663 | 260.9 | 405.0 | GFLOP/s | 0.64x |
+| matmul_1024 | 1024x1024@1024x1024 | 6.325 | 4.795 | 339.5 | 447.9 | GFLOP/s | 0.76x |
+| add_4M | 4194304 | 0.709 | 0.753 | 70.9 | 66.8 | GB/s | 1.06x |
+| mul_4M | 4194304 | 0.647 | 0.689 | 77.8 | 73.0 | GB/s | 1.06x |
+| relu_4M | 4194304 | 0.560 | 0.531 | 60.0 | 63.2 | GB/s | 0.95x |
+| exp_4M | 4194304 | 0.537 | 0.608 | 62.4 | 55.2 | GB/s | 1.13x |
+| gelu_tanh_4M | 4194304 | 1.289 | 3.698 | 26.0 | 9.1 | GB/s | 2.87x |
+| sum_4M | 4194304 | 0.234 | 0.245 | 71.7 | 68.5 | GB/s | 1.05x |
+| softmax_1024x1024 | 1024x1024 dim=1 | 0.340 | 0.277 | 24.7 | 30.3 | GB/s | 0.81x |
+| conv2d_fwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 9.304 | 2.096 | 64.9 | 288.1 | GFLOP/s | 0.23x |
+| conv2d_fwd_bwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 36.994 | 8.684 | 49.0 | 208.6 | GFLOP/s | 0.23x |
+| mlp_train_step | 128x784 -> 512 -> 256 -> 10, relu, CE, SGD | 6.933 | 1.995 | 18463.2 | 64154.3 | samples/s | 0.29x |
+| cnn_train_step | 32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD | 27.752 | 4.565 | 1153.1 | 7010.1 | samples/s | 0.16x |
+| transformer_train_step | batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536 | 273.910 | 51.800 | 3738.5 | 19768.3 | tokens/s | 0.19x |
 
 ms columns are medians; speed > 1 means ferro is faster than torch on that case.
 
 ## 1 thread (`--cpus 0`)
 
-2026-10-07T18:22Z | ferro 7083423 (fast backend) | torch 2.14.1+cu130 | Intel(R) Xeon(R) Processor @ 2.10GHz, 1 threads (cpus: 0) | warmup=5 iters=30 (transformer: 20 steps, core backend)
+2026-10-07T18:26Z | ferro 369f503 (fast backend) | torch 2.14.1+cu130 | Intel(R) Xeon(R) Processor @ 2.10GHz, 1 threads (cpus: 0) | warmup=5 iters=30 (transformer: 20 steps, core backend)
 
 | case | shape | ferro ms | torch ms | ferro | torch | unit | ferro / torch speed |
 |---|---|---:|---:|---:|---:|---|---:|
-| matmul_256 | 256x256@256x256 | 0.828 | 0.291 | 40.5 | 115.5 | GFLOP/s | 0.35x |
-| matmul_512 | 512x512@512x512 | 5.877 | 1.879 | 45.7 | 142.8 | GFLOP/s | 0.32x |
-| matmul_1024 | 1024x1024@1024x1024 | 50.948 | 15.230 | 42.2 | 141.0 | GFLOP/s | 0.30x |
-| add_4M | 4194304 | 2.594 | 2.480 | 19.4 | 20.3 | GB/s | 0.96x |
-| mul_4M | 4194304 | 2.515 | 2.376 | 20.0 | 21.2 | GB/s | 0.94x |
-| relu_4M | 4194304 | 2.102 | 1.670 | 16.0 | 20.1 | GB/s | 0.79x |
-| exp_4M | 4194304 | 13.796 | 1.653 | 2.4 | 20.3 | GB/s | 0.12x |
-| gelu_tanh_4M | 4194304 | 124.262 | 10.071 | 0.3 | 3.3 | GB/s | 0.08x |
-| sum_4M | 4194304 | 1.855 | 0.731 | 9.0 | 22.9 | GB/s | 0.39x |
-| softmax_1024x1024 | 1024x1024 dim=1 | 11.185 | 1.069 | 0.7 | 7.8 | GB/s | 0.10x |
-| conv2d_fwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 27.961 | 5.079 | 21.6 | 118.9 | GFLOP/s | 0.18x |
-| conv2d_fwd_bwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 92.733 | 18.116 | 19.5 | 100.0 | GFLOP/s | 0.20x |
-| mlp_train_step | 128x784 -> 512 -> 256 -> 10, relu, CE, SGD | 13.654 | 3.611 | 9374.4 | 35448.2 | samples/s | 0.26x |
-| cnn_train_step | 32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD | 51.977 | 11.914 | 615.7 | 2685.8 | samples/s | 0.23x |
-| transformer_train_step | batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536 | 732.540 | 95.630 | 1397.9 | 10707.9 | tokens/s | 0.13x |
+| matmul_256 | 256x256@256x256 | 0.270 | 0.244 | 124.2 | 137.6 | GFLOP/s | 0.90x |
+| matmul_512 | 512x512@512x512 | 2.448 | 1.962 | 109.6 | 136.8 | GFLOP/s | 0.80x |
+| matmul_1024 | 1024x1024@1024x1024 | 19.231 | 15.179 | 111.7 | 141.5 | GFLOP/s | 0.79x |
+| add_4M | 4194304 | 2.468 | 2.583 | 20.4 | 19.5 | GB/s | 1.05x |
+| mul_4M | 4194304 | 2.254 | 2.332 | 22.3 | 21.6 | GB/s | 1.03x |
+| relu_4M | 4194304 | 2.036 | 1.488 | 16.5 | 22.5 | GB/s | 0.73x |
+| exp_4M | 4194304 | 1.790 | 1.501 | 18.7 | 22.4 | GB/s | 0.84x |
+| gelu_tanh_4M | 4194304 | 5.623 | 9.933 | 6.0 | 3.4 | GB/s | 1.77x |
+| sum_4M | 4194304 | 0.826 | 0.731 | 20.3 | 22.9 | GB/s | 0.89x |
+| softmax_1024x1024 | 1024x1024 dim=1 | 0.911 | 0.825 | 9.2 | 10.2 | GB/s | 0.91x |
+| conv2d_fwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 9.433 | 4.711 | 64.0 | 128.2 | GFLOP/s | 0.50x |
+| conv2d_fwd_bwd | x[16,32,32,32] w[64,32,3,3] pad=1 | 38.370 | 16.621 | 47.2 | 109.0 | GFLOP/s | 0.43x |
+| mlp_train_step | 128x784 -> 512 -> 256 -> 10, relu, CE, SGD | 7.222 | 3.495 | 17724.8 | 36625.3 | samples/s | 0.48x |
+| cnn_train_step | 32x3x32x32, conv3-16 pool conv16-32 pool fc2048-10, CE, SGD | 25.910 | 11.279 | 1235.1 | 2837.0 | samples/s | 0.44x |
+| transformer_train_step | batch=8 seq=128 d_model=256 heads=4 vocab=1024 params=1313536 | 289.070 | 100.390 | 3542.4 | 10200.2 | tokens/s | 0.35x |
 
 ms columns are medians; speed > 1 means ferro is faster than torch on that case.
 
 ## What the numbers say
 
-- Streaming binary ops (add, mul) are at parity single-threaded, so memory
-  traffic is not the problem; relu is about 0.6-0.8x.
-- Matmul is a steady ~3.2x behind torch's BLAS on one core (~45 vs ~145
-  GFLOP/s) and scales about as well across threads, so the gap is the
-  micro-kernel, not the threading.
-- Transcendentals are the largest per-op gap: exp is ~9x and tanh-GELU ~13x
-  slower, because fastcpu calls scalar libm per lane to keep bitwise parity
-  with CpuBackend. Vectorized polynomial approximations would close most of
-  it.
-- softmax is ~10x behind on one core and 35-50x on four (it does not thread);
-  sum is 2.5x behind and also does not scale with threads.
-- conv2d (im2col + GEMM) is ~6x behind on one core and does not speed up
-  with more threads, which makes it ~20x behind at 4 threads.
-- The CNN training step is slower on 4 threads (84 ms) than on 1 (52 ms):
-  thread spawn cost on small tensors outweighs the parallel work.
-- The transformer step takes the same ~730 ms on 1 and 4 threads. Note that
-  `bench_transformer` registers only `ferro_fastcpu::install()` (matmul) and
-  not the vectorized elementwise backend, and that its torch twin is not
-  exactly like-for-like: ferro applies RoPE and tanh-GELU, while the torch
-  twin's `nn.MultiheadAttention` has no RoPE and uses erf-GELU.
+- Single ops are now close to torch on one core: elementwise, sum and
+  softmax sit at 0.7-1.05x, matmul at ~0.8x, and tanh-GELU is faster than
+  torch's (1.8x).
+- conv2d is the largest remaining op gap: ~2x behind on one core and ~4x on
+  four. It barely speeds up with threads (9.4 ms on 1, 9.3 ms on 4), while
+  torch gets ~2.2x.
+- The training steps trail the ops: MLP and CNN steps are ~2.2x behind on
+  one core, although their matmuls and convs are only 1.25-2x behind. The
+  difference is per-op overhead in the graph, backward and optimizer.
+- The CNN step gets no faster on 4 threads (28 ms against 26 ms on 1), so
+  the threading cost on small tensors still cancels the parallel work.
+- The transformer step is ~2.9x behind on one core and ~5x on four. Note
+  that `bench_transformer` registers only `ferro_fastcpu::install()`
+  (matmul) and not the vectorised elementwise backend, so it does not yet
+  get all of #32. Its torch twin is also not exactly like-for-like: ferro
+  applies RoPE and tanh-GELU, while the torch twin's
+  `nn.MultiheadAttention` has no RoPE and uses erf-GELU.
