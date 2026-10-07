@@ -20,7 +20,10 @@
 
 use std::thread;
 
+#[cfg(target_arch = "x86_64")]
+mod avx2;
 pub mod elementwise;
+mod workers;
 mod safe_bmm;
 #[cfg(test)]
 mod containment_tests;

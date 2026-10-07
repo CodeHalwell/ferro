@@ -6,7 +6,6 @@ use crate::device::Device;
 use crate::dispatch::{backend_for, BinaryKind, DeviceBuffer, ReduceKind, UnaryKind};
 use crate::dtype::DType;
 use crate::error::{Error, Result};
-use crate::reduce::{pairwise_sum, pairwise_sum_strided};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, checked_numel, default_strides, numel};
 
@@ -487,23 +486,28 @@ impl Tensor {
         self.to_vec()
     }
 
-    /// Host-side full-tensor sum without materializing a copy: contiguous f32
-    /// storage is reduced straight from the slice; anything else goes through
-    /// a pooled temporary. Same fixed pairwise reduction order either way.
-    pub(crate) fn raw_host_sum(&self) -> f32 {
+    /// Runs `f` on the tensor's row-major f32 data without materializing a
+    /// copy when it can: contiguous f32 storage is borrowed in place (under
+    /// the storage read lock), anything else goes through a pooled temporary.
+    pub(crate) fn with_host_f32<R>(&self, f: impl FnOnce(&[f32]) -> R) -> R {
         {
             let g = self.0.storage.read();
             if let Storage::F32(v) = &*g {
                 if self.is_contiguous() {
-                    let n = self.numel();
-                    return pairwise_sum(&v[self.0.offset..self.0.offset + n]);
+                    return f(&v[self.0.offset..self.0.offset + self.numel()]);
                 }
             }
         }
         let tmp = self.to_vec_pooled();
-        let s = pairwise_sum(&tmp);
+        let r = f(&tmp);
         crate::pool::give(tmp);
-        s
+        r
+    }
+
+    /// Host-side full-tensor sum via the cpu backend's fixed-order tree.
+    pub(crate) fn raw_host_sum(&self) -> f32 {
+        let cpu = backend_for(Device::Cpu).expect("cpu backend is always registered");
+        self.with_host_f32(|v| cpu.sum(v))
     }
 
     /// Materialize row-major DATA IN self's OWN dtype (no cast): the general
@@ -1540,37 +1544,20 @@ pub(crate) fn try_raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Result<T
             return Ok(device_leaf(out, &out_shape, t.0.device));
         }
     }
-    let v = {
+    let cpu = backend_for(Device::Cpu)?;
+    let out = {
         let storage = t.0.storage.read();
         match &*storage {
-            Storage::Device(buf) => t.gather_view(&backend_for(t.device())?.copy_to_host(buf.as_ref())?),
-            Storage::DeviceI64(buf) => t.gather_view(&backend_for(t.device())?.copy_i64_to_host(buf.as_ref())?)
-                .into_iter().map(|x| x as f32).collect(),
-            _ => { drop(storage); t.to_vec_pooled() }
+            Storage::Device(buf) => cpu.sum_dim(&t.gather_view(&backend_for(t.device())?.copy_to_host(buf.as_ref())?), &in_shape, dim),
+            Storage::DeviceI64(buf) => {
+                let v: Vec<f32> = t.gather_view(&backend_for(t.device())?.copy_i64_to_host(buf.as_ref())?).into_iter().map(|x| x as f32).collect();
+                cpu.sum_dim(&v, &in_shape, dim)
+            }
+            _ => { drop(storage); t.with_host_f32(|v| cpu.sum_dim(v, &in_shape, dim)) }
         }
     };
-    let strides = default_strides(&in_shape);
-    let (n, stride) = (in_shape[dim], strides[dim]);
     let mut keep_shape = in_shape.clone();
     keep_shape[dim] = 1;
-    // Every slot is assigned below, so the buffer may come back uninit.
-    let mut out = crate::pool::take_uninit(numel(&keep_shape));
-    let mut idx = vec![0usize; ndim];
-    for slot in out.iter_mut() {
-        let off: usize = (0..ndim).map(|d| idx[d] * strides[d]).sum();
-        *slot = pairwise_sum_strided(&v, off, n, stride);
-        for d in (0..ndim).rev() {
-            if d == dim {
-                continue;
-            }
-            idx[d] += 1;
-            if idx[d] < in_shape[d] {
-                break;
-            }
-            idx[d] = 0;
-        }
-    }
-    crate::pool::give(v);
     let out_shape: Vec<usize> = if keepdim {
         keep_shape
     } else {
