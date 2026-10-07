@@ -29,8 +29,9 @@ Methodology:
   forward), elementwise and reductions in bytes actually touched (12n for
   binary, 8n for unary, 4n for sum), training steps in samples.
 - Thread budgets match by construction. ferro threads over
-  `available_parallelism()`, which honours the affinity mask; the torch twin
-  calls `torch.set_num_threads(len(os.sched_getaffinity(0)))`. `--cpus` pins
+  `available_parallelism()`, which honours the affinity mask and any cgroup
+  CPU quota; `compare.py` asks the ferro binary (`bench_suite --threads`) for
+  that count and passes it to `torch.set_num_threads`. `--cpus` pins
   both processes with `taskset`, so `--cpus 0` is a clean single-thread
   comparison.
 - ferro runs with `ferro_fastcpu::install_backend()` (packed AVX2 matmul plus

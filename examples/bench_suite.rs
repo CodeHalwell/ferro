@@ -83,6 +83,11 @@ fn labels(n: usize, classes: usize) -> R<Tensor> {
 }
 
 fn main() -> R<()> {
+    // compare.py sizes the torch thread team from this, so both sides share Rust's view (affinity and cgroup quota).
+    if std::env::args().nth(1).as_deref() == Some("--threads") {
+        println!("{}", std::thread::available_parallelism().map_or(1, |p| p.get()));
+        return Ok(());
+    }
     let args = parse_args();
     match args.backend.as_str() {
         "core" => ferro_fastcpu::install(),

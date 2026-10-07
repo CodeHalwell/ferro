@@ -7,9 +7,10 @@ runs under --python (which must have torch installed).
         [--json out.json] [--markdown out.md]
 
 --cpus pins BOTH processes to the same CPU set via taskset; ferro threads over
-available_parallelism() (which honours the affinity mask) and the torch twin
-sets torch.set_num_threads to the same count (passed as --threads to both
-torch scripts), so thread budgets always match. --cpus needs Linux taskset.
+available_parallelism() (which honours the affinity mask and any cgroup CPU
+quota); the driver asks the ferro binary for that count and passes it as
+--threads to both torch scripts for torch.set_num_threads, so thread budgets
+always match. --cpus needs Linux taskset.
 """
 
 import argparse
@@ -68,8 +69,7 @@ def cpu_model():
 
 
 def thread_count(cpus):
-    probe = "import os;print(len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count())"
-    return int(sh(pinned([sys.executable, "-c", probe], cpus)))
+    return int(sh(pinned([str(BENCH / "target/release/bench_suite"), "--threads"], cpus)))
 
 
 def machine(python, cpus, threads):
