@@ -15,6 +15,6 @@ impl Tensor {
         }
         let out = self.capture_layout(self.broadcast_to(shape)?)?;
         let in_shape = cur.to_vec();
-        Ok(out.record_fn(vec![self.clone()], move |g| vec![unbroadcast(g, &in_shape)]))
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Expand(shape.to_vec()), move |g| vec![unbroadcast(g, &in_shape)]))
     }
 }

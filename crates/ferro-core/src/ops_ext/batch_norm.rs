@@ -1,17 +1,14 @@
 //! Functional batch normalization with returned running statistics.
-//! Training requires at least two elements per channel. Evaluation uses frozen
-//! statistics and accepts singleton or empty batches. Zero channels are invalid.
-//! Input rank-2 [N, C] or rank-4 NCHW [N, C, H, W]; per-channel statistics
+//! Nonempty training requires at least two elements per channel. Empty batches
+//! preserve statistics. Evaluation uses frozen statistics. Zero channels are invalid.
+//! Input [N, C, ...], rank at least two; per-channel statistics
 //! over everything except C. Normalization uses the biased batch variance;
 //! running_var is updated with the unbiased one (m / (m - 1)), like torch.
 //! Tensors are immutable, so the updated running stats are returned alongside
 //! the output rather than written back.
 //!
-//! Train backward per channel over m elements, with std = sqrt(var + eps),
-//! dxh = g * w and xd = x - mean:
-//!   dvar = -0.5 * sum(dxh * xd) / std^3
-//!   dmean = -sum(dxh) / std + dvar * mean(-2 * xd)
-//!   dx = dxh / std + dvar * 2 * xd / m + dmean / m
+//! Train backward uses xhat = (x - mean) / sqrt(var + eps):
+//!   dx = w / std * (g - mean(g) - xhat * mean(g*xhat))
 //!   dw = sum(g * xhat), db = sum(g)
 
 use crate::dtype::DType;
@@ -44,10 +41,10 @@ impl Tensor {
             });
         }
         let ndim = self.ndim();
-        if ndim != 2 && ndim != 4 {
+        if ndim < 2 {
             return Err(Error::Unsupported {
                 op,
-                msg: format!("expected rank 2 or 4 input, got rank {ndim}"),
+                msg: format!("expected input rank at least 2, got rank {ndim}"),
             });
         }
         let shape = self.shape().to_vec();
@@ -59,13 +56,13 @@ impl Tensor {
             });
         }
         let m: usize = self.numel() / c;
-        if train && m < 2 {
+        if train && m == 1 {
             return Err(Error::InvalidShape {
                 op,
                 msg: "batch statistic needs at least 2 elements per channel".into(),
             });
         }
-        for (_name, t) in [
+        for (name, t) in [
             ("weight", weight),
             ("bias", bias),
             ("running_mean", running_mean),
@@ -85,11 +82,25 @@ impl Tensor {
                     rhs: t.shape().to_vec(),
                 });
             }
+            if name.starts_with("running_") && t.requires_grad() {
+                return Err(Error::Unsupported { op, msg: "running statistics are not differentiable".into() });
+            }
+        }
+
+        if train && eps <= 0.0 {
+            return Err(Error::InvalidShape { op, msg: "eps must be positive during training".into() });
+        }
+        if m == 0 {
+            let input_shape = shape.clone();
+            let output = Tensor::from_vec(Vec::new(), &shape)?.record_fn(vec![self.clone(), weight.clone(), bias.clone()], move |_| {
+                vec![Tensor::from_vec(Vec::new(), &input_shape).unwrap(), Tensor::zeros(&[c]), Tensor::zeros(&[c])]
+            });
+            let output = if train { output } else { output.save_tensor_versions(&[running_mean, running_var]) };
+            return Ok(BatchNormOut { output, running_mean: running_mean.owned_detach_copy(), running_var: running_var.owned_detach_copy() });
         }
 
         let outer = shape[0];
-        // Elements per (sample, channel); 1 when rank-2.
-        let spatial: usize = if ndim == 4 { shape[2] * shape[3] } else { 1 };
+        let spatial: usize = shape[2..].iter().product();
         let x = self.to_vec();
         let w = weight.to_vec();
         let b = bias.to_vec();
@@ -190,26 +201,12 @@ impl Tensor {
                                 dw[chn] += gd[base + i] * (x[base + i] - norm_mean[chn]) / std;
                             }
                         }
-                        let mut sum_dxh = 0.0f32;
-                        let mut sum_dxh_xd = 0.0f32;
-                        for (i, &gi) in gd.iter().enumerate() {
-                            if chan_of(i) != chn {
-                                continue;
-                            }
-                            let dxh = gi * w[chn];
-                            sum_dxh += dxh;
-                            sum_dxh_xd += dxh * (x[i] - mean[chn]);
-                        }
-                        let dvar = -0.5 * sum_dxh_xd / (std * std * std);
-                        // sum(xd) is zero by construction of the mean, so
-                        // the dvar correction to dmean vanishes.
-                        let dmean = -sum_dxh / std;
                         for i in 0..gd.len() {
                             if chan_of(i) != chn {
                                 continue;
                             }
-                            let xd = x[i] - mean[chn];
-                            dx[i] = gd[i] * w[chn] / std + dvar * 2.0 * xd / mf + dmean / mf;
+                            let normalized = (x[i] - mean[chn]) / std;
+                            dx[i] = (gd[i] - db[chn] / mf - normalized * (dw[chn] / mf)) * (w[chn] / std);
                         }
                     }
                     vec![
@@ -258,7 +255,7 @@ impl Tensor {
                         Tensor::from_vec(dw, &[c]).unwrap(),
                         Tensor::from_vec(db, &[c]).unwrap(),
                     ]
-                }),
+                }).save_tensor_versions(&[running_mean, running_var]),
                 running_mean: rm_t,
                 running_var: rv_t,
             })

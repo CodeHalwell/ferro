@@ -587,7 +587,7 @@ def extended_modules():
     tm = torch.nn.MultiheadAttention(8, 2, batch_first=True)
     torch.nn.init.normal_(tm.in_proj_bias)
     torch.nn.init.normal_(tm.out_proj.bias)
-    fm = nn.MultiheadAttention(8, 2)
+    fm = nn.MultiheadAttention(8, 2, batch_first=True)
     params = [(fm.in_proj_weight, tm.in_proj_weight), (fm.in_proj_bias, tm.in_proj_bias), (fm.out_proj.weight, tm.out_proj.weight), (fm.out_proj.bias, tm.out_proj.bias)]
     inputs = [(data(48, 7, 11, 0.2), [2, 3, 8]), (data(64, 5, 9), [2, 4, 8]), (data(64, 3, 13, 0.15), [2, 4, 8])]
     check_module("MultiheadAttention cross need_weights=False", lambda q, k, v: fm(q, k, v, need_weights=False)[0],

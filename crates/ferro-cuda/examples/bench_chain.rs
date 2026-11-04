@@ -125,7 +125,7 @@ fn main() {
 
     // CUDA-graph replay of the same fused chain: capture once, then each
     // iteration is a single graph launch writing to the same output buffer.
-    let captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref(), zd.as_ref()]) {
+    let mut captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref(), zd.as_ref()]) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("capture error detail: {e}");

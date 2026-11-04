@@ -8,6 +8,9 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn log1p(&self) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 {
+            return crate::typed_math::unary_grad_tensor(self, "log1p", f64::ln_1p, false, |g, x| g.div(&x.add(&crate::typed_math::full_f64(&[], 1.0)?)?));
+        }
         let out = raw_binary("log1p", self, self, |v, _| v.ln_1p())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {

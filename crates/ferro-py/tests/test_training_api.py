@@ -27,14 +27,14 @@ class AdditionalContracts(unittest.TestCase):
         from ferro.autograd import grad
         x = ferro.Tensor([2.0], [1]).requires_grad_(True)
         with self.assertRaisesRegex((ValueError, NotImplementedError), 'unsupported|create_graph'):
-            grad(x.relu(), [x], create_graph=True)
+            grad(x.gelu(), [x], create_graph=True)
 
-    def test_registration_follows_mixed_assignment_order(self):
+    def test_parameter_traversal_visits_direct_slots_before_children(self):
         class Mixed(nn.Module):
             def build(self):
                 self.child = nn.Linear(1, 1)
                 self.weight = nn.Parameter(ferro.Tensor.ones([1]))
-        self.assertEqual(list(dict(Mixed().named_parameters())), ['child.weight', 'child.bias', 'weight'])
+        self.assertEqual(list(dict(Mixed().named_parameters())), ['weight', 'child.weight', 'child.bias'])
 
     def test_backward_with_seed(self):
         x = ferro.Tensor([2.0, 3.0], [2]).requires_grad_(True)
@@ -53,10 +53,11 @@ class AdditionalContracts(unittest.TestCase):
         with self.assertRaises(TypeError):
             class Bad(nn.Module):
                 values: list = []
-        with self.assertRaises(TypeError):
-            class BadInit(nn.Module):
-                def __init__(self):
-                    pass
+        class DirectInit(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = nn.Parameter(ferro.ones(1))
+        self.assertEqual([name for name, _ in DirectInit().named_parameters()], ['weight'])
 
     def test_alias_paths_replacement_deletion_and_cycles(self):
         class Parent(nn.Module):

@@ -1,6 +1,7 @@
 //! `log_softmax` over one dimension. Numerically stable via the log-sum-exp
-//! trick: along each slice `m = max(x)`, `lse = m + log(sum(exp(x - m)))`, and
-//! `y_i = x_i - lse`. Backward: with `sm_i = exp(y_i)` (softmax), the gradient is
+//! trick: along each slice `m = max(x)` and `y_i = (x_i - m) - log(sum(exp(x - m)))`.
+//! Subtract the maximum first to retain normalization at large common offsets.
+//! Backward: with `sm_i = exp(y_i)` (softmax), the gradient is
 //! `dx_i = g_i - sm_i * sum_k g_k`, computed per slice over `dim`.
 //!
 //! Device-resident whole buffers take the backend's `log_softmax_dev` row
@@ -13,6 +14,8 @@ use crate::tensor::{raw_row_softmax, Tensor};
 
 impl Tensor {
     pub fn log_softmax(&self, dim: usize) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 { return crate::typed_math::softmax(self, dim, true); }
+        crate::tensor::check_f32("log_softmax", self)?;
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {
@@ -21,7 +24,7 @@ impl Tensor {
             });
         }
         if let Some(out) = raw_row_softmax(self, dim, true) {
-            if !self.requires_grad() {
+            if !self.requires_grad() && !crate::forward_ad::is_active() {
                 return Ok(if crate::capture::is_recording() {
                     out.record_fn(vec![self.clone()], |_| unreachable!("inference node has no backward"))
                 } else { out });
@@ -31,7 +34,7 @@ impl Tensor {
                 // dx = g - softmax(y) * sum(g, dim), keepdim sum broadcasting.
                 let sg = g.sum_dim(dim, true).unwrap();
                 vec![g.sub(&y.exp().mul(&sg).unwrap()).unwrap()]
-            }));
+            }).save_output_version());
         }
         let shape = self.shape().to_vec();
         let n = shape[dim];
@@ -40,7 +43,7 @@ impl Tensor {
         let cpu = crate::dispatch::backend_for(crate::Device::Cpu)?;
         let y = self.with_host_f32(|x| if dim + 1 == ndim { cpu.log_softmax(x, outer, n) } else { log_softmax_forward(x, &shape, dim) });
 
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::forward_ad::is_active() {
             let out = Tensor::from_vec(y, &shape)?;
             return Ok(if crate::capture::is_recording() {
                 out.record_fn(vec![self.clone()], |_| unreachable!("inference node has no backward"))
@@ -66,7 +69,7 @@ impl Tensor {
                 }
             }
             vec![Tensor::from_vec(dx, &shape).unwrap()]
-        }))
+        }).save_output_version())
     }
 }
 
@@ -87,9 +90,9 @@ pub(crate) fn log_softmax_forward(x: &[f32], shape: &[usize], dim: usize) -> Vec
                 exps[base + k * stride] = (x[base + k * stride] - m).exp();
             }
             let sum = pairwise_sum_strided(&exps, base, n, stride);
-            let lse = m + sum.ln();
+            let log_sum = sum.ln();
             for k in 0..n {
-                y[base + k * stride] = x[base + k * stride] - lse;
+                y[base + k * stride] = (x[base + k * stride] - m) - log_sum;
             }
         }
     }

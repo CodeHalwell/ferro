@@ -5,6 +5,7 @@
 pub mod abs;
 pub mod acos;
 pub mod acosh;
+pub mod add_alpha;
 pub mod addcdiv;
 pub mod addcmul;
 pub mod argmax;
@@ -17,24 +18,31 @@ pub mod avg_pool2d;
 pub mod batch_norm;
 pub mod bce_loss;
 pub mod bce_with_logits_loss;
+pub mod binary_losses;
 pub mod bmm;
+pub mod boolean;
 pub mod cat;
 pub mod ceil;
 pub mod celu;
 pub mod clamp;
 pub mod conv2d;
+mod conv2d_f64;
 pub mod copysign;
 pub mod cos;
 pub mod cosh;
 pub mod cosine_embedding_loss;
 pub mod cosine_similarity;
 pub mod cumsum;
+pub mod cumprod;
+pub mod cum_extrema;
 pub mod deg2rad;
 pub mod diff;
 pub mod dist;
 pub mod dropout;
 pub mod elu;
 pub mod embedding;
+pub mod embedding_bag;
+pub mod embedding_options;
 pub mod erf;
 pub mod erfc;
 pub mod exp2;
@@ -58,6 +66,7 @@ pub mod huber_loss;
 pub mod hypot;
 pub mod index_add;
 pub mod index_select;
+pub(crate) mod indexed;
 pub mod kl_div_loss;
 pub mod l1_loss;
 pub mod layer_norm;
@@ -88,6 +97,7 @@ pub mod pairwise_distance;
 pub mod permute;
 pub mod poisson_nll_loss;
 pub mod powf;
+pub(crate) mod prod;
 pub mod prod_dim;
 pub mod reciprocal;
 pub mod relu6;
@@ -106,11 +116,13 @@ pub mod sin;
 pub mod sinc;
 pub mod sinh;
 pub mod slice;
+pub mod unflatten;
 pub mod smooth_l1_loss;
 pub mod soft_margin_loss;
 pub mod softmax;
 pub mod softmin;
 pub mod softplus;
+pub mod sort;
 pub mod softshrink;
 pub mod softsign;
 pub mod split;
@@ -136,3 +148,14 @@ pub mod window;
 
 // `embedding` is a free function over (weight, ids) rather than a method.
 pub use embedding::embedding;
+
+mod view;
+
+pub mod div_rounding;
+
+pub(crate) mod activation_backward;
+
+pub mod prelu;
+
+pub(crate) mod dual_copy;
+pub(crate) mod prelu_backward;

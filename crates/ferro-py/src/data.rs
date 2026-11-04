@@ -1,9 +1,17 @@
 use super::*;
-use ferro_core::data::{DataLoader, Dataset, TensorDataset};
+use ferro_core::data::{DataLoader, Dataset, TensorDataset, RandomSampler, Sampler};
 use std::sync::Arc;
 
 #[pyclass(name = "TensorDataset", module = "ferro.data")]
 struct PyTensorDataset { inner: Arc<TensorDataset> }
+
+#[pyfunction]
+fn _sample_order(count: usize, seed: u64) -> PyResult<Vec<usize>> {
+    if count > isize::MAX as usize / std::mem::size_of::<usize>() {
+        return Err(PyValueError::new_err("sampler allocation exceeds addressable storage"));
+    }
+    Ok(RandomSampler { seed }.order(count))
+}
 
 #[pymethods]
 impl PyTensorDataset {
@@ -37,5 +45,6 @@ fn _load_epoch(py: Python<'_>, dataset: &PyTensorDataset, batch_size: usize, shu
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTensorDataset>()?;
     m.add_function(wrap_pyfunction!(_load_epoch, m)?)?;
+    m.add_function(wrap_pyfunction!(_sample_order, m)?)?;
     Ok(())
 }

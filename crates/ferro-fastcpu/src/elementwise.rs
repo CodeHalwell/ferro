@@ -34,7 +34,7 @@ impl Backend for FastCpuBackend {
     fn unary(&self, kind: UnaryKind, x: &[f32]) -> Vec<f32> {
         // Pool-backed; the chunk loops write every element.
         let mut out = ferro_core::pool::take_uninit(x.len());
-        let cheap = matches!(kind, UnaryKind::Neg | UnaryKind::Relu | UnaryKind::Sqrt | UnaryKind::Abs | UnaryKind::Clamp { .. } | UnaryKind::Gtz);
+        let cheap = matches!(kind, UnaryKind::Neg | UnaryKind::Relu | UnaryKind::Sqrt | UnaryKind::Abs | UnaryKind::Sign | UnaryKind::Clamp { .. } | UnaryKind::Gtz);
         let par = x.len() >= if cheap { PAR_THRESHOLD } else { PAR_THRESHOLD_MATH };
         par_split(&mut out, 1, par, |i, o| unary_chunk(kind, &x[i..i + o.len()], o));
         out
@@ -181,12 +181,16 @@ fn unary_chunk_body(kind: UnaryKind, x: &[f32], out: &mut [f32]) {
         UnaryKind::Tanh => apply1(x, out, |v| v.tanh()),
         UnaryKind::Sqrt => apply1(x, out, |v| v.sqrt()),
         UnaryKind::Abs => apply1(x, out, |v| v.abs()),
+        UnaryKind::Sign => apply1(x, out, |v| if v < 0.0 { -1.0 } else if v > 0.0 { 1.0 } else { 0.0 }),
         UnaryKind::Log => apply1(x, out, |v| v.ln()),
-        UnaryKind::Powf(p) => apply1(x, out, |v| v.powf(p)),
-        // max/min chain, not f32::clamp (which panics on min > max); matches
-        // torch: min > max yields max everywhere. NaN passes through.
-        UnaryKind::Clamp { min, max } => apply1(x, out, |v| if v.is_nan() { v } else { v.max(min).min(max) }),
-        UnaryKind::Gtz => apply1(x, out, |v| if v > 0.0 { 1.0 } else { 0.0 }),
+        UnaryKind::Powf(p) => apply1(x, out, |v| if p == 0.5 { v.sqrt() } else if p == -0.5 { v.sqrt().recip() } else if p == -1.0 { v.recip() } else if p == -2.0 { (v * v).recip() } else if p == 2.0 { v * v } else if p == 3.0 { (v * v) * v } else { v.powf(p) }),
+        // Ordered comparisons preserve zero ties; NaN bounds propagate.
+        UnaryKind::Clamp { min, max } => apply1(x, out, |v| {
+            if v.is_nan() { v }
+            else if min.is_nan() || max.is_nan() { f32::NAN }
+            else { let lower = if v < min { min } else { v }; if lower > max { max } else { lower } }
+        }),
+        UnaryKind::Gtz => apply1(x, out, |v| if v <= 0.0 { 0.0 } else { 1.0 }),
         // Same tanh approximation as the core reference implementation.
         UnaryKind::Gelu => {
             apply1(x, out, |v| {
@@ -214,6 +218,7 @@ fn binary_chunk_body(kind: BinaryKind, a: &[f32], b: &[f32], out: &mut [f32]) {
         BinaryKind::Sub => apply2(a, b, out, |x, y| x - y),
         BinaryKind::Mul => apply2(a, b, out, |x, y| x * y),
         BinaryKind::Div => apply2(a, b, out, |x, y| x / y),
+        BinaryKind::ReluBackward => apply2(a, b, out, |x, y| if y <= 0.0 { 0.0 } else { x }),
     }
 }
 
@@ -323,13 +328,29 @@ mod tests {
     const LENGTHS: [usize; 11] = [0, 1, 7, 8, 9, 15, 16, 17, 1023, (1 << 20) + 3, PAR_THRESHOLD + 3];
 
     #[test]
+    fn half_powers_match_torch_domains_and_signed_zero_in_serial_and_parallel_paths() {
+        let input=[f32::NEG_INFINITY,-4.0,-0.0,0.0,4.0,f32::INFINITY,f32::NAN];
+        for (p,expected) in [(0.5,[f32::NAN,f32::NAN,-0.0,0.0,2.0,f32::INFINITY,f32::NAN]),(-0.5,[f32::NAN,f32::NAN,f32::NEG_INFINITY,f32::INFINITY,0.5,0.0,f32::NAN])] {
+            for len in [input.len(),PAR_THRESHOLD+3] {
+                let values=(0..len).map(|i|input[i%input.len()]).collect::<Vec<_>>();
+                for actual in [unary_serial(UnaryKind::Powf(p),&values),FastCpuBackend.unary(UnaryKind::Powf(p),&values)] {
+                    for (i,value) in actual.into_iter().enumerate() {let wanted=expected[i%input.len()];assert!(value.is_nan()&&wanted.is_nan()||value.to_bits()==wanted.to_bits());}
+                }
+            }
+        }
+    }
+
+    #[test]
     fn unary_parity_exact_kinds() {
         let kinds = [
             UnaryKind::Neg,
             UnaryKind::Relu,
             UnaryKind::Sqrt,
             UnaryKind::Abs,
+            UnaryKind::Sign,
             UnaryKind::Powf(0.5),
+            UnaryKind::Powf(-1.0),
+            UnaryKind::Powf(2.0),
             UnaryKind::Powf(3.0),
             UnaryKind::Powf(-2.0),
             UnaryKind::Clamp { min: -1.0, max: 1.0 },
@@ -480,7 +501,7 @@ mod tests {
     /// the bottom of t's binade, so 4 units = 4.8e-7 relative): a one-ULP
     /// exp difference just above a power of two would otherwise count double
     /// after the divide. log_softmax measures at the row's largest |output|,
-    /// since x - lse cancels near the row max.
+    /// to account for exponent approximation across the complete row.
     #[test]
     fn softmax_tolerance() {
         for (rows, cols) in [(0, 5), (3, 0), (1, 1), (4, 7), (9, 33), (1024, 1024), (2, 5000), (300, 129)] {
@@ -531,6 +552,18 @@ mod tests {
     }
 
     #[test]
+    fn log_softmax_keeps_large_offset_normalization() {
+        for cols in [3, 8, 17, 129] {
+            for offset in [1e8, -1e8, 3e38] {
+                let values = FastCpuBackend.log_softmax(&vec![offset; 2 * cols], 2, cols);
+                for value in values {
+                    assert!((value + (cols as f32).ln()).abs() < 2e-6, "cols={cols}, offset={offset}, value={value}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tensor_ops_route_through_backend() {
         let _registry = crate::registry_tests::lock();
         crate::install_backend();
@@ -545,7 +578,7 @@ mod tests {
 
     #[test]
     fn binary_parity_all_kinds() {
-        let kinds = [BinaryKind::Add, BinaryKind::Sub, BinaryKind::Mul, BinaryKind::Div];
+        let kinds = [BinaryKind::Add, BinaryKind::Sub, BinaryKind::Mul, BinaryKind::Div, BinaryKind::ReluBackward];
         for (ki, &kind) in kinds.iter().enumerate() {
             for &len in &LENGTHS {
                 let a = special_vals(len as u64 * 11 + ki as u64, len);
@@ -556,6 +589,18 @@ mod tests {
                 assert_bitwise(&binary_serial(kind, &a, &b), &want, &format!("{ctx} (serial)"));
             }
         }
+    }
+
+    #[test]
+    fn activation_gradient_kinds_handle_nonfinite_values_and_signed_zero() {
+        let values = [f32::NEG_INFINITY, -2.0, -0.0, 0.0, 2.0, f32::INFINITY, f32::NAN];
+        assert_bitwise(&unary_serial(UnaryKind::Sign, &values), &[-1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 0.0], "sign");
+        assert_bitwise(&unary_serial(UnaryKind::Gtz, &values), &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], "relu mask");
+        let incoming = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, -0.0, -7.0, f32::INFINITY, 2.0, f32::NAN];
+        let inputs = [-1.0, 0.0, -0.0, 1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2.0, f32::NAN];
+        let expected = [0.0, 0.0, 0.0, f32::NAN, -0.0, -7.0, 0.0, 2.0, f32::NAN];
+        assert_bitwise(&binary_serial(BinaryKind::ReluBackward, &incoming, &inputs), &expected, "relu backward serial");
+        assert_bitwise(&FastCpuBackend.binary(BinaryKind::ReluBackward, &incoming, &inputs), &expected, "relu backward backend");
     }
 
     #[test]

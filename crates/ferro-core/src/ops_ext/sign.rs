@@ -1,25 +1,17 @@
-//! `sign` operator. Forward: y = -1 for x < 0, 0 for x == 0, 1 for x > 0.
-//! Backward: the true derivative is 0 almost everywhere (torch semantics),
-//! so dx = 0 regardless of g. No device kernel exists for this op, so both
-//! forward and backward go through the host `raw_binary` path.
-
+//! Sign, with zero at zero and NaN. Its recorded derivative is explicitly zero.
+use crate::dispatch::{OpTag, UnaryKind};
 use crate::error::Result;
-use crate::tensor::{raw_binary, Tensor};
+use crate::tensor::{raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn sign(&self) -> Result<Tensor> {
-        let out = raw_binary("sign", self, self, |v, _| {
-            if v < 0.0 {
-                -1.0
-            } else if v > 0.0 {
-                1.0
-            } else {
-                0.0
-            }
-        })?.to_device(self.device())?;
-        let x = self.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
-            vec![raw_binary("sign_bw", g, &x, |_, _| 0.0).unwrap()]
+        let out = raw_unary_k(self, UnaryKind::Sign)?;
+        let shape = self.shape().to_vec();
+        let device = self.device();
+        let dtype = self.dtype();
+        Ok(out.record_fn_tagged(vec![self.clone()], OpTag::Unary(UnaryKind::Sign), move |_| {
+            vec![if dtype == crate::DType::F64 { crate::typed_math::full_f64(&shape, 0.0).unwrap() }
+                 else { Tensor::full_on(&shape, 0.0, device).unwrap() }]
         }))
     }
 }

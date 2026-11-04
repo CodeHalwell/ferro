@@ -1,4 +1,5 @@
 use super::*;
+use ferro_core::DType;
 
 fn cpu(tensors: &[&PyTensor]) -> PyResult<()> {
     if tensors.iter().any(|t| t.inner.device()!=Device::Cpu) {
@@ -12,6 +13,9 @@ fn conv2d_options(x: &PyTensor, weight: &PyTensor, bias: Option<&PyTensor>, stri
     cpu(&[x,weight])?;
     if let Some(b)=bias {
         cpu(&[b])?;
+        if x.inner.dtype()==DType::F64 && b.inner.dtype()!=DType::F64 {
+            return Err(PyValueError::new_err("float64 convolution bias must match input dtype"));
+        }
         if weight.inner.ndim()!=4 || b.inner.shape()!=[weight.inner.shape()[0]] {
             return Err(PyValueError::new_err("bias must have shape [out_channels]"));
         }

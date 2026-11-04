@@ -12,6 +12,7 @@ impl Tensor {
             op: "cat",
             msg: "expected a non-empty list of tensors".into(),
         })?;
+        if first.dtype() == DType::F64 { crate::typed_math::check("cat", &tensors.iter().collect::<Vec<_>>(), DType::F64)?; }
         for t in tensors {
             if t.dtype() != first.dtype() {
                 return Err(Error::DtypeMismatch {
@@ -68,6 +69,7 @@ impl Tensor {
         let mut out_shape = base;
         out_shape[dim] = cat_size;
         crate::shape::checked_numel("cat", &out_shape)?;
+        if first.dtype() == DType::F64 { crate::typed_math::check_shape("cat", &out_shape)?; }
         let len = outer
             .checked_mul(cat_size)
             .and_then(|n| n.checked_mul(inner))
@@ -75,11 +77,16 @@ impl Tensor {
                 op: "cat",
                 msg: "output size overflow".into(),
             })?;
+        let width = match first.dtype() { DType::Bool => 1, DType::F16 | DType::BF16 => 2, DType::F32 => 4, DType::F64 | DType::I64 => 8 };
+        if len > isize::MAX as usize / width {
+            return Err(Error::InvalidShape { op: "cat", msg: "output exceeds typed allocation capacity".into() });
+        }
         // No device cat kernel: typed host materialization returns CPU storage.
         macro_rules! concat {
             ($sources:expr, $ctor:ident) => {{
+                let mut dst = Vec::new();
+                dst.try_reserve_exact(len).map_err(|_| Error::InvalidShape { op: "cat", msg: "cannot allocate concatenation output".into() })?;
                 let sources: Vec<_> = $sources;
-                let mut dst = Vec::with_capacity(len);
                 if len != 0 {
                     for o in 0..outer {
                         for (src, &d) in sources.iter().zip(&dim_sizes) {
@@ -101,6 +108,7 @@ impl Tensor {
                 tensors.iter().map(Tensor::to_vec_i64).collect(),
                 from_vec_i64
             ),
+            DType::Bool => concat!(tensors.iter().map(Tensor::to_vec_bool).collect(), from_vec_bool),
             DType::F16 => concat!(
                 tensors
                     .iter()
@@ -116,22 +124,32 @@ impl Tensor {
                 from_vec_bf16_bits
             ),
         };
+        if first.dtype() == DType::F64 {
+            return Ok(out.record_fn_forward(tensors.to_vec(), crate::autograd::ForwardOp::Cat(dim), move |g| {
+                let mut offset = 0;
+                dim_sizes.iter().map(|&size| {
+                    let result = g.narrow(dim, offset, size).unwrap().detach_copy();
+                    offset += size;
+                    result
+                }).collect()
+            }));
+        }
         if first.dtype() != DType::F32 {
             return Ok(out);
         }
 
         let in_shapes: Vec<Vec<usize>> = tensors.iter().map(|t| t.shape().to_vec()).collect();
-        Ok(out.record_fn(tensors.to_vec(), move |g| {
+        Ok(out.record_fn_forward(tensors.to_vec(), crate::autograd::ForwardOp::Cat(dim), move |g| {
             let g_data = g.to_vec();
             let mut grads = Vec::with_capacity(in_shapes.len());
             let mut offset = 0usize;
             for (shape, &d) in in_shapes.iter().zip(&dim_sizes) {
                 let block = d * inner;
                 let mut gi = vec![0.0f32; outer * block];
-                for o in 0..outer {
+                if block != 0 { for o in 0..outer {
                     let src = o * cat_size * inner + offset * inner;
                     gi[o * block..(o + 1) * block].copy_from_slice(&g_data[src..src + block]);
-                }
+                } }
                 grads.push(Tensor::from_vec(gi, shape).unwrap());
                 offset += d;
             }

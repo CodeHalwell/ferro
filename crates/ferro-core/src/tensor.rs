@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::autograd::Op;
@@ -9,20 +9,32 @@ use crate::error::{Error, Result};
 use crate::rng::Rng;
 use crate::shape::{broadcast_shapes, checked_numel, default_strides, numel};
 
+#[path = "grad_publication.rs"]
+mod grad_publication;
+
+#[cfg(test)]
+#[path = "empty_cotangent_tests.rs"]
+mod empty_cotangent_tests;
+
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 fn fresh_id() -> usize {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Typed element storage. Compute ops and autograd are f32-only; F64/I64
-/// storage carries data (indices, targets) through views and materialization.
+/// Allocation-free node watermark for functional-transform bookkeeping.
+#[doc(hidden)]
+pub fn tensor_id_watermark() -> usize { NEXT_ID.load(Ordering::Relaxed) }
+
+/// Typed storage. F32 uses device backends; CPU F64 supports native basic math
+/// and autograd, while I64/Bool preserve typed arithmetic, masks and indices.
 /// `Device` holds a backend-owned buffer (f32 elements, always contiguous) so
 /// chained ops stay resident on the device between explicit transfers.
 pub enum Storage {
     F32(Vec<f32>),
     F64(Vec<f64>),
     I64(Vec<i64>),
+    Bool(Vec<bool>),
     /// IEEE binary16, raw bit patterns (see the `half` module). Compute is
     /// f32-only, so these enter math via explicit `to_dtype(DType::F32)`;
     /// they exist to carry checkpoint weights at half the memory.
@@ -43,6 +55,7 @@ impl std::fmt::Debug for Storage {
             Storage::F32(v) => write!(f, "F32({} elems)", v.len()),
             Storage::F64(v) => write!(f, "F64({} elems)", v.len()),
             Storage::I64(v) => write!(f, "I64({} elems)", v.len()),
+            Storage::Bool(v) => write!(f, "Bool({} elems)", v.len()),
             Storage::F16(v) => write!(f, "F16({} elems)", v.len()),
             Storage::BF16(v) => write!(f, "BF16({} elems)", v.len()),
             Storage::Device(b) => write!(f, "Device({} elems on {})", b.len(), b.device()),
@@ -57,6 +70,7 @@ impl Storage {
             Storage::F32(_) | Storage::Device(_) => DType::F32,
             Storage::F64(_) => DType::F64,
             Storage::I64(_) | Storage::DeviceI64(_) => DType::I64,
+            Storage::Bool(_) => DType::Bool,
             Storage::F16(_) => DType::F16,
             Storage::BF16(_) => DType::BF16,
         }
@@ -87,6 +101,8 @@ impl Storage {
 pub(crate) struct StorageCell {
     data: RwLock<Storage>,
     version: AtomicU64,
+    structural_zero: bool,
+    publication: Mutex<()>,
 }
 
 /// Dying f32 storage feeds the buffer pool; the next tensor of the same
@@ -108,11 +124,19 @@ impl Drop for StorageCell {
 #[path = "concurrent_copy_tests.rs"]
 mod concurrent_copy_tests;
 
+#[cfg(test)]
+#[path = "structural_zero_tests.rs"]
+mod structural_zero_tests;
+
 impl StorageCell {
+    pub(crate) fn version(&self) -> u64 { self.version.load(Ordering::Relaxed) }
+
     fn new(data: Storage) -> StorageCell {
         StorageCell {
             data: RwLock::new(data),
             version: AtomicU64::new(0),
+            structural_zero: false,
+            publication: Mutex::new(()),
         }
     }
 
@@ -126,6 +150,7 @@ impl StorageCell {
     }
 
     pub(crate) fn write(&self) -> RwLockWriteGuard<'_, Storage> {
+        assert!(!self.structural_zero, "structural zero storage is immutable; clone it before mutation");
         self.data.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -192,7 +217,10 @@ pub(crate) struct TensorInner {
     pub(crate) stride: Vec<usize>,
     pub(crate) offset: usize,
     pub(crate) device: Device,
-    pub(crate) requires_grad: bool,
+    // The own flag enables a leaf edge; a view may separately inherit its
+    // ultimate base's public flag without acquiring a gradient edge.
+    pub(crate) requires_grad: Arc<AtomicBool>,
+    view_base: Option<Arc<AtomicBool>>,
     /// How this tensor was produced, for reverse-mode autodiff. `None` for leaves.
     pub(crate) op: Option<Op>,
     pub(crate) grad: Mutex<Option<Tensor>>,
@@ -221,6 +249,24 @@ impl Drop for TensorInner {
 pub struct Tensor(pub(crate) Arc<TensorInner>);
 
 impl Tensor {
+    pub(crate) fn structural_zero(shape: &[usize], dtype: DType, device: Device) -> Result<Tensor> {
+        if device != Device::Cpu {
+            return Err(Error::Unsupported { op: "structural_zero", msg: "structural zeros currently require CPU storage".into() });
+        }
+        let storage = match dtype {
+            DType::F32 => Storage::F32(crate::typed_math::filled("structural_zero", shape, 0.0f32)?),
+            DType::F64 => Storage::F64(crate::typed_math::filled("structural_zero", shape, 0.0f64)?),
+            _ => return Err(Error::DtypeMismatch { op: "structural_zero", expected: DType::F32, got: dtype }),
+        };
+        let mut cell = StorageCell::new(storage);
+        cell.structural_zero = true;
+        Ok(Tensor::from_parts(Arc::new(cell), shape.to_vec(), default_strides(shape), 0, device, false, None))
+    }
+
+    /// A symbolic zero has immutable storage shared by all its aliases.
+    #[doc(hidden)]
+    pub fn is_structural_zero(&self) -> bool { self.0.storage.structural_zero }
+
     pub(crate) fn from_parts(
         storage: Arc<StorageCell>,
         shape: Vec<usize>,
@@ -237,7 +283,8 @@ impl Tensor {
             stride,
             offset,
             device,
-            requires_grad,
+            requires_grad: Arc::new(AtomicBool::new(requires_grad)),
+            view_base: None,
             op,
             grad: Mutex::new(None),
         }))
@@ -279,6 +326,10 @@ impl Tensor {
         Tensor::contiguous_leaf("from_vec_i64", data.len(), Storage::I64(data), shape)
     }
 
+    pub fn from_vec_bool(data: Vec<bool>, shape: &[usize]) -> Result<Tensor> {
+        Tensor::contiguous_leaf("from_vec_bool", data.len(), Storage::Bool(data), shape)
+    }
+
     /// Build an f16 tensor from raw IEEE binary16 bit patterns.
     pub fn from_vec_f16_bits(data: Vec<u16>, shape: &[usize]) -> Result<Tensor> {
         Tensor::contiguous_leaf("from_vec_f16_bits", data.len(), Storage::F16(data), shape)
@@ -312,6 +363,7 @@ impl Tensor {
     }
 
     pub fn randn(shape: &[usize], rng: &Rng) -> Tensor {
+        crate::forward_ad::check_random_operation().expect("random operation in a forward AD error scope");
         let mut data = crate::pool::take_uninit(numel(shape));
         for x in data.iter_mut() {
             *x = rng.normal();
@@ -334,8 +386,21 @@ impl Tensor {
         numel(&self.0.shape)
     }
     pub fn requires_grad(&self) -> bool {
-        self.0.requires_grad
+        self.0.requires_grad.load(Ordering::Relaxed) || self.0.view_base.as_ref().is_some_and(|base| base.load(Ordering::Relaxed))
     }
+    pub fn is_leaf(&self) -> bool { !self.requires_grad() || self.0.op.is_none() }
+    pub(crate) fn has_gradient_edge(&self) -> bool { self.0.requires_grad.load(Ordering::Relaxed) }
+    pub(crate) fn is_inherited_grad_view(&self) -> bool { self.0.view_base.is_some() && !self.has_gradient_edge() && self.requires_grad() }
+    pub(crate) fn grad_flag_handles(&self) -> (Arc<AtomicBool>, Option<Arc<AtomicBool>>) {
+        (self.0.requires_grad.clone(), self.0.view_base.clone())
+    }
+
+    pub(crate) fn rebase_alias(&self, own: Arc<AtomicBool>, base: Option<Arc<AtomicBool>>, op: Option<Op>) -> Tensor {
+        Tensor(Arc::new(TensorInner { id: fresh_id(), storage: self.0.storage.clone(), shape: self.0.shape.clone(),
+            stride: self.0.stride.clone(), offset: self.0.offset, device: self.0.device,
+            requires_grad: own, view_base: base, op, grad: Mutex::new(None) }))
+    }
+
     pub fn device(&self) -> Device {
         self.0.device
     }
@@ -344,21 +409,20 @@ impl Tensor {
     }
 
     /// Mark a leaf as requiring gradients (like `tensor.requires_grad_(True)`).
-    /// Returns a fresh leaf sharing storage. Interior nodes (tensors with an op
-    /// history) are rejected with an error instead of silently detaching, which
-    /// would cut the graph and drop every gradient upstream of them.
-    /// Errors on non-f32 tensors too: autograd is f32-only.
+    /// Unchanged flags preserve identity and gradient slots. Changing a leaf's
+    /// flag returns a fresh leaf sharing storage; changing an interior node's
+    /// flag is rejected instead of silently cutting its history.
+    /// Only float32 and float64 tensors support autograd.
     pub fn requires_grad_(&self, req: bool) -> Result<Tensor> {
+        if req == self.requires_grad() && !self.is_inherited_grad_view() { return Ok(self.clone()); }
+        if self.0.op.is_some() {
+            return Err(Error::Unsupported {
+                op: "requires_grad_",
+                msg: "only leaf tensors can change requires_grad; detach first to create a fresh leaf".into(),
+            });
+        }
         if req {
-            if self.0.op.is_some() {
-                return Err(Error::Unsupported {
-                    op: "requires_grad_",
-                    msg: "leaf-only, but this tensor carries an autograd op history; \
-                          detach first if you really want a fresh leaf"
-                        .to_string(),
-                });
-            }
-            if self.dtype() != DType::F32 {
+            if !matches!(self.dtype(), DType::F32 | DType::F64) {
                 return Err(Error::DtypeMismatch {
                     op: "requires_grad_",
                     expected: DType::F32,
@@ -377,6 +441,22 @@ impl Tensor {
         ))
     }
 
+    /// Statement-style leaf flag update. Handles, existing graph operands and
+    /// gradient slots retain their identity; recorded edges retain eligibility
+    /// from their forward pass independently of this mutable flag.
+    #[doc(hidden)]
+    pub fn set_requires_grad(&self, req: bool) -> Result<()> {
+        if req == self.has_gradient_edge() { return Ok(()); }
+        if self.0.op.is_some() {
+            return Err(Error::Unsupported { op: "requires_grad_", msg: "only leaf tensors can change requires_grad; detach first to create a fresh leaf".into() });
+        }
+        if req && !matches!(self.dtype(), DType::F32 | DType::F64) {
+            return Err(Error::DtypeMismatch { op: "requires_grad_", expected: DType::F32, got: self.dtype() });
+        }
+        self.0.requires_grad.store(req, Ordering::Relaxed);
+        Ok(())
+    }
+
     // --- materialization --------------------------------------------------
 
     /// Gather a (possibly strided/broadcast) view of `data` into a contiguous
@@ -385,6 +465,7 @@ impl Tensor {
     fn gather_view<T: Copy>(&self, data: &[T]) -> Vec<T> {
         let inner = &self.0;
         let n = self.numel();
+        if n == 0 { return Vec::new(); }
         if self.is_contiguous() {
             return data[inner.offset..inner.offset + n].to_vec();
         }
@@ -416,6 +497,7 @@ impl Tensor {
     fn gather_into(&self, data: &[f32], out: &mut [f32]) {
         let inner = &self.0;
         let n = self.numel();
+        if n == 0 { return; }
         if self.is_contiguous() {
             out.copy_from_slice(&data[inner.offset..inner.offset + n]);
             return;
@@ -490,6 +572,7 @@ impl Tensor {
     /// copy when it can: contiguous f32 storage is borrowed in place (under
     /// the storage read lock), anything else goes through a pooled temporary.
     pub(crate) fn with_host_f32<R>(&self, f: impl FnOnce(&[f32]) -> R) -> R {
+        if self.numel() == 0 { return f(&[]); }
         {
             let g = self.0.storage.read();
             if let Storage::F32(v) = &*g {
@@ -524,6 +607,7 @@ impl Tensor {
             DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape).unwrap(),
             DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape).unwrap(),
             DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape).unwrap(),
+            DType::Bool => Tensor::from_vec_bool(self.to_vec_bool(), &self.0.shape).unwrap(),
             DType::F16 => {
                 Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape).unwrap()
             }
@@ -534,13 +618,14 @@ impl Tensor {
     }
 
     /// Materialize as row-major f32, casting from f64/i64 storage (lossy for
-    /// |i64| > 2^24). Every compute kernel reads through this, so strided
-    /// views (transpose, broadcast) work transparently.
+    /// |i64| > 2^24). F32 kernels use this view-aware materializer; typed kernels
+    /// use to_vec_f64/to_vec_i64 to retain their precision.
     pub fn to_vec(&self) -> Vec<f32> {
         match &*self.0.storage.read() {
             Storage::F32(v) => self.gather_view(v),
             Storage::F64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
             Storage::I64(v) => self.gather_view(v).into_iter().map(|x| x as f32).collect(),
+            Storage::Bool(v) => self.gather_view(v).into_iter().map(|x| u8::from(x) as f32).collect(),
             Storage::F16(v) => self
                 .gather_view(v)
                 .into_iter()
@@ -580,6 +665,7 @@ impl Tensor {
                 Storage::I64(v) => {
                     return self.gather_view(v).into_iter().map(|x| x as f64).collect()
                 }
+                Storage::Bool(v) => return self.gather_view(v).into_iter().map(|x| u8::from(x) as f64).collect(),
                 Storage::F16(v) => {
                     return self
                         .gather_view(v)
@@ -617,6 +703,7 @@ impl Tensor {
                     return self.gather_view(v).into_iter().map(|x| x as i64).collect()
                 }
                 Storage::I64(v) => return self.gather_view(v),
+                Storage::Bool(v) => return self.gather_view(v).into_iter().map(i64::from).collect(),
                 Storage::F16(v) => {
                     return self
                         .gather_view(v)
@@ -644,8 +731,22 @@ impl Tensor {
         self.to_vec().into_iter().map(|x| x as i64).collect()
     }
 
-    /// Cast to `dtype`, returning a detached contiguous leaf on the same
-    /// device. This is the only route from F64/I64 data into float math.
+    /// Materialize boolean values; numeric zero is false and every other
+    /// value (including NaN) is true. Boolean storage is never read as floats.
+    pub fn to_vec_bool(&self) -> Vec<bool> {
+        {
+            let storage = self.0.storage.read();
+            if let Storage::Bool(values) = &*storage { return self.gather_view(values); }
+        }
+        if self.dtype() == DType::I64 {
+            self.to_vec_i64().into_iter().map(|x| x != 0).collect()
+        } else {
+            self.to_vec_f64().into_iter().map(|x| x != 0.0).collect()
+        }
+    }
+
+    /// Cast to `dtype`, returning a detached contiguous leaf. Host conversions
+    /// report CPU; use to_dtype_autograd for differentiable floating CPU casts.
     pub fn to_dtype(&self, dtype: DType) -> Tensor {
         // Device storage is f32-only, so a same-dtype cast of a whole device
         // buffer stays resident; every other cast materializes host storage
@@ -658,6 +759,7 @@ impl Tensor {
             DType::F32 => Storage::F32(self.to_vec()),
             DType::F64 => Storage::F64(self.to_vec_f64()),
             DType::I64 => Storage::I64(self.to_vec_i64()),
+            DType::Bool => Storage::Bool(self.to_vec_bool()),
             // Half targets round (RNE) from the f32 materialization; a
             // same-dtype half cast round-trips bit-exactly since every f16/
             // bf16 value is exactly representable in f32.
@@ -759,7 +861,8 @@ impl Tensor {
 
     /// Row-major contiguous check without allocating (size-1 dims may carry any
     /// stride since they contribute no offset).
-    pub(crate) fn is_contiguous(&self) -> bool {
+    pub fn is_contiguous(&self) -> bool {
+        if self.numel() == 0 { return true; }
         let mut acc = 1usize;
         for i in (0..self.0.shape.len()).rev() {
             let dim = self.0.shape[i];
@@ -779,11 +882,58 @@ impl Tensor {
         self.0.grad.lock().unwrap().clone()
     }
 
+    /// Replace a floating leaf's gradient handle after metadata validation.
+    /// This does not run backward, copy storage, or change storage versions.
+    #[doc(hidden)]
+    pub fn set_leaf_grad(&self, gradient: Option<Tensor>) -> Result<()> {
+        const OP: &str = "set_leaf_grad";
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op: OP, msg: "gradient assignment is not supported during inference capture".into() });
+        }
+        if self.0.op.is_some() {
+            return Err(Error::Unsupported { op: OP, msg: "gradient assignment requires a leaf without autograd history".into() });
+        }
+        if !matches!(self.dtype(), DType::F32 | DType::F64) {
+            return Err(Error::DtypeMismatch { op: OP, expected: DType::F32, got: self.dtype() });
+        }
+        if let Some(value) = &gradient {
+            if value.dtype() != self.dtype() {
+                return Err(Error::DtypeMismatch { op: OP, expected: self.dtype(), got: value.dtype() });
+            }
+            if value.shape() != self.shape() {
+                return Err(Error::ShapeMismatch { op: OP, lhs: self.shape().to_vec(), rhs: value.shape().to_vec() });
+            }
+            if value.device() != self.device() {
+                return Err(Error::DeviceMismatch { op: OP, lhs: self.device(), rhs: value.device() });
+            }
+        }
+        // Serialize direct assignments so two concurrent writes cannot create
+        // a cycle through one another's gradient slots after validation.
+        static ASSIGNMENTS: Mutex<()> = Mutex::new(());
+        let _assignment = ASSIGNMENTS.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(value) = &gradient {
+            let mut pending = vec![value.clone()];
+            let mut visited = std::collections::HashSet::new();
+            while let Some(node) = pending.pop() {
+                if node.id() == self.id() {
+                    return Err(Error::Unsupported { op: OP, msg: "a gradient must not reference its destination through history or gradient slots".into() });
+                }
+                if !visited.insert(node.id()) { continue; }
+                if let Some(op) = &node.0.op { pending.extend(op.inputs().iter().cloned()); }
+                if let Some(grad) = node.grad() { pending.push(grad); }
+            }
+        }
+        *self.0.grad.lock().unwrap() = gradient;
+        Ok(())
+    }
+
     pub fn zero_grad(&self) {
         *self.0.grad.lock().unwrap() = None;
     }
 
     pub(crate) fn accumulate_grad(&self, g: Tensor) {
+        assert_eq!(g.dtype(), self.dtype(), "gradient dtype must match its tensor");
+        assert!(matches!(self.dtype(), DType::F32 | DType::F64), "only floating tensors have gradients");
         assert!(
             g.shape() == self.shape(),
             "gradient shape {:?} does not match tensor shape {:?}; op backwards must \
@@ -801,7 +951,72 @@ impl Tensor {
                 .expect("grad transfer to the tensor's device")
         };
         let mut slot = self.0.grad.lock().unwrap();
-        *slot = Some(match slot.take() {
+        let stride = if self.device() == Device::Cpu && self.0.op.is_none() {
+            match slot.as_ref() {
+                Some(previous) if previous.has_dense_layout() => Some(previous.0.stride.clone()),
+                Some(_) => None,
+                None => Some(if self.has_dense_layout() { self.0.stride.clone() } else { default_strides(self.shape()) }),
+            }
+        } else { None };
+        let accumulated = Self::merge_grad(slot.take(), g);
+        *slot = Some(match stride {
+            Some(stride) if accumulated.strides() != stride || accumulated.storage_offset() != 0 => accumulated.copy_grad_layout(stride),
+            _ => accumulated,
+        });
+    }
+
+    pub(crate) fn has_dense_layout(&self) -> bool {
+        if self.numel() == 0 { return true; }
+        let mut axes = (0..self.ndim()).filter(|&axis| self.shape()[axis] > 1).collect::<Vec<_>>();
+        axes.sort_unstable_by_key(|&axis| self.0.stride[axis]);
+        let mut expected = 1usize;
+        axes.into_iter().all(|axis| {
+            if self.0.stride[axis] != expected { return false; }
+            let Some(next) = expected.checked_mul(self.shape()[axis]) else { return false; };
+            expected = next;
+            true
+        })
+    }
+
+    // Reorder values into a dense leaf's physical layout without recording an
+    // operation. Functional cotangents and device accumulation keep their own
+    // layouts; only published CPU gradient slots use this default contract.
+    pub(crate) fn copy_grad_layout(&self, stride: Vec<usize>) -> Tensor {
+        let width = if self.dtype() == DType::F64 { 8 } else { 4 };
+        assert!(self.numel() <= isize::MAX as usize / width, "gradient storage exceeds typed allocation capacity");
+        let mut axes = (0..self.ndim()).collect::<Vec<_>>();
+        axes.sort_unstable_by_key(|&axis| std::cmp::Reverse(stride[axis]));
+        let physical = Tensor::from_parts(self.0.storage.clone(), axes.iter().map(|&axis| self.shape()[axis]).collect(),
+            axes.iter().map(|&axis| self.0.stride[axis]).collect(), self.0.offset, Device::Cpu, false, None);
+        let owned = physical.detach_copy_same_dtype();
+        Tensor::from_parts(owned.0.storage.clone(), self.0.shape.clone(), stride, 0, Device::Cpu, false, None)
+    }
+
+    /// Functional traversal input-buffer accumulation. Graph recording and
+    /// active forward levels keep the genuine Add operation. With recording
+    /// disabled, a uniquely owned empty ordinary cotangent can be reused by a
+    /// real zero-element add-in-place, retaining its layout, flags and version.
+    pub(crate) fn accumulate_vjp(existing: Tensor, contribution: Tensor) -> Result<Tensor> {
+        if !crate::autograd::is_grad_enabled() && !crate::forward_ad::is_active()
+            && existing.numel() == 0 && existing.device() == Device::Cpu
+            && matches!(existing.dtype(), DType::F32 | DType::F64)
+            && !existing.is_structural_zero()
+            // Torch's views retain a base Tensor/storage owner. Our views
+            // retain only its flag owner, so exclude that alias explicitly
+            // instead of treating the smaller Arc count as sole ownership.
+            && existing.0.view_base.is_none()
+            && Arc::strong_count(&existing.0) == 1
+            && Arc::strong_count(&existing.0.storage) == 1
+        {
+            crate::inplace::raw_empty_add_(&existing, &contribution)?;
+            Ok(existing)
+        } else {
+            existing.add(&contribution)
+        }
+    }
+
+    pub(crate) fn merge_grad(existing: Option<Tensor>, g: Tensor) -> Tensor {
+        match existing {
             None => g,
             Some(existing) => {
                 // In-place accumulation is a pure optimization, applied only
@@ -816,7 +1031,7 @@ impl Tensor {
                 // Err.
                 let unshared = Arc::strong_count(&existing.0) == 1
                     && Arc::strong_count(&existing.0.storage) == 1;
-                if unshared
+                if unshared && existing.dtype() == DType::F32
                     && crate::inplace::raw_binary_("grad_acc", BinaryKind::Add, &existing, &g)
                         .is_ok()
                 {
@@ -825,7 +1040,7 @@ impl Tensor {
                     raw_binary_k("grad_acc", &existing, &g, BinaryKind::Add).unwrap()
                 }
             }
-        });
+        }
     }
 
     // --- views (share storage) -------------------------------------------
@@ -911,9 +1126,13 @@ impl Tensor {
                 msg: format!("cannot reshape {:?} into {shape:?}", self.0.shape),
             });
         }
+        let same_shape = shape == self.shape();
+        if self.dtype() == DType::F64 && !self.is_contiguous() && !same_shape {
+            crate::typed_math::check_shape("reshape", shape)?;
+        }
         // Materialize strided f32 device views directly, or via gather fallback.
         // Other backends/dtypes retain the dtype-preserving host fallback.
-        let base = if self.is_contiguous() {
+        let base = if same_shape || self.is_contiguous() {
             self.clone()
         } else if let Some(resident) = self.materialize_device()? {
             resident
@@ -922,6 +1141,7 @@ impl Tensor {
                 DType::F32 => Tensor::from_vec(self.to_vec(), &self.0.shape)?,
                 DType::F64 => Tensor::from_vec_f64(self.to_vec_f64(), &self.0.shape)?,
                 DType::I64 => Tensor::from_vec_i64(self.to_vec_i64(), &self.0.shape)?,
+                DType::Bool => Tensor::from_vec_bool(self.to_vec_bool(), &self.0.shape)?,
                 DType::F16 => {
                     Tensor::from_vec_f16_bits(self.to_vec_f16_bits().unwrap(), &self.0.shape)?
                 }
@@ -934,7 +1154,7 @@ impl Tensor {
         let out = Tensor::from_parts(
             base.0.storage.clone(),
             shape.to_vec(),
-            default_strides(shape),
+            if same_shape { self.0.stride.clone() } else { default_strides(shape) },
             base.0.offset,
             base.0.device,
             false,
@@ -943,7 +1163,7 @@ impl Tensor {
         let out = self.capture_layout(out)?;
         let in_shape = self.0.shape.clone();
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Reshape(shape.to_vec()), move |g| {
-            vec![Tensor::from_vec(g.to_vec(), &in_shape).unwrap()]
+            vec![g.reshape(&in_shape).unwrap()]
         }))
     }
 
@@ -976,6 +1196,7 @@ impl Tensor {
     // a NEW cell, preserving layout; never relax ordinary alias/snapshot gates.
     // Replay disables capture and pays no copy.
     pub(crate) fn capture_layout(&self, out: Tensor) -> Result<Tensor> {
+        let out = out.inherit_no_grad_view(self);
         if !crate::capture::is_recording() || self.requires_grad() || self.0.op.is_some()
             || !Arc::ptr_eq(&self.0.storage, &out.0.storage) { return Ok(out); }
         let storage = out.0.storage.read();
@@ -990,8 +1211,98 @@ impl Tensor {
     pub fn transpose(&self, d0: usize, d1: usize) -> Result<Tensor> {
         let out = self.capture_layout(self.transpose_view(d0, d1)?)?;
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Transpose(d0, d1), move |g| {
-            vec![g.transpose_view(d0, d1).unwrap()]
+            vec![g.transpose(d0, d1).unwrap()]
         }))
+    }
+
+    /// Element strides and offset into the shared allocation, without reads.
+    pub fn strides(&self) -> &[usize] { &self.0.stride }
+    pub fn storage_offset(&self) -> usize { self.0.offset }
+
+    // A view tracks its ultimate base's flag without retaining a Tensor/Op.
+    // Recording may establish its own edge; no-grad views only inherit flags.
+    pub(crate) fn inherit_no_grad_view(mut self, input: &Tensor) -> Tensor {
+        if Arc::ptr_eq(&self.0.storage, &input.0.storage) {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh view is uniquely owned");
+            debug_assert!(inner.op.is_none());
+            inner.view_base = Some(input.0.view_base.as_ref().unwrap_or(&input.0.requires_grad).clone());
+        }
+        self
+    }
+
+    /// Public detached alias. Internal backward snapshots continue using
+    /// detach_copy or owned_detach_copy so they cannot be overwritten by users.
+    pub fn detach(&self) -> Tensor { self.detached_view() }
+
+    /// Ordinary CPU zeros for an absent transform tangent, without value reads.
+    #[doc(hidden)]
+    pub fn zeros_like_layout(&self) -> Result<Tensor> {
+        const OP: &str = "absent tangent zeros";
+        if self.device() != Device::Cpu {
+            return Err(Error::Unsupported { op: OP, msg: "only CPU transform outputs are supported".into() });
+        }
+        let raw = match self.dtype() {
+            DType::F32 => Tensor::from_vec(crate::typed_math::filled(OP, self.shape(), 0.0f32)?, self.shape())?,
+            DType::F64 => Tensor::from_vec_f64(crate::typed_math::filled(OP, self.shape(), 0.0f64)?, self.shape())?,
+            _ => return Err(Error::Unsupported { op: OP, msg: "transform outputs require float32 or float64".into() }),
+        };
+        let stride = crate::typed_math::copy_pointwise_layout(self);
+        Ok(Tensor::from_parts(raw.0.storage.clone(), self.shape().to_vec(), stride, 0, Device::Cpu, false, None))
+    }
+
+    /// Differentiable owning copy. Preserve dense nonoverlapping strides when
+    /// requested; gapped and broadcast views materialize in logical order.
+    pub fn clone_tensor(&self, preserve_layout: bool) -> Result<Tensor> {
+        let count = checked_numel("clone", self.shape())?;
+        let width = match self.dtype() { DType::Bool => 1, DType::F16 | DType::BF16 => 2, DType::F32 => 4, DType::F64 | DType::I64 => 8 };
+        if count > isize::MAX as usize / width {
+            return Err(Error::InvalidShape { op: "clone", msg: "copy exceeds typed allocation capacity".into() });
+        }
+        let dense = if count == 0 { true } else {
+            let mut axes = (0..self.ndim()).filter(|&i| self.shape()[i] > 1).collect::<Vec<_>>();
+            axes.sort_unstable_by_key(|&i| self.0.stride[i]);
+            let mut expected = 1usize;
+            axes.iter().all(|&i| {
+                if self.0.stride[i] != expected { return false; }
+                expected *= self.shape()[i];
+                true
+            })
+        };
+        let (owned, stride) = if preserve_layout && dense {
+            let physical = Tensor::from_parts(self.0.storage.clone(), vec![count], vec![1], self.0.offset, self.device(), false, None);
+            (physical.try_owned_detach_copy()?, self.0.stride.clone())
+        } else { (self.try_owned_detach_copy()?, default_strides(self.shape())) };
+        let output = Tensor::from_parts(owned.0.storage.clone(), self.shape().to_vec(), stride, 0, self.device(), false, None);
+        Ok(output.record_identity_copy(self, preserve_layout))
+    }
+
+    pub fn contiguous(&self) -> Result<Tensor> {
+        if self.is_contiguous() { Ok(self.clone()) } else { self.clone_tensor(false) }
+    }
+
+    fn record_identity_copy(self, input: &Tensor, preserve_layout: bool) -> Tensor {
+        let mut output = self.record_fn_forward(vec![input.clone()], crate::autograd::ForwardOp::Clone { preserve_layout }, |g| vec![g.clone()]);
+        if let Some(inner) = Arc::get_mut(&mut output.0) {
+            if let Some(op) = &mut inner.op { op.omit_saved_input_values(); }
+        }
+        output
+    }
+
+    /// Declare output data read by this backward rule. Only storage is retained,
+    /// never the output Tensor/Op, so this does not create an autograd cycle.
+    pub(crate) fn save_output_version(self) -> Tensor {
+        let storage = self.0.storage.clone();
+        let version = self.version();
+        if let Some(op) = &self.0.op { op.save_storage(storage, version); }
+        self
+    }
+
+    /// Version dependencies on sibling outputs, such as Q and R from QR.
+    pub(crate) fn save_tensor_versions(self, values: &[&Tensor]) -> Tensor {
+        if let Some(op) = &self.0.op {
+            for value in values { op.save_storage(value.0.storage.clone(), value.version()); }
+        }
+        self
     }
 
     /// Share storage and layout, stripping recording and gradient state.
@@ -1008,6 +1319,9 @@ impl Tensor {
     /// Only explicit unsupported capability/layout permits a host copy; any
     /// operational error panics rather than silently downloading or retrying.
     pub fn detach_copy(&self) -> Tensor {
+        if self.is_structural_zero() {
+            return Self::structural_zero(self.shape(), self.dtype(), self.device()).expect("structural zero snapshot allocation failed");
+        }
         if self.device_resident_whole() && self.storage_len() == self.numel() {
             return Tensor::from_parts(
                 self.0.storage.clone(),
@@ -1038,6 +1352,21 @@ impl Tensor {
             }
         }
         self.detach_copy_same_dtype()
+    }
+
+    /// Owning CPU snapshot for dense saved outputs, retaining physical order.
+    /// Device snapshots keep the existing sharing/materialization policy.
+    pub(crate) fn detach_copy_layout(&self) -> Result<Tensor> {
+        if self.device() != Device::Cpu || self.is_structural_zero() { return Ok(self.detach_copy()); }
+        let count = checked_numel("saved_copy", self.shape())?;
+        let width = match self.dtype() { DType::Bool => 1, DType::F16 | DType::BF16 => 2, DType::F32 => 4, DType::F64 | DType::I64 => 8 };
+        if count > isize::MAX as usize / width {
+            return Err(Error::InvalidShape { op: "saved_copy", msg: "snapshot exceeds typed allocation capacity".into() });
+        }
+        let stride = crate::typed_math::copy_pointwise_layout(self);
+        let physical = crate::typed_math::pointwise_source(self, self.shape(), &stride)?;
+        let owned = physical.detach_copy_same_dtype();
+        Ok(Self::from_parts(owned.0.storage.clone(), self.shape().to_vec(), stride, 0, self.device(), false, None))
     }
 
     /// A detached contiguous copy that always OWNS its storage, device
@@ -1088,19 +1417,36 @@ impl Tensor {
     /// is active independently of grad mode. Capture-only
     /// nodes discard the backward closure. `self` must be freshly-created, uniquely-
     /// owned output (as returned by the raw kernels).
-    pub fn record_fn<F>(mut self, inputs: Vec<Tensor>, backward: F) -> Tensor
+    pub fn record_fn<F>(self, inputs: Vec<Tensor>, backward: F) -> Tensor
     where
         F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
     {
-        if crate::autograd::is_grad_enabled() && inputs.iter().any(|t| t.requires_grad()) {
-            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
-            inner.requires_grad = true;
-            inner.op = Some(Op::new(inputs, Box::new(backward)));
-        } else if crate::capture::is_recording() {
-            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
-            inner.op = Some(Op::inference(inputs, None));
-        }
-        self
+        self.record_operation(inputs, None, None, move |inputs| Op::new(inputs, Box::new(backward)))
+    }
+
+    /// Record exact data dependencies while retaining every differentiable
+    /// operand. Storage/version snapshots precede forward-mode dispatch.
+    pub(crate) fn record_fn_saved<F>(self, inputs: Vec<Tensor>, saved_inputs: &[usize], save_output: bool, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static {
+        assert!(saved_inputs.iter().all(|&index| index < inputs.len()), "saved input index is out of range");
+        let output = save_output.then(|| (self.0.storage.clone(), self.version()));
+        self.record_operation(inputs, None, None, move |inputs| {
+            let saved: Vec<_> = saved_inputs.iter().map(|&index| (inputs[index].0.storage.clone(), inputs[index].version())).collect();
+            let mut op = Op::new(inputs, Box::new(backward));
+            op.omit_saved_input_values();
+            for (storage, version) in saved { op.save_storage(storage, version); }
+            if let Some((storage, version)) = output { op.save_storage(storage, version); }
+            op
+        })
+    }
+
+    /// Record optional adjoints in the same autograd engine. `None` means the
+    /// corresponding input is unused, so ordinary backward leaves its grad
+    /// slot untouched. Present adjoints must match their input shape/dtype.
+    /// Functional VJPs retain their explicit-zero convention for unused inputs.
+    pub fn record_fn_optional<F>(self, inputs: Vec<Tensor>, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        self.record_operation(inputs, None, None, move |inputs| Op::new_optional(inputs, Box::new(backward)))
     }
 
     /// Same contract as `record_fn`, but the recorded op also names which
@@ -1108,7 +1454,7 @@ impl Tensor {
     /// re-derive the math (fusion planning). `self` must be the raw kernel's
     /// freshly-created output; the tag must match the kernel actually run.
     pub fn record_fn_tagged<F>(
-        mut self,
+        self,
         inputs: Vec<Tensor>,
         tag: crate::dispatch::OpTag,
         backward: F,
@@ -1116,24 +1462,121 @@ impl Tensor {
     where
         F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static,
     {
-        if crate::autograd::is_grad_enabled() && inputs.iter().any(|t| t.requires_grad()) {
-            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
-            inner.requires_grad = true;
-            inner.op = Some(Op::new_tagged(inputs, tag, Box::new(backward)));
-        } else if crate::capture::is_recording() {
-            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
-            inner.op = Some(Op::inference(inputs, Some(tag)));
-        }
-        self
+        self.record_operation(inputs, Some(tag), None, move |inputs| Op::new_tagged(inputs, tag, Box::new(backward)))
     }
 
     pub(crate) fn record_fn_forward<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, backward: F) -> Tensor
     where F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static {
-        let mut out = self.record_fn(inputs, backward);
-        if let Some(inner) = Arc::get_mut(&mut out.0) {
-            if let Some(op) = &mut inner.op { op.forward = Some(forward); }
+        self.record_operation(inputs, None, Some(forward), move |inputs| Op::new(inputs, Box::new(backward)))
+    }
+
+    pub(crate) fn record_fn_forward_saved_jvp<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, saved: Vec<Tensor>, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static {
+        self.record_operation(inputs, None, Some(forward), move |inputs| {
+            let mut op = Op::new(inputs, Box::new(backward));
+            op.set_saved_jvp(saved);
+            op
+        })
+    }
+
+    pub(crate) fn record_fn_forward_optional<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        self.record_operation(inputs, None, Some(forward), move |inputs| Op::new_optional(inputs, Box::new(backward)))
+    }
+
+    /// Record one shared first-order operation with distinct optional cotangent slots.
+    #[doc(hidden)]
+    pub fn record_many_optional<F>(outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        Self::record_many_operation(outputs, inputs, differentiable, None, backward)
+    }
+
+    pub(crate) fn record_many_forward_optional<F>(outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], forward: crate::autograd::MultiForwardOp, backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        Self::record_many_operation(outputs, inputs, differentiable, Some(forward), backward)
+    }
+
+    fn record_many_operation<F>(mut outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], forward: Option<crate::autograd::MultiForwardOp>, backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        let invalid = |message: &str| Error::Unsupported { op: "record_many_optional", msg: message.into() };
+        if crate::capture::is_recording() || (forward.is_none() && crate::forward_ad::is_active()) {
+            return Err(invalid("generic multi-output recording requires eager reverse mode"));
         }
-        out
+        if outputs.is_empty() || outputs.len() != differentiable.len() { return Err(invalid("nonempty output and differentiability lists must agree")); }
+        let mut identities = std::collections::HashSet::new();
+        for (output, differentiable) in outputs.iter().zip(differentiable) {
+            if !identities.insert(output.id()) || Arc::strong_count(&output.0) != 1 || Arc::weak_count(&output.0) != 0 || output.0.op.is_some() || output.requires_grad() || output.grad().is_some() {
+                return Err(invalid("outputs must have distinct fresh Tensor identities"));
+            }
+            if *differentiable && !matches!(output.dtype(), DType::F32 | DType::F64) { return Err(invalid("differentiable output slots must have floating dtype")); }
+        }
+        let inputs = crate::forward_ad::recording_inputs(inputs);
+        let reverse = crate::autograd::is_grad_enabled() && inputs.iter().any(crate::forward_ad::records_grad);
+        let dual = crate::forward_ad::needs(&inputs);
+        if !reverse && !dual {
+            for output in &outputs { crate::forward_ad::record_actual_flags(output, &inputs); }
+            return Ok(outputs);
+        }
+        let mut operations = Op::new_many(inputs, &outputs, differentiable, forward, Box::new(backward)).into_iter().map(Some).collect::<Vec<_>>();
+        for (index, (output, differentiable)) in outputs.iter_mut().zip(differentiable).enumerate() {
+            if reverse && *differentiable {
+                let inner = Arc::get_mut(&mut output.0).expect("validated fresh output");
+                inner.requires_grad.store(true, Ordering::Relaxed);
+                inner.op = operations[index].take();
+            }
+        }
+        let operation = outputs.iter().find_map(|output| output.0.op.as_ref()).or_else(|| operations.iter().find_map(Option::as_ref)).expect("recorded shared operation");
+        // Capture every sibling's actual owner before dispatch can create local derivatives.
+        for output in &outputs { crate::forward_ad::record_actual_flags(output, operation.inputs()); }
+        if dual { crate::forward_ad::record_many(&outputs, operation); }
+        Ok(outputs)
+    }
+
+    fn record_operation(mut self, inputs: Vec<Tensor>, tag: Option<crate::dispatch::OpTag>, forward: Option<crate::autograd::ForwardOp>, make: impl FnOnce(Vec<Tensor>) -> Op) -> Tensor {
+        let inputs = crate::forward_ad::recording_inputs(inputs);
+        let flags = inputs.iter().fold(false, |any, input| crate::forward_ad::records_grad(input) || any);
+        let reverse = crate::autograd::is_grad_enabled() && flags;
+        let dual = crate::forward_ad::needs(&inputs);
+        let capture = crate::capture::is_recording();
+        if !reverse && !dual && !capture { crate::forward_ad::record_actual_flags(&self, &inputs); return self; }
+        let mut op = if reverse || dual { make(inputs) } else { Op::inference(inputs, tag) };
+        op.forward = forward;
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::IndexedGather { .. } | crate::autograd::ForwardOp::IndexedScatter { .. })) {
+            let save_input = matches!(op.forward, Some(crate::autograd::ForwardOp::IndexedGather { save_input: true, .. } | crate::autograd::ForwardOp::IndexedScatter { save_input: true, .. }));
+            op.omit_saved_input_values();
+            if save_input { op.save_storage(op.inputs()[0].0.storage.clone(), op.inputs()[0].version()); }
+            op.save_storage(op.inputs()[1].0.storage.clone(), op.inputs()[1].version());
+        }
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::WhereConditional)) {
+            op.omit_saved_input_values();
+            op.save_storage(op.inputs()[0].0.storage.clone(), op.inputs()[0].version());
+        }
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::RoundedDiv(_))) {
+            op.omit_saved_input_values();
+            if op.input_edges()[1] { op.save_storage(op.inputs()[0].0.storage.clone(), op.inputs()[0].version()); }
+            op.save_storage(op.inputs()[1].0.storage.clone(), op.inputs()[1].version());
+        }
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::FloorDivide)) { op.omit_saved_input_values(); }
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::CumProd { .. } | crate::autograd::ForwardOp::Prod { .. })) { op.save_storage(self.0.storage.clone(), self.version()); }
+
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Alias | crate::autograd::ForwardOp::Clone { .. }
+            | crate::autograd::ForwardOp::AddAlpha { .. } | crate::autograd::ForwardOp::Cast(_) | crate::autograd::ForwardOp::CumSum { .. }
+            | crate::autograd::ForwardOp::Rounding(_) | crate::autograd::ForwardOp::Frac | crate::autograd::ForwardOp::Rsqrt
+            | crate::autograd::ForwardOp::Reshape(_) | crate::autograd::ForwardOp::View(_) | crate::autograd::ForwardOp::Squeeze(_) | crate::autograd::ForwardOp::Unsqueeze(_)
+            | crate::autograd::ForwardOp::Transpose(_, _) | crate::autograd::ForwardOp::Permute(_) | crate::autograd::ForwardOp::Expand(_) | crate::autograd::ForwardOp::Cat(_)
+            | crate::autograd::ForwardOp::Slice { .. } | crate::autograd::ForwardOp::SliceAdjoint { .. }
+            | crate::autograd::ForwardOp::Sum | crate::autograd::ForwardOp::Mean | crate::autograd::ForwardOp::SumDim(_, _)))
+            || matches!(op.tag, Some(crate::dispatch::OpTag::Unary(crate::dispatch::UnaryKind::Sqrt | crate::dispatch::UnaryKind::Exp | crate::dispatch::UnaryKind::Tanh | crate::dispatch::UnaryKind::Sigmoid))) {
+            op.omit_saved_input_values();
+        }
+        if reverse || capture {
+            let inner = Arc::get_mut(&mut self.0).expect("fresh output is uniquely owned");
+            if reverse { inner.requires_grad.store(true, Ordering::Relaxed); }
+            inner.op = Some(op);
+            crate::forward_ad::record_actual_flags(&self, self.0.op.as_ref().unwrap().inputs());
+            if dual { crate::forward_ad::record(&self, self.0.op.as_ref().unwrap()); }
+        } else if dual { crate::forward_ad::record_actual_flags(&self, op.inputs()); crate::forward_ad::record(&self, &op); }
+        self
     }
 
     // --- version counters ---------------------------------------------------
@@ -1161,6 +1604,7 @@ impl Tensor {
             Storage::F32(v) => v.len(),
             Storage::F64(v) => v.len(),
             Storage::I64(v) => v.len(),
+            Storage::Bool(v) => v.len(),
             Storage::F16(v) | Storage::BF16(v) => v.len(),
             Storage::Device(b) => b.len(),
             Storage::DeviceI64(b) => b.len(),
@@ -1220,9 +1664,9 @@ fn device_to_host(device: Device, buf: &dyn DeviceBuffer) -> Vec<f32> {
 // forwards) still return cpu tensors for non-whole operands - a visible
 // (result.device() == Cpu), documented fallback.
 
-/// Float math is f32-only: F64/I64 operands must be cast explicitly via
-/// `to_dtype(DType::F32)` rather than silently at kernel entry.
-fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
+/// Guard for kernels that only implement F32. Typed operations dispatch before
+/// this guard; unsupported dtypes must never be silently narrowed at entry.
+pub(crate) fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
     if t.dtype() != DType::F32 {
         return Err(Error::DtypeMismatch {
             op,
@@ -1234,6 +1678,7 @@ fn check_f32(op: &'static str, t: &Tensor) -> Result<()> {
 }
 
 pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
+    if matches!(a.dtype(), DType::F64 | DType::I64) { return crate::typed_math::unary(a, kind); }
     check_f32("unary", a)?;
     if a.device_resident_whole() {
         let backend = backend_for(a.0.device)?;
@@ -1244,27 +1689,37 @@ pub(crate) fn raw_unary_k(a: &Tensor, kind: UnaryKind) -> Result<Tensor> {
         let out = backend.unary_dev(kind, buf.as_ref())?;
         return Ok(device_leaf(out, &a.0.shape, a.0.device));
     }
+    let host_stride = if a.device() == Device::Cpu {
+        let count = checked_numel("unary", a.shape())?;
+        if count > isize::MAX as usize / 4 { return Err(Error::InvalidShape { op: "unary", msg: "pointwise output exceeds allocation capacity".into() }); }
+        Some(crate::typed_math::unary_pointwise_layout(a))
+    } else { None };
     // Contiguous host f32 (any offset): slice straight into the backend, no
     // materializing copy - the read side of the ~3x-bytes-moved bug this
     // function used to have via `a.to_vec()`.
     {
         let g = a.0.storage.read();
         if let Storage::F32(v) = &*g {
-            if a.0.device == Device::Cpu && a.is_contiguous() {
+            if a.0.device == Device::Cpu && a.is_contiguous()
+                && host_stride.as_ref().is_some_and(|stride| *stride == default_strides(a.shape())) {
                 let n = a.numel();
                 let cpu = backend_for(Device::Cpu)?;
                 return Tensor::from_vec(
-                    cpu.unary(kind, &v[a.0.offset..a.0.offset + n]),
+                    cpu.unary(kind, if n == 0 { &[] } else { &v[a.0.offset..a.0.offset + n] }),
                     &a.0.shape,
                 );
             }
         }
     }
     let cpu = backend_for(Device::Cpu)?;
-    let va = a.to_vec_pooled();
+    let physical = if let Some(stride) = &host_stride { crate::typed_math::pointwise_source(a, a.shape(), stride)? } else { a.clone() };
+    let va = physical.to_vec_pooled();
     let out = cpu.unary(kind, &va);
     crate::pool::give(va);
-    Tensor::from_vec(out, &a.0.shape)?.to_device(a.0.device)
+    let raw = Tensor::from_vec(out, a.shape())?;
+    if let Some(stride) = host_stride {
+        Ok(Tensor::from_parts(raw.0.storage.clone(), a.shape().to_vec(), stride, 0, Device::Cpu, false, None))
+    } else { raw.to_device(a.0.device) }
 }
 
 /// Wrap a backend-produced buffer as a contiguous detached device tensor.
@@ -1280,12 +1735,57 @@ pub(crate) fn device_leaf(buf: Box<dyn DeviceBuffer>, shape: &[usize], device: D
     )
 }
 
+pub(crate) fn raw_structural_binary(op: &'static str, a: &Tensor, b: &Tensor, kind: BinaryKind) -> Result<Option<Tensor>> {
+    let (az, bz) = (a.is_structural_zero(), b.is_structural_zero());
+    if (!az && !bz) || matches!(kind, BinaryKind::ReluBackward) { return Ok(None); }
+    if a.dtype() != b.dtype() { return Err(Error::DtypeMismatch { op, expected: a.dtype(), got: b.dtype() }); }
+    if a.device() != b.device() { return Err(Error::DeviceMismatch { op, lhs: a.device(), rhs: b.device() }); }
+    if a.device() != Device::Cpu || crate::capture::is_recording() {
+        return Err(Error::Unsupported { op, msg: "structural-zero arithmetic requires eager CPU execution".into() });
+    }
+    let shape = broadcast_shapes(op, a.shape(), b.shape())?;
+    let width = match a.dtype() {
+        DType::F32 => 4, DType::F64 => 8,
+        dtype => return Err(Error::DtypeMismatch { op, expected: DType::F32, got: dtype }),
+    };
+    if checked_numel(op, &shape)? > isize::MAX as usize / width {
+        return Err(Error::InvalidShape { op, msg: "structural-zero result exceeds typed allocation capacity".into() });
+    }
+    let zero = matches!(kind, BinaryKind::Mul) || az && bz && matches!(kind, BinaryKind::Add | BinaryKind::Sub)
+        || az && !bz && matches!(kind, BinaryKind::Div);
+    if zero { return Tensor::structural_zero(&shape, a.dtype(), a.device()).map(Some); }
+    let output = match kind {
+        BinaryKind::Add | BinaryKind::Sub => {
+            let ordinary = if az { b } else { a }.broadcast_to(&shape)?;
+            let stride = if az && matches!(kind, BinaryKind::Sub) {
+                crate::typed_math::binary_pointwise_layout(&ordinary, &Tensor::scalar(-1.).to_dtype(a.dtype()), &shape, a.dtype())
+            } else { crate::typed_math::copy_pointwise_layout(&ordinary) };
+            let physical = crate::typed_math::pointwise_source(&ordinary, &shape, &stride)?;
+            let owned = if az && matches!(kind, BinaryKind::Sub) { raw_unary_k(&physical, UnaryKind::Neg)? }
+                else { physical.detach_copy_same_dtype() };
+            Tensor::from_parts(owned.0.storage.clone(), shape.clone(), stride, 0, Device::Cpu, false, None)
+        }
+        BinaryKind::Div => {
+            let value = if az { f64::NAN } else { f64::INFINITY };
+            match a.dtype() {
+                DType::F32 => Tensor::from_vec(crate::typed_math::filled(op, &shape, value as f32)?, &shape)?,
+                DType::F64 => Tensor::from_vec_f64(crate::typed_math::filled(op, &shape, value)?, &shape)?,
+                dtype => return Err(Error::DtypeMismatch { op, expected: DType::F32, got: dtype }),
+            }
+        }
+        BinaryKind::Mul | BinaryKind::ReluBackward => unreachable!(),
+    };
+    Ok(Some(output))
+}
+
 pub(crate) fn raw_binary_k(
     op: &'static str,
     a: &Tensor,
     b: &Tensor,
     kind: BinaryKind,
 ) -> Result<Tensor> {
+    if let Some(zero_result) = raw_structural_binary(op, a, b, kind)? { return Ok(zero_result); }
+    if matches!(a.dtype(), DType::F64 | DType::I64) { return crate::typed_math::binary(op, a, b, kind); }
     check_f32(op, a)?;
     check_f32(op, b)?;
     if a.0.device != b.0.device {
@@ -1317,18 +1817,25 @@ pub(crate) fn raw_binary_k(
         )?;
         return Ok(device_leaf(out, &out_shape, a.0.device));
     }
+    let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
+    let host_stride = if a.device() == Device::Cpu {
+        let count = checked_numel(op, &out_shape)?;
+        if count > isize::MAX as usize / 4 { return Err(Error::InvalidShape { op, msg: "pointwise output exceeds allocation capacity".into() }); }
+        Some(crate::typed_math::binary_pointwise_layout(a, b, &out_shape, DType::F32))
+    } else { None };
     // Contiguous host f32 operands: skip the copy-then-compute path.
     {
         let pair = PairGuard::new(a, b);
         let (sa_st, sb_st) = pair.get();
         if let (Storage::F32(va), Storage::F32(vb)) = (sa_st, sb_st) {
-            if a.0.device == Device::Cpu && a.is_contiguous() && b.is_contiguous() {
+            if a.0.device == Device::Cpu && a.is_contiguous() && b.is_contiguous()
+                && host_stride.as_ref().is_some_and(|stride| *stride == default_strides(&out_shape)) {
                 let cpu = backend_for(Device::Cpu)?;
                 // Equal shapes: slice both operands directly (any offset).
                 if a.0.shape == b.0.shape {
                     let n = a.numel();
-                    let sa = &va[a.0.offset..a.0.offset + n];
-                    let sb = &vb[b.0.offset..b.0.offset + n];
+                    let sa = if n == 0 { &[] } else { &va[a.0.offset..a.0.offset + n] };
+                    let sb = if n == 0 { &[] } else { &vb[b.0.offset..b.0.offset + n] };
                     return Tensor::from_vec(cpu.binary(kind, sa, sb), &a.0.shape);
                 }
                 // Different shapes: hand the backend the whole unmaterialized
@@ -1348,14 +1855,19 @@ pub(crate) fn raw_binary_k(
             }
         }
     }
-    let out_shape = broadcast_shapes(op, &a.0.shape, &b.0.shape)?;
-    let va = a.broadcast_to(&out_shape)?.to_vec_pooled();
-    let vb = b.broadcast_to(&out_shape)?.to_vec_pooled();
+    let (left, right) = if let Some(stride) = &host_stride {
+        (crate::typed_math::pointwise_source(a, &out_shape, stride)?, crate::typed_math::pointwise_source(b, &out_shape, stride)?)
+    } else { (a.broadcast_to(&out_shape)?, b.broadcast_to(&out_shape)?) };
+    let va = left.to_vec_pooled();
+    let vb = right.to_vec_pooled();
     let cpu = backend_for(Device::Cpu)?;
     let out = cpu.binary(kind, &va, &vb);
     crate::pool::give(va);
     crate::pool::give(vb);
-    Tensor::from_vec(out, &out_shape)?.to_device(a.0.device)
+    let raw = Tensor::from_vec(out, &out_shape)?;
+    if let Some(stride) = host_stride {
+        Ok(Tensor::from_parts(raw.0.storage.clone(), out_shape, stride, 0, Device::Cpu, false, None))
+    } else { raw.to_device(a.0.device) }
 }
 
 pub(crate) fn raw_binary(
@@ -1389,6 +1901,7 @@ pub(crate) fn raw_binary(
 /// (the CPU backend consults the swappable kernel pointer, so a backend crate
 /// can still swap in a faster kernel). Higher ranks are a follow-up.
 pub(crate) fn raw_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor> {
+    if a.dtype() == DType::F64 { return crate::typed_math::matmul(a, b, false); }
     check_f32("matmul", a)?;
     check_f32("matmul", b)?;
     if a.0.device != b.0.device {
@@ -1507,6 +2020,8 @@ pub(crate) fn raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Tensor {
 
 /// Fallible seam for forward callers; legacy backward closures cannot return errors.
 pub(crate) fn try_raw_sum_dim(t: &Tensor, dim: usize, keepdim: bool) -> Result<Tensor> {
+    if matches!(t.dtype(), DType::F64 | DType::I64) { return crate::typed_math::sum(t, Some(dim), keepdim); }
+    check_f32("sum_dim", t)?;
     let in_shape = t.0.shape.clone();
     let ndim = in_shape.len();
     if dim >= ndim {
@@ -1593,9 +2108,35 @@ pub(crate) fn raw_row_softmax(t: &Tensor, dim: usize, log: bool) -> Option<Tenso
     Some(device_leaf(out, &t.0.shape, t.0.device))
 }
 
-/// Reduce a (broadcasted) gradient back down to `target` shape by summing over
-/// the dims that were expanded during the forward broadcast.
+/// Reduce empty adjoints without allocating nonempty intermediate dimensions.
+pub(crate) fn sum_empty_to_shape(g: &Tensor, target: &[usize]) -> Result<Tensor> {
+    debug_assert_eq!(g.numel(), 0);
+    if g.shape() == target { return Ok(g.clone()); }
+    // Match ordinary reduction layouts without removing a protective zero axis
+    // before huge nonzero extents. Above the existing 2^20-element work budget,
+    // retain the virtual-zero extension: values/AD stay exact, strides may differ.
+    let count = crate::shape::checked_numel("empty broadcast adjoint", target)?;
+    if count <= 1 << 20 {
+        let leading = g.ndim() - target.len();
+        let axes = (0..g.ndim()).filter(|&axis| axis < leading || target[axis - leading] == 1 && g.shape()[axis] != 1).collect::<Vec<_>>();
+        let mut value = g.clone();
+        for zero in [false, true] {
+            for &axis in &axes {
+                if (g.shape()[axis] == 0) == zero { value = value.sum_dim(axis, true)?; }
+            }
+        }
+        return value.reshape(target);
+    }
+    g.sum().reshape(&vec![1; target.len()])?.expand(target)
+}
+
+#[cfg(test)]
+#[path = "empty_reduction_layout_tests.rs"]
+mod empty_reduction_layout_tests;
+
+/// Sum dimensions expanded during a forward broadcast back to `target`.
 pub(crate) fn unbroadcast(g: &Tensor, target: &[usize]) -> Tensor {
+    if g.numel() == 0 { return sum_empty_to_shape(g, target).expect("valid empty broadcast adjoint"); }
     let mut g = g.clone();
     while g.ndim() > target.len() {
         g = raw_sum_dim(&g, 0, false);

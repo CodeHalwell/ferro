@@ -81,6 +81,9 @@ impl Tensor {
         dilation: [usize; 2],
         groups: usize,
     ) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 {
+            return super::conv2d_f64::convolution(self, weight, stride, padding, dilation, groups);
+        }
         require_f32(self, "conv2d")?;
         require_f32(weight, "conv2d")?;
         if self.device() != weight.device() {

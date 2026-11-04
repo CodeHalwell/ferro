@@ -2,7 +2,7 @@
 //!
 //! Export: `__dlpack__` builds a `DLManagedTensor` and wraps it in a
 //! PyCapsule named "dltensor". CPU tensors export an owned heap copy of their
-//! row-major f32 data; CUDA-resident tensors are exported ZERO-COPY as
+//! row-major f32/f64/i64 or bool data; CUDA-resident f32 tensors export ZERO-COPY as
 //! kDLCUDA: the DLTensor's data pointer is the backend allocation's base and
 //! any view offset is carried in `byte_offset`. OWNERSHIP: an exported CUDA
 //! view BORROWS the source Tensor's Arc-shared storage - it holds one strong
@@ -23,7 +23,7 @@ use std::ffi::{c_char, c_void, CStr};
 use std::os::raw::c_int;
 
 use cudarc::driver::result::memcpy_dtoh_sync;
-use ferro_core::{Device, Tensor as CoreTensor};
+use ferro_core::{DType, Device, Tensor as CoreTensor};
 use pyo3::exceptions::PyValueError;
 use pyo3::ffi;
 use pyo3::prelude::*;
@@ -34,6 +34,8 @@ use pyo3::types::{PyCapsule, PyTuple};
 const K_DL_CPU: i32 = 1;
 const K_DL_CUDA: i32 = 2;
 const K_DL_FLOAT: u8 = 2;
+const K_DL_INT: u8 = 0;
+const K_DL_BOOL: u8 = 6;
 
 #[repr(C)]
 struct DLDevice {
@@ -76,6 +78,9 @@ struct ManagerCtx {
 
 enum Exported {
     Host(Vec<f32>),
+    HostF64(Vec<f64>),
+    HostI64(Vec<i64>),
+    HostBool(Vec<u8>),
     /// Borrows the source tensor's Arc storage; dropping it never frees GPU
     /// memory an alive Tensor still shares. Never read: kept alive on purpose.
     #[allow(dead_code)]
@@ -153,21 +158,29 @@ pub fn export_capsule<'py>(
     data: Vec<f32>,
     shape: Vec<usize>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let dims: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+    export_host_capsule(py, Exported::Host(data), shape)
+}
 
-    let mut ctx = Box::new(ManagerCtx { data: Exported::Host(data), shape: dims });
-
-    let Exported::Host(host) = &ctx.data else { unreachable!() };
-    let data_ptr = host.as_ptr() as *mut c_void;
+fn export_host_capsule<'py>(py: Python<'py>, data: Exported, shape: Vec<usize>) -> PyResult<Bound<'py, PyAny>> {
+    let dims: Vec<i64> = shape.into_iter().map(|d| i64::try_from(d)
+        .map_err(|_| PyValueError::new_err("DLPack shape exceeds int64 capacity"))).collect::<PyResult<_>>()?;
+    let ndim = c_int::try_from(dims.len()).map_err(|_| PyValueError::new_err("DLPack rank exceeds int32 capacity"))?;
+    let mut ctx = Box::new(ManagerCtx { data, shape: dims });
+    let (data_ptr, dtype) = match &ctx.data {
+        Exported::Host(host) => (host.as_ptr() as *mut c_void, DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 }),
+        Exported::HostF64(host) => (host.as_ptr() as *mut c_void, DLDataType { code: K_DL_FLOAT, bits: 64, lanes: 1 }),
+        Exported::HostI64(host) => (host.as_ptr() as *mut c_void, DLDataType { code: K_DL_INT, bits: 64, lanes: 1 }),
+        Exported::HostBool(host) => (host.as_ptr() as *mut c_void, DLDataType { code: K_DL_BOOL, bits: 8, lanes: 1 }),
+        Exported::Device(_) => unreachable!("host capsule requires owned host data"),
+    };
     let shape_ptr = ctx.shape.as_mut_ptr();
-    let ndim = ctx.shape.len() as c_int;
 
     let managed = Box::new(DLManagedTensor {
         dl_tensor: DLTensor {
             data: data_ptr,
             device: DLDevice { device_type: K_DL_CPU, device_id: 0 },
             ndim,
-            dtype: DLDataType { code: K_DL_FLOAT, bits: 32, lanes: 1 },
+            dtype,
             shape: shape_ptr,
             // NULL strides == row-major contiguous, which our copy always is.
             strides: std::ptr::null_mut(),
@@ -208,6 +221,9 @@ pub fn export_device_capsule<'py>(
     py: Python<'py>,
     inner: &CoreTensor,
 ) -> PyResult<Bound<'py, PyAny>> {
+    if inner.is_structural_zero() {
+        return Err(PyValueError::new_err("clone a structural zero before zero-copy DLPack export"));
+    }
     let view = inner.dlpack_device_view().map_err(|e| PyValueError::new_err(e.to_string()))?;
     let (ptr, ordinal) =
         ferro_cuda::exported_view(view.device_buffer()).map_err(PyValueError::new_err)?;
@@ -273,8 +289,20 @@ pub fn export_for<'py>(py: Python<'py>, inner: &CoreTensor) -> PyResult<Bound<'p
     if inner.device() != Device::Cpu {
         return export_device_capsule(py, inner);
     }
-    let (data, shape) = inner.to_contiguous();
-    export_capsule(py, data, shape)
+    let width = match inner.dtype() { DType::Bool => 1, DType::F64 | DType::I64 => 8, _ => 4 };
+    if inner.numel() > isize::MAX as usize / width {
+        return Err(PyValueError::new_err("DLPack export byte count exceeds allocation capacity"));
+    }
+    match inner.dtype() {
+        DType::F32 => {
+            let (data, shape) = inner.to_contiguous();
+            export_capsule(py, data, shape)
+        }
+        DType::Bool => export_host_capsule(py, Exported::HostBool(inner.to_vec_bool().into_iter().map(u8::from).collect()), inner.shape().to_vec()),
+        DType::F64 => export_host_capsule(py, Exported::HostF64(inner.to_vec_f64()), inner.shape().to_vec()),
+        DType::I64 => export_host_capsule(py, Exported::HostI64(inner.to_vec_i64()), inner.shape().to_vec()),
+        _ => Err(PyValueError::new_err("unsupported CPU DLPack export dtype; expected float32, float64, int64 or bool")),
+    }
 }
 
 /// `__dlpack_device__` value: (kDLCPU, 0) or (kDLCUDA, ordinal).
@@ -332,8 +360,15 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
             "only CPU (kDLCPU) and CUDA (kDLCUDA) DLPack tensors are supported",
         ));
     }
-    if t.dtype.code != K_DL_FLOAT || t.dtype.bits != 32 || t.dtype.lanes != 1 {
-        return Err(PyValueError::new_err("only float32 DLPack tensors are supported"));
+    let is_bool = t.dtype.code == K_DL_BOOL && t.dtype.bits == 8 && t.dtype.lanes == 1;
+    let is_f32 = t.dtype.code == K_DL_FLOAT && t.dtype.bits == 32 && t.dtype.lanes == 1;
+    let is_f64 = t.dtype.code == K_DL_FLOAT && t.dtype.bits == 64 && t.dtype.lanes == 1;
+    let is_i64 = t.dtype.code == K_DL_INT && t.dtype.bits == 64 && t.dtype.lanes == 1;
+    if !is_f32 && !is_bool && !is_f64 && !is_i64 {
+        return Err(PyValueError::new_err("unsupported DLPack dtype; expected float32, float64, int64 or bool"));
+    }
+    if !is_f32 && t.device.device_type != K_DL_CPU {
+        return Err(PyValueError::new_err("typed DLPack import supports CPU storage only; CUDA requires float32"));
     }
 
     if t.ndim < 0 {
@@ -359,6 +394,9 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
     let nonzero_numel = shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d.max(1)))
         .ok_or_else(|| PyValueError::new_err("DLPack tensor element count overflows usize"))?;
     let numel = if shape.contains(&0) { 0 } else { nonzero_numel };
+    let width = if is_bool { 1 } else if is_f32 { 4 } else { 8 };
+    numel.checked_mul(width).filter(|&bytes| bytes <= isize::MAX as usize)
+        .ok_or_else(|| PyValueError::new_err("DLPack tensor byte count exceeds allocation capacity"))?;
     // Validate strides (in elements) by bounding every gatherable offset:
     // the min and max element offset over all index combinations must stay
     // within [0, numel) relative to base, or pointer arithmetic below could
@@ -384,8 +422,9 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
         return Err(PyValueError::new_err("DLPack tensor has null data pointer"));
     }
 
-    if t.byte_offset as usize % std::mem::size_of::<f32>() != 0 {
-        return Err(PyValueError::new_err("DLPack byte_offset is not f32-aligned"));
+    let byte_offset = usize::try_from(t.byte_offset).map_err(|_| PyValueError::new_err("DLPack byte_offset exceeds usize capacity"))?;
+    if byte_offset % width != 0 {
+        return Err(PyValueError::new_err("DLPack byte_offset is not element-aligned"));
     }
 
     if t.device.device_type == K_DL_CUDA {
@@ -395,11 +434,50 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
     // No address is reachable in an empty tensor, regardless of strides.
     // Never do pointer arithmetic or construct a slice from its null data.
     if numel == 0 {
-        return CoreTensor::from_contiguous(&[], &shape)
+        return (if is_bool { CoreTensor::from_vec_bool(Vec::new(), &shape) }
+                else if is_f64 { CoreTensor::from_vec_f64(Vec::new(), &shape) }
+                else if is_i64 { CoreTensor::from_vec_i64(Vec::new(), &shape) }
+                else { CoreTensor::from_contiguous(&[], &shape) })
             .map_err(|e| PyValueError::new_err(e.to_string()));
     }
 
-    let base = (t.data as *const u8).add(t.byte_offset as usize) as *const f32;
+    let bytes = (hi as usize).checked_mul(width).and_then(|n| n.checked_add(width))
+        .and_then(|n| byte_offset.checked_add(n))
+        .filter(|&n| n <= isize::MAX as usize)
+        .ok_or_else(|| PyValueError::new_err("DLPack data span exceeds pointer capacity"))?;
+    (t.data as usize).checked_add(bytes).ok_or_else(|| PyValueError::new_err("DLPack data address overflows usize"))?;
+    if is_bool {
+        // Foreign bool bytes need not be canonical Rust bool representations.
+        let base = (t.data as *const u8).add(byte_offset);
+        let mut data = Vec::with_capacity(numel);
+        let mut index = vec![0usize; ndim];
+        for linear in 0..numel {
+            let offset = if t.strides.is_null() { linear } else {
+                (0..ndim).map(|d| index[d] as i128 * *t.strides.add(d) as i128).sum::<i128>() as usize
+            };
+            data.push(*base.add(offset) != 0);
+            for d in (0..ndim).rev() {
+                index[d] += 1;
+                if index[d] < shape[d] { break; }
+                index[d] = 0;
+            }
+        }
+        return CoreTensor::from_vec_bool(data, &shape).map_err(|e| PyValueError::new_err(e.to_string()));
+    }
+
+    if is_f64 {
+        return CoreTensor::from_vec_f64(gather_host::<f64>(t, ndim, &shape, numel, byte_offset)?, &shape)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
+    }
+    if is_i64 {
+        return CoreTensor::from_vec_i64(gather_host::<i64>(t, ndim, &shape, numel, byte_offset)?, &shape)
+            .map_err(|e| PyValueError::new_err(e.to_string()));
+    }
+
+    let base = (t.data as *const u8).add(byte_offset) as *const f32;
+    if (base as usize) % std::mem::align_of::<f32>() != 0 {
+        return Err(PyValueError::new_err("DLPack data pointer is not f32-aligned"));
+    }
 
     // Gather elements honoring the source strides (in elements) if present;
     // NULL strides means row-major contiguous.
@@ -428,6 +506,30 @@ unsafe fn read_managed(managed: *mut DLManagedTensor) -> PyResult<CoreTensor> {
 
     CoreTensor::from_contiguous(&data, &shape)
         .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+/// Called only after descriptor span/offset checks; the producer owns a valid
+/// described buffer. Positive non-dense strides retain the existing range gate.
+unsafe fn gather_host<T: Copy>(t: &DLTensor, ndim: usize, shape: &[usize], numel: usize, byte_offset: usize) -> PyResult<Vec<T>> {
+    let base = (t.data as *const u8).add(byte_offset) as *const T;
+    if base as usize % std::mem::align_of::<T>() != 0 {
+        return Err(PyValueError::new_err("DLPack data pointer is not element-aligned"));
+    }
+    if t.strides.is_null() {
+        return Ok(std::slice::from_raw_parts(base, numel).to_vec());
+    }
+    let mut data = Vec::with_capacity(numel);
+    let mut indices = vec![0usize; ndim];
+    for _ in 0..numel {
+        let offset: i128 = (0..ndim).map(|d| indices[d] as i128 * *t.strides.add(d) as i128).sum();
+        data.push(*base.add(offset as usize));
+        for d in (0..ndim).rev() {
+            indices[d] += 1;
+            if indices[d] < shape[d] { break; }
+            indices[d] = 0;
+        }
+    }
+    Ok(data)
 }
 
 /// kDLCUDA import: NOT zero-copy. Download the described element span from
@@ -672,7 +774,7 @@ mod tests {
                 let mut f = fixture(vec![0, 3], Some(vec![3, 1]), vec![]);
                 f.managed.dl_tensor.shape = f.shape.as_mut_ptr();
                 f.managed.dl_tensor.strides = f.strides.as_mut_ptr();
-                f.managed.dl_tensor.dtype.bits = if invalid { 64 } else { 32 };
+                f.managed.dl_tensor.dtype.bits = if invalid { 16 } else { 32 };
                 f.managed.manager_ctx = &count as *const AtomicUsize as *mut c_void;
                 f.managed.deleter = Some(count_delete);
                 let cap = unsafe {
@@ -742,7 +844,7 @@ mod tests {
         assert!(err(&mut f).contains("kDLCUDA"));
 
         let mut f = fixture(vec![2], None, vec![0.0; 2]);
-        f.managed.dl_tensor.dtype.bits = 64;
+        f.managed.dl_tensor.dtype.bits = 16;
         assert!(err(&mut f).contains("float32"));
 
         let mut f = fixture(vec![2], None, vec![]);

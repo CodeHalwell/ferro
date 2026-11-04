@@ -313,7 +313,7 @@ mod device_compatibility {
 }
 
 #[test]
-fn aliased_optimizer_clones_are_rejected_before_transaction_writes() {
+fn owning_optimizer_clones_restore_independent_state() {
     let src = Pair::new(true); let r = Rng::new(1);
     let mut a = Adam::new(src.parameters(), 0.01); let b = Adam::new(src.parameters(), 0.02);
     src.forward(&Tensor::ones(&[1])).unwrap().sum().backward(); a.step();
@@ -321,8 +321,74 @@ fn aliased_optimizer_clones_are_rejected_before_transaction_writes() {
     let dst = Pair::new(true); let mut c = Adam::new(dst.parameters(), 0.03);
     dst.forward(&Tensor::ones(&[1])).unwrap().sum().backward(); c.step();
     let mut d = c.clone();
-    let before = arrays(&Checkpoint::from_module(0, &dst).with_optimizer("c", &c).unwrap().with_optimizer("d", &d).unwrap());
-    assert!(cp.load_training_state_into(&dst, &mut [("a", &mut c), ("b", &mut d)], &r).is_err());
-    assert_eq!(arrays(&Checkpoint::from_module(0, &dst).with_optimizer("c", &c).unwrap().with_optimizer("d", &d).unwrap()), before);
-    assert!(Checkpoint::from_training_state(1, &dst, &[("a", &c), ("b", &d)], &r).is_err());
+    assert_eq!(c.state_parameters().unwrap()[0].identity(), d.state_parameters().unwrap()[0].identity());
+    for (left, right) in c.state_buffers().unwrap().iter().zip(d.state_buffers().unwrap()) {
+        assert_ne!(left._storage_ptr(), right._storage_ptr());
+    }
+    let handles: Vec<_> = dst.parameters().iter().map(|p| p.tensor()).chain(c.state_buffers().unwrap()).chain(d.state_buffers().unwrap()).collect();
+    let identities: Vec<_> = handles.iter().map(|t| (t.id(), t._storage_ptr())).collect();
+    let dr = Rng::new(19);
+    cp.load_training_state_into(&dst, &mut [("a", &mut c), ("b", &mut d)], &dr).unwrap();
+    let current = dst.parameters().iter().map(|p| p.tensor()).chain(c.state_buffers().unwrap()).chain(d.state_buffers().unwrap()).collect::<Vec<_>>();
+    assert_eq!(current.iter().map(|t| (t.id(), t._storage_ptr())).collect::<Vec<_>>(), identities);
+    let restored = Checkpoint::from_training_state(1, &dst, &[("a", &c), ("b", &d)], &dr).unwrap();
+    assert_eq!(arrays(&restored), arrays(&cp));
+    assert_eq!(dr.state(), r.state());
+}
+
+#[test]
+fn shared_optimizer_buffers_are_rejected_before_transaction_writes() {
+    use std::{cell::Cell, rc::Rc};
+    use ferro_core::{DType, Error, Result};
+
+    struct SharedState { parameter: Param, moment: Tensor, preparations: Rc<Cell<usize>> }
+    impl OptimizerState for SharedState {
+        fn snapshot(&self) -> Vec<(String, Tensor)> { vec![("moment".into(), self.moment.detach_copy())] }
+        fn state_parameters(&self) -> Option<Vec<Param>> { Some(vec![self.parameter.clone()]) }
+        fn state_buffers(&self) -> Option<Vec<Tensor>> { Some(vec![self.moment.clone()]) }
+        fn restore(&mut self, state: &[(String, Tensor)]) -> Result<()> {
+            self.prepare_cpu_restore(&[], state)?();
+            Ok(())
+        }
+        fn prepare_cpu_restore<'a>(&'a mut self, config: &[f32], state: &[(String, Tensor)]) -> Result<Box<dyn FnOnce() + 'a>> {
+            self.preparations.set(self.preparations.get() + 1);
+            if !config.is_empty() || state.len() != 1 || state[0].0 != "moment"
+                || state[0].1.dtype() != DType::F32 || state[0].1.shape() != self.moment.shape() {
+                return Err(Error::Format { op: "test_optimizer", msg: "invalid moment state".into() });
+            }
+            let value = state[0].1.detach_copy();
+            Ok(Box::new(move || self.moment.copy_from(&value).unwrap()))
+        }
+    }
+
+    let preparations = Rc::new(Cell::new(0));
+    let make = |p: &Param, moment: Tensor| SharedState { parameter: p.clone(), moment, preparations: preparations.clone() };
+    let src = Pair::new(true); src.left.set(Tensor::full(&[1], 3.0));
+    let r = Rng::new(1);
+    let a = make(&src.left, Tensor::full(&[1], 2.0));
+    let b = make(&src.left, Tensor::full(&[1], 4.0));
+    let cp = Checkpoint::from_training_state(1, &src, &[("a", &a), ("b", &b)], &r).unwrap();
+    for model_alias in [false, true] {
+        let dst = Pair::new(true); let dr = Rng::new(19);
+        let shared = if model_alias { dst.left.tensor().requires_grad_(false).unwrap() } else { Tensor::full(&[1], 7.0) };
+        let mut c = make(&dst.left, shared.clone());
+        let mut d = make(&dst.left, if model_alias { Tensor::full(&[1], 8.0) } else { shared });
+        let handles = [dst.left.tensor(), c.moment.clone(), d.moment.clone()];
+        let versions: Vec<_> = handles.iter().map(|t| t._version()).collect();
+        let before = arrays(&Checkpoint::from_module(0, &dst).with_optimizer("c", &c).unwrap().with_optimizer("d", &d).unwrap());
+        let rng_before = dr.state();
+        let error = cp.load_training_state_into(&dst, &mut [("a", &mut c), ("b", &mut d)], &dr).unwrap_err();
+        assert!(error.to_string().contains("optimizer buffers must not alias"));
+        assert_eq!(preparations.get(), 0, "isolation validation must precede preparation");
+        assert_eq!(arrays(&Checkpoint::from_module(0, &dst).with_optimizer("c", &c).unwrap().with_optimizer("d", &d).unwrap()), before);
+        assert_eq!(handles.iter().map(|t| t._version()).collect::<Vec<_>>(), versions);
+        assert_eq!(dr.state(), rng_before);
+        assert!(Checkpoint::from_training_state(1, &dst, &[("a", &c), ("b", &d)], &dr).is_err());
+    }
+    let dst = Pair::new(true); let dr = Rng::new(19);
+    let mut c = make(&dst.left, Tensor::full(&[1], 7.0));
+    let mut d = make(&dst.left, Tensor::full(&[1], 8.0));
+    cp.load_training_state_into(&dst, &mut [("a", &mut c), ("b", &mut d)], &dr).unwrap();
+    assert_eq!(preparations.get(), 2);
+    assert_eq!(arrays(&Checkpoint::from_training_state(1, &dst, &[("a", &c), ("b", &d)], &dr).unwrap()), arrays(&cp));
 }

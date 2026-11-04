@@ -57,6 +57,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         a.iter().zip(b).map(|(&x, &y)| f(x, y)).collect()
     }
@@ -127,6 +128,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let strides = |shape: &[usize]| {
             let mut st = vec![0usize; out_shape.len()];

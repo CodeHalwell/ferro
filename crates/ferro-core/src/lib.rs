@@ -4,6 +4,7 @@
 
 pub mod amp;
 pub mod autograd;
+pub mod forward_ad;
 pub mod basis;
 pub mod capture;
 pub mod checkpoint;
@@ -25,6 +26,7 @@ pub mod ops;
 pub mod ops_ext;
 pub mod optim;
 pub mod params;
+pub mod linalg;
 pub mod philox;
 pub mod pool;
 pub mod recurrent;
@@ -36,6 +38,7 @@ pub mod segment;
 pub mod shape;
 pub mod sparse;
 pub mod tensor;
+mod typed_math;
 pub mod testkit;
 
 pub use capture::capture;

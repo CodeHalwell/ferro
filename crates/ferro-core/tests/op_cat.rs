@@ -78,3 +78,58 @@ fn cat_rejects_mismatched_dtypes() {
     assert!(matches!(Tensor::cat(&[floats, ids], 0),
         Err(Error::DtypeMismatch { op: "cat", expected: DType::F32, got: DType::I64 })));
 }
+
+#[test]
+fn cat_only_saves_metadata_for_ordinary_and_functional_backwards() {
+    for dtype in [DType::F32, DType::F64] { for functional in [false, true] { for output in [false, true] {
+        let x = Tensor::from_vec_f64(vec![1., 2., 3., 4.], &[2, 2]).unwrap().to_dtype(dtype).requires_grad_(true).unwrap();
+        let y = Tensor::cat(&[x.clone(), x.clone()], 1).unwrap();
+        if output { y._bump_version_for_test(); } else { x._bump_version_for_test(); }
+        let seed = Tensor::from_vec_f64((1..=8).map(|x| x as f64).collect(), &[2, 4]).unwrap().to_dtype(dtype);
+        let gradient = if functional { y.vjp_wrt(&[&x], &seed, false).unwrap().remove(0) }
+            else { y.backward_with(&seed); x.grad().unwrap() };
+        assert_eq!(gradient.to_dtype(DType::F64).to_vec_f64(), vec![4., 6., 12., 14.]);
+        if functional { assert!(x.grad().is_none()); }
+    } } }
+}
+
+#[test]
+fn cat_metadata_omission_preserves_higher_derivatives_and_live_cotangents() {
+    let x = Tensor::from_vec(vec![0.5, -2.], &[2]).unwrap().requires_grad_(true).unwrap();
+    let y = Tensor::cat(&[x.clone(), x.clone()], 0).unwrap();
+    let loss = y.square().unwrap().sum();
+    x._bump_version_for_test();
+    let first = loss.grad_wrt(&[&x], true).unwrap().remove(0);
+    assert_eq!(first.to_vec(), vec![2., -8.]);
+    assert_eq!(first.sum().grad_wrt(&[&x], false).unwrap()[0].to_vec(), vec![4., 4.]);
+    let other = Tensor::from_vec(vec![3., 4.], &[2]).unwrap().requires_grad_(true).unwrap();
+    let y = Tensor::cat(&[x.clone(), other], 0).unwrap();
+    let seed = Tensor::from_vec(vec![1., 2., 3., 4.], &[4]).unwrap().requires_grad_(true).unwrap();
+    x._bump_version_for_test();
+    let first = y.vjp_wrt(&[&x], &seed, true).unwrap().remove(0);
+    assert!(first.requires_grad());
+    assert_eq!(first.to_vec(), vec![1., 2.]);
+    assert_eq!(first.sum().grad_wrt(&[&seed], false).unwrap()[0].to_vec(), vec![1., 1., 0., 0.]);
+    assert!(x.grad().is_none()); assert!(seed.grad().is_none());
+}
+
+#[test]
+fn cat_does_not_weaken_nonlinear_producer_or_consumer_guards() {
+    for producer in [false, true] { for modify_source in [false, true] {
+        let x = Tensor::from_vec(vec![0.5, -2.], &[2]).unwrap().requires_grad_(true).unwrap();
+        let (middle, loss) = if producer {
+            let middle = x.square().unwrap();
+            let loss = Tensor::cat(&[middle.clone(), middle.clone()], 0).unwrap().sum();
+            (middle, loss)
+        } else {
+            let middle = Tensor::cat(&[x.clone(), x.clone()], 0).unwrap();
+            let loss = middle.square().unwrap().sum();
+            (middle, loss)
+        };
+        if modify_source { x._bump_version_for_test(); } else { middle._bump_version_for_test(); }
+        let result = loss.grad_wrt(&[&x], false);
+        assert_eq!(result.is_err(), producer == modify_source);
+        if let Ok(gradient) = result { assert_eq!(gradient[0].to_vec(), vec![2., -8.]); }
+        assert!(x.grad().is_none());
+    } }
+}

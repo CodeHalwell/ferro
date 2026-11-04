@@ -210,6 +210,9 @@ fn i64_data(buf: &dyn DeviceBuffer) -> &[i64] {
 struct CountingDevice;
 
 impl Backend for CountingDevice {
+    fn copy_dev(&self, source: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>, ferro_core::Error> {
+        Ok(Box::new(F32Buf(f32_data(source).to_vec())))
+    }
     fn unary(&self, _kind: UnaryKind, _x: &[f32]) -> Vec<f32> {
         panic!("host-slice path must not run for device-resident tensors");
     }
@@ -250,6 +253,7 @@ impl Backend for CountingDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let out = f32_data(a)
             .iter()
@@ -288,6 +292,7 @@ impl Backend for CountingDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let n: usize = out_shape.iter().product();
         let idx = |flat: usize, shape: &[usize]| -> usize {

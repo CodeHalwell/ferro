@@ -43,6 +43,61 @@ fn old_allocation_host_reads_survive_owner_drop_without_relaxing_compute() {
     assert_eq!(new.copy_to_host(&*neg).unwrap(), [-1.0, 2.5, -3.0]);
 }
 
+#[test]
+fn gather_rejects_index_buffers_from_another_owner_even_when_empty() {
+    let Some(old) = backend() else { return };
+    let new = CudaBackend::new(0).unwrap();
+    let weights = new.alloc_from_host(&[1., 2., 3., 4.]).unwrap();
+    let indices = old.alloc_i64_from_host(&[1, 0]).unwrap();
+    let empty = old.alloc_i64_from_host(&[]).unwrap();
+    drop(old);
+    for index in [&*indices, &*empty] {
+        let before = new.alloc_stats().requests;
+        let result = new.gather_rows_dev(&*weights, index, 2, 2);
+        let error = result.err().expect("foreign-owner gather must fail before allocation or launch");
+        assert!(error.to_string().contains("different CUDA backend stream/context"));
+        assert_eq!(new.alloc_stats().requests, before);
+    }
+    assert_eq!(new.copy_i64_to_host(&*indices).unwrap(), [1, 0]);
+    let fresh = new.alloc_i64_from_host(&[1, 0]).unwrap();
+    let out = new.gather_rows_dev(&*weights, &*fresh, 2, 2).unwrap();
+    assert_eq!(new.copy_to_host(&*out).unwrap(), [3., 4., 1., 2.]);
+    let empty = new.alloc_i64_from_host(&[]).unwrap();
+    assert_eq!(new.gather_rows_dev(&*weights, &*empty, 2, 2).unwrap().len(), 0);
+}
+
+#[test]
+fn tensor_gather_propagates_foreign_owner_errors_without_cpu_fallback() {
+    use ferro_core::{Tensor, dispatch::register_backend};
+    use std::sync::{Arc, Mutex};
+    static SERIAL: Mutex<()> = Mutex::new(());
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(old) = backend() else { return };
+    let old = Arc::new(old);
+    let dev = Device::Cuda(0);
+    register_backend(dev, old.clone());
+    let old_weights = Tensor::from_vec(vec![1., 2., 3., 4.], &[2, 2]).unwrap().to_device(dev).unwrap();
+    let old_indices = Tensor::from_vec_i64(vec![1, 0], &[2]).unwrap().to_device(dev).unwrap();
+    let old_empty = Tensor::from_vec_i64(vec![], &[0]).unwrap().to_device(dev).unwrap();
+    let new = Arc::new(CudaBackend::new(0).unwrap());
+    register_backend(dev, new.clone());
+    drop(old);
+    let weights = Tensor::from_vec(vec![1., 2., 3., 4.], &[2, 2]).unwrap().to_device(dev).unwrap();
+    let indices = Tensor::from_vec_i64(vec![1, 0], &[2]).unwrap().to_device(dev).unwrap();
+    for (w, idx) in [(&weights, &old_indices), (&weights, &old_empty), (&old_weights, &indices)] {
+        let requests = new.alloc_stats().requests;
+        let downloads = new.layer_norm_counts().2;
+        let error = w.index_select_t(0, idx).err().expect("foreign-owner tensor gather must fail");
+        assert!(error.to_string().contains("different CUDA backend stream/context"));
+        assert_eq!(new.alloc_stats().requests, requests);
+        assert_eq!(new.layer_norm_counts().2, downloads);
+    }
+    assert_eq!(old_indices.to_vec_i64(), [1, 0]);
+    let y = weights.index_select_t(0, &indices).unwrap();
+    assert_eq!(y.device(), dev);
+    assert_eq!(y.to_vec(), [3., 4., 1., 2.]);
+}
+
 struct Foreign(Device);
 impl DeviceBuffer for Foreign {
     fn device(&self) -> Device { self.0 }

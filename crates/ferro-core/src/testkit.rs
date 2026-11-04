@@ -40,7 +40,8 @@ where
     let leaves: Vec<Tensor> = inputs
         .iter()
         .map(|t| {
-            t.requires_grad_(true)
+            assert!(t.0.op.is_none(), "grad_check inputs are leaves");
+            t.detach().requires_grad_(true)
                 .expect("grad_check inputs are leaves")
         })
         .collect();

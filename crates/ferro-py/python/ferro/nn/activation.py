@@ -1,25 +1,36 @@
-"""Activation modules. `inplace` is accepted for torch source compatibility;
-results are always out-of-place."""
+"""Activation modules with explicit rejection of unsupported in-place mutation."""
 from .module import Module
 from . import functional as F
+from .._native import Tensor, _real_scalar
 
 
-def _stateless(name, fn):
-    def __init__(self, inplace=False):
-        self._initialize()
-    return type(name, (Module,), {'__init__': __init__, '_builtin_init': True, '__module__': __name__,
-                                  '__qualname__': name, 'forward': lambda self, x: fn(x)})
+class _InplaceActivation(Module):
+    @property
+    def inplace(self):
+        return False
 
 
-ReLU = _stateless('ReLU', F.relu)
+def _stateless(name, fn, inplace=False):
+    if inplace:
+        def __init__(self, inplace=False):
+            F._activation_inplace(inplace)
+            self._initialize()
+    else:
+        def __init__(self):
+            self._initialize()
+    return type(name, (_InplaceActivation if inplace else Module,), {'__init__': __init__, '_builtin_init': True, '__module__': __name__,
+                                  '__qualname__': name, 'forward': lambda self, input: fn(input)})
+
+
+ReLU = _stateless('ReLU', F.relu, True)
 Sigmoid = _stateless('Sigmoid', F.sigmoid)
 Tanh = _stateless('Tanh', F.tanh)
-SiLU = _stateless('SiLU', F.silu)
-Mish = _stateless('Mish', F.mish)
-SELU = _stateless('SELU', F.selu)
-ReLU6 = _stateless('ReLU6', F.relu6)
-Hardsigmoid = _stateless('Hardsigmoid', F.hardsigmoid)
-Hardswish = _stateless('Hardswish', F.hardswish)
+SiLU = _stateless('SiLU', F.silu, True)
+Mish = _stateless('Mish', F.mish, True)
+SELU = _stateless('SELU', F.selu, True)
+ReLU6 = _stateless('ReLU6', F.relu6, True)
+Hardsigmoid = _stateless('Hardsigmoid', F.hardsigmoid, True)
+Hardswish = _stateless('Hardswish', F.hardswish, True)
 Tanhshrink = _stateless('Tanhshrink', F.tanhshrink)
 Softsign = _stateless('Softsign', F.softsign)
 LogSigmoid = _stateless('LogSigmoid', F.logsigmoid)
@@ -34,52 +45,74 @@ class GELU(Module):
         self._initialize()
         self.approximate = approximate
 
-    def forward(self, x):
-        return F.gelu(x, self.approximate)
+    def forward(self, input):
+        return F.gelu(input, self.approximate)
 
 
-class ELU(Module):
+def _exponential_alpha(value):
+    if isinstance(value, Tensor):
+        if value.ndim != 0 or value.requires_grad:
+            raise TypeError('alpha must be a scalar without gradient history')
+        value = value.item()
+    value = _real_scalar(value, scalar=True)
+    if not isinstance(value, (int, float)):
+        raise TypeError('alpha must be a real numeric scalar')
+    if isinstance(value, int) and not -(2**63) <= value < 2**64:
+        raise OverflowError('alpha exceeds int64/uint64 range')
+    # Preserve legacy configuration categories when conversion is exact.
+    return float(value) if isinstance(value, int) and float(value) == value else value
+
+
+class ELU(_InplaceActivation):
+    """Typed exponential-linear activation; in-place mutation is unsupported."""
     _builtin_init = True
 
     def __init__(self, alpha=1.0, inplace=False):
+        F._activation_inplace(inplace)
+        alpha = _exponential_alpha(alpha)
         self._initialize()
-        self.alpha = float(alpha)
+        self.alpha = alpha
 
-    def forward(self, x):
-        return x.elu(self.alpha)
+    def forward(self, input):
+        return input.elu(self.alpha)
 
 
-class CELU(Module):
+class CELU(_InplaceActivation):
+    """CELU with Torch's separate forward/backward scalar conversion stages."""
     _builtin_init = True
 
     def __init__(self, alpha=1.0, inplace=False):
+        F._activation_inplace(inplace)
+        alpha = _exponential_alpha(alpha)
         self._initialize()
-        self.alpha = float(alpha)
+        self.alpha = alpha
 
-    def forward(self, x):
-        return x.celu(self.alpha)
+    def forward(self, input):
+        return input.celu(self.alpha)
 
 
-class LeakyReLU(Module):
+class LeakyReLU(_InplaceActivation):
     _builtin_init = True
 
     def __init__(self, negative_slope=0.01, inplace=False):
+        F._activation_inplace(inplace)
         self._initialize()
         self.negative_slope = float(negative_slope)
 
-    def forward(self, x):
-        return x.leaky_relu(self.negative_slope)
+    def forward(self, input):
+        return input.leaky_relu(self.negative_slope)
 
 
-class Hardtanh(Module):
+class Hardtanh(_InplaceActivation):
     _builtin_init = True
 
     def __init__(self, min_val=-1.0, max_val=1.0, inplace=False):
+        F._activation_inplace(inplace)
         self._initialize()
         self.min_val, self.max_val = float(min_val), float(max_val)
 
-    def forward(self, x):
-        return x.hardtanh(self.min_val, self.max_val)
+    def forward(self, input):
+        return input.hardtanh(self.min_val, self.max_val)
 
 
 class Hardshrink(Module):
@@ -89,8 +122,8 @@ class Hardshrink(Module):
         self._initialize()
         self.lambd = float(lambd)
 
-    def forward(self, x):
-        return x.hardshrink(self.lambd)
+    def forward(self, input):
+        return input.hardshrink(self.lambd)
 
 
 class Softshrink(Module):
@@ -100,32 +133,46 @@ class Softshrink(Module):
         self._initialize()
         self.lambd = float(lambd)
 
-    def forward(self, x):
-        return x.softshrink(self.lambd)
+    def forward(self, input):
+        return input.softshrink(self.lambd)
 
 
 class Softplus(Module):
     _builtin_init = True
 
     def __init__(self, beta=1.0, threshold=20.0):
-        if threshold != 20.0:
-            raise ValueError('softplus threshold other than 20 is unsupported')
+        options = []
+        for value in (beta, threshold):
+            if isinstance(value, Tensor):
+                if value.ndim != 0 or value.requires_grad:
+                    raise TypeError('softplus options must be scalars without gradient history')
+                value = value.item()
+            value = _real_scalar(value, scalar=True)
+            if not isinstance(value, (int, float)):
+                raise TypeError('softplus beta and threshold must be real numeric scalars')
+            if isinstance(value, int) and not -(2**63) <= value < 2**64:
+                raise OverflowError('softplus integer option exceeds int64/uint64 range')
+            # Preserve legacy scalar schemas only when conversion is exact.
+            if isinstance(value, int) and float(value) == value:
+                value = float(value)
+            options.append(value)
         self._initialize()
-        self.beta, self.threshold = float(beta), float(threshold)
+        self.beta, self.threshold = options
 
-    def forward(self, x):
-        return F.softplus(x, self.beta, self.threshold)
+    def forward(self, input):
+        return F.softplus(input, self.beta, self.threshold)
 
 
-class Threshold(Module):
+class Threshold(_InplaceActivation):
     _builtin_init = True
 
     def __init__(self, threshold, value, inplace=False):
+        F._activation_inplace(inplace)
         self._initialize()
         self.threshold, self.value = float(threshold), float(value)
 
-    def forward(self, x):
-        return x.threshold(self.threshold, self.value)
+    def forward(self, input):
+        return input.threshold(self.threshold, self.value)
 
 
 class _DimActivation(Module):
@@ -139,15 +186,15 @@ class _DimActivation(Module):
 
 
 class Softmax(_DimActivation):
-    def forward(self, x):
-        return x.softmax(self.dim)
+    def forward(self, input):
+        return input.softmax(self.dim)
 
 
 class LogSoftmax(_DimActivation):
-    def forward(self, x):
-        return x.log_softmax(self.dim)
+    def forward(self, input):
+        return input.log_softmax(self.dim)
 
 
 class Softmin(_DimActivation):
-    def forward(self, x):
-        return x.softmin(self.dim)
+    def forward(self, input):
+        return input.softmin(self.dim)

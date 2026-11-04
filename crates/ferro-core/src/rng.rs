@@ -48,6 +48,19 @@ impl Rng {
         ((self.next_u64() >> 40) as f32) / ((1u32 << 24) as f32)
     }
 
+    /// Uniform f64 in [0, 1), using all 53 mantissa bits.
+    pub fn uniform_f64(&self) -> f64 {
+        ((self.next_u64() >> 11) as f64) / ((1u64 << 53) as f64)
+    }
+
+    /// Standard-normal f64 via Box-Muller. The logarithm's argument is in
+    /// (0, 1], so no clipping changes the small-probability tail.
+    pub fn normal_f64(&self) -> f64 {
+        let u1 = 1.0 - self.uniform_f64();
+        let u2 = self.uniform_f64();
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+
     /// Standard-normal f32 via Box-Muller.
     pub fn normal(&self) -> f32 {
         let u1 = self.uniform().max(1e-9);

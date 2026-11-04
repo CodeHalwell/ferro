@@ -104,6 +104,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let (va, vb) = (data(a), data(b));
         let out = va.iter().zip(vb.iter()).map(|(&x, &y)| f(x, y)).collect();
@@ -148,6 +149,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let n: usize = out_shape.iter().product();
         // Right-aligned broadcast strides over the flat output.

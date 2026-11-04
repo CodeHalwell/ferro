@@ -1,6 +1,7 @@
 //! Real-GPU integration tests: drive ferro_core tensors through the CUDA
 //! backend on Device::Cuda(0). Every test no-ops when no usable device is
 //! present, so `cargo test -p ferro-cuda` stays green on CPU-only boxes.
+//! Set FERRO_REQUIRE_CUDA=1 to fail on unavailable CUDA or capture support.
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -8,6 +9,40 @@ use ferro_core::{dispatch::Backend, Tensor};
 use ferro_cuda::CudaBackend;
 
 const DEV: ferro_core::Device = ferro_core::Device::Cuda(0);
+
+#[test]
+fn log_softmax_large_offsets_keep_values_and_gradients() {
+    let Some((_guard, backend)) = setup() else { return; };
+    ferro_core::dispatch::register_backend(DEV, backend);
+    for offset in [1e8, -1e8, 3e38] {
+        let x = Tensor::full(&[2,3], offset).to_device(DEV).unwrap().requires_grad_(true).unwrap();
+        let y = x.log_softmax(1).unwrap();
+        close(&y.to_vec(), &vec![-3f32.ln(); 6], 2e-6);
+        let seed = Tensor::from_vec(vec![1.,2.,3.,4.,5.,6.], &[2,3]).unwrap().to_device(DEV).unwrap();
+        y.backward_with(&seed);
+        close(&x.grad().unwrap().to_vec(), &[-1.,0.,1.,-1.,0.,1.], 2e-6);
+    }
+}
+
+#[test]
+fn normalize_zero_rows_and_overflowed_norms_keep_finite_gradients() {
+    let Some((_guard, _backend)) = setup() else { return; };
+    for eps in [1e-12, 1e-23, 1e-30] {
+        let x = Tensor::zeros(&[2, 2]).to_device(DEV).unwrap().requires_grad_(true).unwrap();
+        let y = x.normalize(1, eps).unwrap();
+        assert_eq!(y.device(), DEV);
+        assert_eq!(y.to_vec(), vec![0.0; 4]);
+        y.sum().backward();
+        let grad = x.grad().unwrap();
+        assert_eq!(grad.device(), DEV);
+        close(&grad.to_vec(), &[1.0 / eps; 4], 2e-6);
+    }
+    let x = Tensor::full(&[1, 2], 3e38).to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let y = x.normalize(1, 1e-12).unwrap();
+    assert_eq!(y.to_vec(), vec![0.0; 2]);
+    y.sum().backward();
+    assert_eq!(x.grad().unwrap().to_vec(), vec![0.0; 2]);
+}
 
 fn lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -18,15 +53,28 @@ fn lock() -> MutexGuard<'static, ()> {
 
 fn setup() -> Option<(MutexGuard<'static, ()>, Arc<CudaBackend>)> {
     let guard = lock();
-    if !ferro_cuda::is_available() {
-        return None;
-    }
     let b = match CudaBackend::new(0) {
         Ok(b) => Arc::new(b),
-        Err(_) => return None,
+        Err(e) => {
+            assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+            eprintln!("SKIP CUDA integration: {e}");
+            return None;
+        }
     };
     ferro_core::dispatch::register_backend(DEV, b.clone());
     Some((guard, b))
+}
+
+#[test]
+fn missing_cuda_fails_required_integration() {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs", "--nocapture"])
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .env("FERRO_REQUIRE_CUDA", "1")
+        .output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "required CUDA silently skipped an unavailable device");
+    assert!(stderr.contains("CUDA required:"), "unexpected child failure: {stderr}");
 }
 
 fn close(a: &[f32], b: &[f32], tol: f32) {
@@ -606,7 +654,7 @@ fn captured_three_step_chain_replays() {
 
     let xd = b.alloc_from_host(&x).unwrap();
     let yd = b.alloc_from_host(&y).unwrap();
-    let captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
+    let mut captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
         Ok(c) => c,
         Err(e) => panic!("capture failed: {e}"),
     };
@@ -638,7 +686,7 @@ fn captured_chain_graph_replays_correctly() {
     let want = b.chain_res(&steps, &[&x, &y]).unwrap();
     let xd = b.alloc_from_host(&x).unwrap();
     let yd = b.alloc_from_host(&y).unwrap();
-    let captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
+    let mut captured = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref()]) {
         Ok(c) => c,
         Err(e) => panic!("capture failed: {e}"),
     };
@@ -728,6 +776,7 @@ fn captured_step_advances_params_across_replays() {
     }
 
     if let Err(e) = b.begin_step_capture() {
+        assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA capture required: {e}");
         eprintln!("begin_step_capture unsupported: {e}; skipping");
         return;
     }
@@ -858,6 +907,7 @@ fn captured_adamw_optimiser_advances_across_replays() {
 
     // Capture the SECOND step: recompute grad (same closure), then opt.step().
     if let Err(e) = b.begin_step_capture() {
+        assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA capture required: {e}");
         eprintln!("begin_step_capture unsupported: {e}; skipping");
         return;
     }
@@ -961,6 +1011,31 @@ fn restore_into_fresh_capturable_optimiser_keeps_moments_on_device() {
     let t = dst.snapshot().into_iter().find(|(n, _)| n == "t").unwrap().1;
     assert_eq!(t.to_vec()[0], 3.0, "restored t=2 must advance to t=3");
     assert_eq!(dst_p.tensor().device(), dev, "params must stay on GPU");
+}
+
+#[test]
+fn capturable_adamw_missing_gradients_preserve_state() {
+    use ferro_core::{Param, optim::{AdamW, OptimizerState}};
+    let (_g, _b) = match setup() { Some(s) => s, None => return };
+    let params: Vec<_> = [1.0, -0.5].into_iter().map(|v| Param::new(Tensor::scalar(v).to_device(DEV).unwrap())).collect();
+    let seed = Tensor::scalar(1.0).to_device(DEV).unwrap();
+    let mut opt = AdamW::new(params.clone(), 0.1).capturable();
+    assert!(opt.is_capturable());
+    for p in &params { p.tensor().backward_with(&seed); }
+    opt.step();
+    let state = |o: &AdamW| o.snapshot().into_iter().map(|(name, t)| (name, t.to_vec())).collect::<Vec<_>>();
+    let before = state(&opt);
+    let values: Vec<_> = params.iter().map(|p| p.tensor().to_vec()).collect();
+    opt.step();
+    assert_eq!(state(&opt), before);
+    params[0].tensor().backward_with(&seed);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| opt.step())).is_err());
+    assert_eq!(state(&opt), before);
+    assert_eq!(params.iter().map(|p| p.tensor().to_vec()).collect::<Vec<_>>(), values);
+    assert!(params[0].grad().is_some());
+    params[1].tensor().backward_with(&seed);
+    opt.step();
+    assert_eq!(state(&opt)[0].1, vec![2.0, 2.0]);
 }
 
 /// warm-up steps must PRESERVE the timestep. The device buffer used to init to

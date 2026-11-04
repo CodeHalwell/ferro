@@ -5,7 +5,8 @@ thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
-pub(crate) fn is_recording() -> bool {
+/// Whether this thread is inside an inference-recording scope.
+pub fn is_recording() -> bool {
     DEPTH.with(|depth| depth.get() != 0)
 }
 

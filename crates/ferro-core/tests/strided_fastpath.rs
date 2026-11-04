@@ -117,6 +117,7 @@ fn run_binary(kind: BinaryKind, a: &Tensor, b: &Tensor) -> Tensor {
         BinaryKind::Sub => a.sub(b).unwrap(),
         BinaryKind::Mul => a.mul(b).unwrap(),
         BinaryKind::Div => a.div(b).unwrap(),
+        BinaryKind::ReluBackward => panic!("internal backward operation is not a public arithmetic test case"),
     }
 }
 

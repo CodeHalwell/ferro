@@ -26,7 +26,7 @@ impl Backend for Mock {
     fn binary_dev(&self,k:BinaryKind,a:&dyn DeviceBuffer,b:&dyn DeviceBuffer)->Result<Box<dyn DeviceBuffer>>{Ok(Box::new(Buf(CpuBackend.binary(k,data(a),data(b)))))}
     fn binary_bc_dev(&self,k:BinaryKind,a:&dyn DeviceBuffer,sa:&[usize],b:&dyn DeviceBuffer,sb:&[usize],_:&[usize])->Result<Box<dyn DeviceBuffer>>{
         let a=Tensor::from_vec(data(a).to_vec(),sa)?;let b=Tensor::from_vec(data(b).to_vec(),sb)?;
-        let y=match k{BinaryKind::Add=>a.add(&b),BinaryKind::Sub=>a.sub(&b),BinaryKind::Mul=>a.mul(&b),BinaryKind::Div=>a.div(&b)}?;
+        let y=match k{BinaryKind::Add=>a.add(&b),BinaryKind::Sub=>a.sub(&b),BinaryKind::Mul=>a.mul(&b),BinaryKind::Div=>a.div(&b),BinaryKind::ReluBackward=>return Err(ferro_core::Error::Unsupported { op: "test backend", msg: "internal ReLU backward broadcast is not implemented".into() })}?;
         Ok(Box::new(Buf(y.to_vec())))
     }
     fn sum_dim_dev(&self,x:&dyn DeviceBuffer,s:&[usize],d:usize)->Result<Box<dyn DeviceBuffer>>{Ok(Box::new(Buf(Tensor::from_vec(data(x).to_vec(),s)?.sum_dim(d,true)?.to_vec())))}

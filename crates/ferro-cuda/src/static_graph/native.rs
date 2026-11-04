@@ -150,7 +150,7 @@ impl<C: Calls> GraphOwner<C> {
         let fence = self.calls.fence(stream);
         if fence.is_ok() { self.pending.set(None); }
         if upload.is_err() { self.calls.record(fence); }
-        upload.and(fence).map_err(|e|cuda_err("static_graph_upload",e))
+        upload.and(fence).map_err(|e|cuda_err("static_graph_upload",format_args!("{:?}", e.0)))
     }
 }
 impl<C: Calls> Drop for GraphOwner<C> {
@@ -205,9 +205,10 @@ impl<C: Calls> CaptureSession<C> {
         let ended = self.calls.end(&mut owner.graph);
         self.active = ended.is_err();
         let graph = owner.graph;
-        ended.map_err(|e| cuda_err("static_capture_end", e))?;
+        // DriverError::Display queries libcuda; fake native failures must not.
+        ended.map_err(|e| cuda_err("static_capture_end", format_args!("{:?}", e.0)))?;
         if graph.is_null() { return Err(cuda_err("static_capture_end", "null graph")); }
-        self.calls.instantiate(graph, &mut owner.exec).map_err(|e| cuda_err("static_graph_instantiate", e))?;
+        self.calls.instantiate(graph, &mut owner.exec).map_err(|e| cuda_err("static_graph_instantiate", format_args!("{:?}", e.0)))?;
         if owner.exec.is_null() { return Err(cuda_err("static_graph_instantiate", "null executable")); }
         Ok(owner)
     }

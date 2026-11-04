@@ -1,5 +1,6 @@
 """Optional training orchestration with explicit update ownership."""
 from contextlib import contextmanager, nullcontext
+from collections.abc import Iterator
 from numbers import Real
 from .progress import Progress
 from math import prod
@@ -90,7 +91,7 @@ class Trainer:
             raise ValueError('fit requires a training strategy')
         if not isinstance(epochs, int) or isinstance(epochs, bool) or epochs < 1:
             raise ValueError('epochs must be a positive integer')
-        if epochs > 1 and iter(batches) is batches:
+        if epochs > 1 and isinstance(batches, Iterator):
             raise ValueError('Multiple epochs require a reiterable source, not a one-shot iterator')
         reports = []
         with _mode_scope(self.model, True):
@@ -108,6 +109,7 @@ class Trainer:
                                     raise ValueError('Managed training requires a differentiable loss (requires_grad=True)')
                                 report['loss'].backward()
                                 self.optimizer.step()
+                                self.optimizer.zero_grad()
                             if self.progress is not None:
                                 self.progress.update()
                         self._progress_report(batch, report)

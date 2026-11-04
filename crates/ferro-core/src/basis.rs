@@ -36,6 +36,7 @@ impl BSplineBasis {
 
     pub fn knots(&self) -> &[f32] { &self.knots }
     pub fn degree(&self) -> usize { self.degree }
+    pub fn outside(&self) -> OutsideDomain { self.outside }
     pub fn num_basis(&self) -> usize { self.knots.len() - self.degree - 1 }
     pub fn domain(&self) -> (f32, f32) { (self.knots[self.degree], self.knots[self.num_basis()]) }
 
@@ -123,6 +124,9 @@ impl KanLayer {
         let c = coefficients.shape();
         if c.len() != 3 || c[0] == 0 || c[1] == 0 || c[2] != basis.num_basis() {
             return Err(Error::InvalidShape { op: "kan_layer", msg: "expected coefficients [output>0,input>0,num_basis]".into() });
+        }
+        if coefficients.0.op.is_some() {
+            return Err(Error::Unsupported { op: "kan_layer", msg: "coefficients must be a leaf without autograd history".into() });
         }
         let leaf = coefficients.requires_grad_(true)?;
         Ok(Self { basis, coefficients: crate::Param::new(leaf) })

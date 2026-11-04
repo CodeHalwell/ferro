@@ -8,10 +8,15 @@ use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn clamp(&self, min: f32, max: f32) -> Tensor {
+        if self.dtype() == crate::DType::F64 { return self.clamp_f64(min as f64, max as f64).expect("float64 clamp"); }
         let kind = UnaryKind::Clamp { min, max };
         let out = raw_unary_k(self, kind).expect("cpu backend is always registered");
         let x = self.clone();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(kind), move |g| {
+            if g.device() == crate::Device::Cpu {
+                let mask = x.ge_tensor(&Tensor::scalar(min)).unwrap().logical_and(&x.le_tensor(&Tensor::scalar(max)).unwrap()).unwrap();
+                return vec![Tensor::where_cond(&mask, g, &Tensor::scalar(0.)).unwrap()];
+            }
             vec![raw_binary("clamp_bw", g, &x, |gg, xx| {
                 if xx >= min && xx <= max {
                     gg

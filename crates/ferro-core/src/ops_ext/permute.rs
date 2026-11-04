@@ -18,7 +18,7 @@ impl Tensor {
         for (i, &d) in dims.iter().enumerate() {
             inv[d] = i;
         }
-        Ok(out.record_fn(vec![self.clone()], move |g| vec![permuted(g, &inv)]))
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Permute(dims.to_vec()), move |g| vec![g.permute(&inv).unwrap()]))
     }
 }
 

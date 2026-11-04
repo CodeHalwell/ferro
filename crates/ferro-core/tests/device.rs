@@ -18,6 +18,7 @@ static BINARY: AtomicUsize = AtomicUsize::new(0);
 static MATMUL: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_ELEMS: AtomicUsize = AtomicUsize::new(0);
 static TO_HOST_ELEMS: AtomicUsize = AtomicUsize::new(0);
+static OWNING_COPIES: AtomicUsize = AtomicUsize::new(0);
 
 const DEV: Device = Device::Cuda(9);
 
@@ -82,6 +83,10 @@ impl Backend for FakeDevice {
         TO_HOST_ELEMS.fetch_add(buf.len(), Ordering::SeqCst);
         Ok(data(buf).to_vec())
     }
+    fn copy_dev(&self, buf: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        OWNING_COPIES.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(FakeBuf(data(buf).to_vec())))
+    }
     fn unary_dev(&self, kind: UnaryKind, x: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         UNARY.fetch_add(1, Ordering::SeqCst);
         let out = match kind {
@@ -108,6 +113,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let out = data(a)
             .iter()
@@ -157,6 +163,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         // Right-aligned broadcast indexing over the flat output.
         let n: usize = out_shape.iter().product();
@@ -393,6 +400,7 @@ fn training_loop_stays_resident() {
 
     let mut first = f32::NAN;
     let mut last = f32::NAN;
+    let copies_before = OWNING_COPIES.load(Ordering::SeqCst);
     let before = (
         ALLOC_ELEMS.load(Ordering::SeqCst),
         TO_HOST_ELEMS.load(Ordering::SeqCst),
@@ -437,6 +445,7 @@ fn training_loop_stays_resident() {
     // mean-backward seed is a device-resident fill, no g.item() read) and
     // nothing goes up.
     assert_eq!(after.0 - before.0, 0, "no per-step uploads");
+    assert!(OWNING_COPIES.load(Ordering::SeqCst) > copies_before, "gradient ownership requires resident copies");
     assert_eq!(
         after.1 - before.1,
         40,

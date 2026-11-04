@@ -42,9 +42,12 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
     if initial.h.shape()[0]!=batch || lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
     let count=time.checked_mul(batch).ok_or_else(|| invalid("T*B overflow"))?;
     if reset.is_some_and(|r| r.len()!=count) || truncate==Some(0) { return Err(invalid("reset must have T*B entries; truncation must be positive")); }
+    let elements=crate::shape::checked_numel("recurrent", &[time,batch,width])?;
+    if elements>isize::MAX as usize/std::mem::size_of::<f32>() { return Err(invalid("output buffer byte length overflow")); }
     if time==0 || batch==0 { return Ok(UnrollOutput { outputs:Tensor::zeros(&[time,batch,width]), state:initial.clone() }); }
+    let mut outputs=Vec::new();
+    outputs.try_reserve_exact(count).map_err(|e| invalid(&format!("cannot reserve timestep outputs: {e}")))?;
     let mut rows=(0..batch).map(|b| initial.row(b)).collect::<Result<Vec<_>>>()?;
-    let mut outputs=Vec::with_capacity(count);
     for time_index in 0..time {
         for b in 0..batch {
             if time_index>=lengths[b] { outputs.push(Tensor::zeros(&[1,width])); continue; }

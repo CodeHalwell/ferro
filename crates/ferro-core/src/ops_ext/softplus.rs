@@ -1,29 +1,43 @@
-//! `softplus` operator. Forward: y = ln(1 + exp(x)), computed with the
-//! numerically stable form used by torch: for x above a threshold (20.0)
-//! exp(x) would overflow while contributing nothing to the result, so return
-//! x directly; otherwise (1 + x.exp()).ln(). Backward: dy/dx = sigmoid(x),
-//! so dx = g * sigmoid(x), stable for all x via 1 / (1 + (-x).exp()). No
-//! device kernel exists for this op, so both forward and backward go through
-//! the host `raw_binary` path.
+//! Thresholded softplus with input-dtype beta arithmetic and dense adjoints.
 
-use crate::error::Result;
-use crate::tensor::{raw_binary, Tensor};
-
-const THRESHOLD: f32 = 20.0;
+use crate::{DType, Error, Result, Tensor};
 
 impl Tensor {
     pub fn softplus(&self) -> Result<Tensor> {
-        let out = raw_binary("softplus", self, self, |v, _| {
-            if v > THRESHOLD {
-                v
+        self.softplus_options(1.0, 20.0)
+    }
+
+    pub fn softplus_options(&self, beta: f64, threshold: f64) -> Result<Tensor> {
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op: "softplus", msg: "inference capture is not supported".into() });
+        }
+        if self.dtype() == DType::F32 && [beta, threshold].iter().any(|value| value.is_finite() && value.abs() > f32::MAX as f64) {
+            return Err(Error::InvalidShape { op: "softplus", msg: "beta and threshold must be representable in float32".into() });
+        }
+        let beta32 = beta as f32;
+        let threshold32 = threshold as f32;
+        let output = crate::typed_math::pointwise_real(self, "softplus", |x| {
+            let scaled = x * beta32;
+            if scaled > threshold32 { x } else { scaled.exp().ln_1p() / beta32 }
+        }, |x| {
+            let scaled = x * beta;
+            if scaled > threshold { x } else { scaled.exp().ln_1p() / beta }
+        })?;
+        let saved = self.detach_copy();
+        Ok(output.record_fn(vec![self.clone()], move |gradient| {
+            let result = if saved.dtype() == DType::F64 {
+                let values = gradient.to_vec_f64().into_iter().zip(saved.to_vec_f64()).map(|(g, x)| {
+                    let scaled = x * beta;
+                    if scaled > threshold { g } else { let z = scaled.exp(); (g * z) / (z + 1.0) }
+                }).collect();
+                Tensor::from_vec_f64(values, saved.shape()).unwrap()
             } else {
-                (1.0 + v.exp()).ln()
-            }
-        })?
-        .to_device(self.device())?;
-        let x = self.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
-            vec![raw_binary("softplus_bw", g, &x, |gg, xx| gg * (1.0 / (1.0 + (-xx).exp()))).unwrap()]
+                crate::tensor::raw_binary("softplus_backward", gradient, &saved, |g, x| {
+                    let scaled = x * beta32;
+                    if scaled > threshold32 { g } else { let z = scaled.exp(); (g * z) / (z + 1.0) }
+                }).unwrap()
+            };
+            vec![result]
         }))
     }
 }

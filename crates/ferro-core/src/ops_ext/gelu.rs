@@ -20,9 +20,18 @@ const A: f32 = 0.044715;
 
 impl Tensor {
     pub fn gelu(&self) -> Tensor {
+        if self.dtype() == crate::DType::F64 {
+            let c = (2.0 / std::f64::consts::PI).sqrt();
+            return crate::typed_math::unary_grad(self, "gelu", move |x| {
+                0.5 * x * (1.0 + (c * (x + 0.044715 * x * x * x)).tanh())
+            }, move |g, x| {
+                let t = (c * (x + 0.044715 * x * x * x)).tanh();
+                g * (0.5 * (1.0 + t) + 0.5 * x * (1.0 - t * t) * c * (1.0 + 3.0 * 0.044715 * x * x))
+            }).expect("float64 gelu requires eager CPU tensors");
+        }
         let out = raw_unary_k(self, UnaryKind::Gelu)
             .expect("tensor's device backend is always registered");
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::forward_ad::is_active() {
             return if crate::capture::is_recording() {
                 out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Gelu), |_| unreachable!("inference node has no backward"))
             } else { out };
@@ -59,7 +68,7 @@ impl Tensor {
     pub fn gelu_erf(&self) -> Tensor {
         let out = raw_unary_k(self, UnaryKind::GeluErf)
             .expect("tensor's device backend is always registered");
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::forward_ad::is_active() {
             return if crate::capture::is_recording() {
                 out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::GeluErf), |_| unreachable!("inference node has no backward"))
             } else { out };

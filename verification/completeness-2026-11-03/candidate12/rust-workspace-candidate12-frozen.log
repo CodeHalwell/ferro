@@ -1,0 +1,3463 @@
+     Locking 4 packages to highest compatible versions
+   Compiling ferro-core v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-core)
+   Compiling cfg-if v1.0.5
+   Compiling cudarc v0.19.10
+   Compiling ferro-tokenizer v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-tokenizer)
+   Compiling libloading v0.9.0
+warning: unused variable: `name`
+   --> crates/ferro-core/src/ops_ext/layer_norm.rs:168:14
+    |
+168 |         for (name, v) in [("weight", &w), ("bias", &b)] {
+    |              ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling ferro-cuda v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-cuda)
+   Compiling ferro-fastcpu v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-fastcpu)
+warning: method `is_enabled` is never used
+   --> crates/ferro-cuda/src/alloc.rs:324:12
+    |
+145 | impl CachingAllocator {
+    | --------------------- method in this implementation
+...
+324 |     pub fn is_enabled(&self) -> bool {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-core` (lib test) generated 1 warning (1 duplicate)
+warning: `ferro-cuda` (lib) generated 1 warning
+warning: `ferro-core` (lib) generated 1 warning (run `cargo fix --lib -p ferro-core` to apply 1 suggestion)
+warning: variable does not need to be mutable
+  --> crates/ferro-core/tests/modules.rs:98:9
+   |
+98 |     let mut conv = Conv2D::with_config(1, 1, 1, 1, 0, &Rng::new(5));
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-core` (test "modules") generated 1 warning (run `cargo fix --test "modules" -p ferro-core` to apply 1 suggestion)
+warning: unused variable: `ta`
+    --> crates/ferro-cuda/src/lib.rs:2109:13
+     |
+2109 |             ta: bool,
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_ta`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `tb`
+    --> crates/ferro-cuda/src/lib.rs:2110:13
+     |
+2110 |             tb: bool,
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_tb`
+
+warning: `ferro-cuda` (lib test) generated 3 warnings (1 duplicate) (run `cargo fix --lib -p ferro-cuda --tests` to apply 2 suggestions)
+warning: unused import: `grad_check`
+ --> crates/ferro-core/tests/fused.rs:2:27
+  |
+2 | use ferro_core::testkit::{grad_check, grad_check_strict};
+  |                           ^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-core` (test "fused") generated 1 warning (run `cargo fix --test "fused" -p ferro-core` to apply 1 suggestion)
+warning: unused variable: `captured_early`
+  --> crates/ferro-cuda/examples/bench_chain.rs:45:9
+   |
+45 |     let captured_early = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref(), zd.as_ref()]) {
+   |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_captured_early`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-cuda` (example "bench_chain") generated 1 warning (run `cargo fix --example "bench_chain" -p ferro-cuda` to apply 1 suggestion)
+warning: variable does not need to be mutable
+   --> crates/ferro-core/tests/optim_device.rs:464:13
+    |
+464 |         let mut w = Param::new(match dev {
+    |             ----^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/ferro-core/tests/optim_device.rs:468:13
+    |
+468 |         let mut b = Param::new(match dev {
+    |             ----^
+    |             |
+    |             help: remove this `mut`
+
+warning: `ferro-core` (test "optim_device") generated 2 warnings (run `cargo fix --test "optim_device" -p ferro-core` to apply 2 suggestions)
+warning: unused variable: `n`
+   --> crates/ferro-core/tests/replay_exec.rs:136:13
+    |
+136 |         let n = inputs[0].len();
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-core` (test "replay_exec") generated 1 warning (run `cargo fix --test "replay_exec" -p ferro-core` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 45.51s
+     Running unittests src/lib.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/ferro_core-0b03ee2b3c1027b6)
+
+running 35 tests
+test half::tests::f16_known_bit_patterns ... ok
+test half::tests::bf16_is_the_top_half_of_f32 ... ok
+test half::tests::f16_rounding_is_nearest_even_and_saturating ... ok
+test philox::tests::counter_sensitivity ... ok
+test philox::tests::deterministic ... ok
+test checkpoint::publication_tests::interruption_before_publication_keeps_previous_pair ... ok
+test philox::tests::key_sensitivity ... ok
+test philox::tests::known_answer_zero_key_zero_counter ... ok
+test pool::tests::classes_are_exact_size ... ok
+test half::tests::bf16_round_trips_every_finite_value_exactly ... ok
+test half::tests::f16_round_trips_every_finite_value_exactly ... ok
+test pool::tests::debug_take_uninit_poisons_recycled_contents ... ok
+test pool::tests::disabled_pool_allocates_and_drops ... ok
+test pool::tests::per_class_cap_and_byte_cap_drop_excess ... ok
+test pool::tests::take_after_give_reuses_the_allocation ... ok
+test reduce::tests::empty_is_zero ... ok
+test pool::tests::take_filled_overwrites_recycled_garbage ... ok
+test reduce::tests::matches_exact_sum_for_small_input ... ok
+test reduce::tests::deterministic_across_repeated_calls ... ok
+test reduce::tests::tree_shape_independent_of_base_alignment ... ok
+test reduce::tests::strided_matches_manual_gather ... ok
+test tensor::detached_layout_tests::detach_internal_offsets_broadcasts_and_prefixes ... ok
+test tensor::layout_lock_tests::gather_fallback_unlocks_during_index_upload ... ok
+test tensor::structural_zero_tests::implicit_promotion_preserves_zero_dispatch_and_records_real_cast_adjoints ... ok
+test tensor::structural_zero_tests::invalid_shapes_devices_and_capture_reject_before_materialization ... ok
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+test tensor::structural_zero_tests::reverse_callbacks_keep_structural_zero_gradients_at_nonfinite_divisors ... ok
+test tensor::structural_zero_tests::special_binary_values_match_efficient_zero_rules_without_numeric_zero_detection ... ok
+test tensor::structural_zero_tests::unary_reductions_explicit_casts_and_matmul_materialize_like_torch ... ok
+test tensor::structural_zero_tests::views_snapshots_and_all_mutation_seams_keep_symbolic_storage_immutable ... ok
+test tensor::tests::fallible_sum_dim_preserves_backend_error ... ok
+test tensor::tests::raw_binary_k_reads_both_operands_from_their_view_offset ... ok
+test tensor::tests::raw_unary_k_reads_from_the_view_offset_not_index_zero ... ok
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+test reduce::tests::pairwise_beats_naive_on_adversarial_input ... ok
+
+running 1 test
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 34 filtered out; finished in 0.00s
+
+test tensor::concurrent_copy_tests::device_mutation_replay_lock_order ... ok
+test philox::tests::uniform_moments ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/attention_validation.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/attention_validation-20c6fcedcd25b6c4)
+
+running 5 tests
+test attention_invalid_metadata_rejects_before_backend_work ... ok
+test cached_causal_mask_respects_replaced_backend_owner ... ok
+test causal_finite_logits_exclude_future_values_and_gradients ... ok
+test causal_nonsquare_alignment_and_capture_remain_upper_left ... ok
+test empty_attention_preserves_shapes_and_gradient_connections ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/attn_residency.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/attn_residency-aaa972260dde458c)
+
+running 2 tests
+test attention_forward_uploads_causal_mask_once ... ok
+test rope_cached_matches_explicit_positions_and_makes_no_extra_traffic ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/autograd.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/autograd-7d6d629da628cbf6)
+
+running 15 tests
+
+thread 'backward_on_non_scalar_panics' (381095) panicked at crates/ferro-core/src/autograd.rs:506:9:
+backward() requires a scalar output (single element), got shape [3]; reduce with .sum() or .mean() first
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test backward_on_non_scalar_panics - should panic ... ok
+test double_backward_accumulates_like_torch ... ok
+test leaf_root_backward_accumulates ... ok
+test exp_sigmoid_mean ... ok
+test add_mul_broadcast ... ok
+
+thread 'record_fn_arity_mismatch_panics' (381102) panicked at crates/ferro-core/src/autograd.rs:567:13:
+op backward returned 1 gradients for 2 inputs; record_fn closures must return one gradient per input
+test record_fn_arity_mismatch_panics - should panic ... ok
+
+thread 'record_fn_wrong_grad_dtype_panics_without_poisoning_grad_slot' (381103) panicked at crates/ferro-core/src/autograd.rs:575:17:
+assertion `left == right` failed: gradient dtype must match its tensor
+  left: I64
+ right: F32
+
+thread 'record_fn_wrong_grad_dtype_panics_without_poisoning_grad_slot' (381103) panicked at crates/ferro-core/src/autograd.rs:575:17:
+assertion `left == right` failed: gradient dtype must match its tensor
+  left: F64
+ right: F32
+test record_fn_wrong_grad_dtype_panics_without_poisoning_grad_slot ... ok
+
+thread 'record_fn_wrong_grad_shape_panics' (381104) panicked at crates/ferro-core/src/autograd.rs:577:17:
+gradient shape [3, 2] does not match tensor shape [2]
+test record_fn_wrong_grad_shape_panics - should panic ... ok
+test relu_propagates_nan ... ok
+test matmul_relu_chain ... ok
+test reused_leaf_accumulates ... ok
+test transpose_matmul ... ok
+test sub_div ... ok
+test linear_regression_converges ... ok
+test deep_graph_backward_and_drop ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running tests/backward_with.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/backward_with-720e2980d1b7eb3b)
+
+running 6 tests
+
+thread 'shape_mismatch_cotangent_panics' (381112) panicked at crates/ferro-core/src/autograd.rs:529:9:
+backward_with() cotangent shape [2] does not match output shape [3]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test shape_mismatch_cotangent_panics - should panic ... ok
+test repeated_backward_with_accumulates ... ok
+test vjp_identity_broadcast_add ... ok
+test backward_equals_backward_with_ones ... ok
+test vjp_identity_matmul ... ok
+test vjp_identity_elementwise_chain ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/batchnorm_complete.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/batchnorm_complete-9c73db117dc3cdbd)
+
+running 4 tests
+test zero_variance_tiny_epsilon_has_finite_correct_gradients ... ok
+test enormous_empty_batches_do_not_loop_or_alias_returned_statistics ... ok
+test eval_checks_saved_running_statistics_and_rejects_their_gradients ... ok
+test rank_three_and_five_training_values_and_all_gradients ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/binary_losses.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/binary_losses-1ce0dd3b22965b72)
+
+running 6 tests
+test empty_losses_keep_their_layout_and_backward_edges ... ok
+test logits_zero_and_extremes_have_the_smooth_adjoint ... ok
+test float64_keeps_its_values_and_torch_float32_denominator_floor ... ok
+test probability_boundaries_are_finite_and_use_the_clamped_adjoint ... ok
+test validation_rejects_probability_domain_shape_and_differentiable_weights ... ok
+test weighted_logits_gradients_match_finite_differences ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/binary_losses_mixed.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/binary_losses_mixed-d67cfcc9c91bf749)
+
+running 5 tests
+test original_integer_and_float_weight_versions_reject_atomic_backward ... ok
+test empty_mixed_losses_and_invalid_metadata_remain_bounded ... ok
+test weighted_reduced_loss_gradients_match_finite_differences ... ok
+test mixed_logits_keep_target_output_dtype_and_each_input_gradient_dtype ... ok
+test wide_weights_are_not_narrowed_before_weighted_value_or_adjoint ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bool_serialization.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bool_serialization-abab900a09006e91)
+
+running 3 tests
+test malformed_bool_shapes_and_lengths_fail_without_panicking ... ok
+test bool_foreign_bytes_are_normalized_without_invalid_rust_bool_reads ... ok
+test bool_safetensors_roundtrip_scalar_empty_and_strided ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/boolean.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/boolean-f73ca81508d227f7)
+
+running 8 tests
+test bool_storage_views_casts_and_device_rejection ... ok
+test comparisons_preserve_integer_and_float_precision ... ok
+test boolean_capture_errors_and_invalid_masks_are_explicit ... ok
+test empty_boolean_reduction_output_capacity_is_fallible ... ok
+test unsupported_boolean_numeric_kernels_reject_before_casting ... ok
+test logical_reductions_counts_and_nonzero_are_typed ... ok
+test bool_mask_selection_preserves_dtype_and_f32_broadcast_adjoint ... ok
+test where_gather_and_masked_fill_keep_boolean_storage ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/capture_layout_updates.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/capture_layout_updates-0ca80979208102d5)
+
+running 4 tests
+test retained_captured_reshape_allows_current_input_update ... ok
+test retained_captured_transpose_allows_current_input_update ... ok
+test ordinary_device_aliases_still_block_writes_with_capture ... ok
+test captured_layout_autograd_and_host_view_semantics_are_unchanged ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/checkpoint.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint-43cf14ceda4061f6)
+
+running 5 tests
+test atomic_write_leaves_no_temp_files_and_newer_version_is_rejected ... ok
+test round_trip_is_bit_exact ... ok
+test resumed_run_with_dropout_matches_uninterrupted_bitwise ... ok
+test optimizer_state_round_trips_and_resumes_bit_exactly ... ok
+test resumed_run_matches_uninterrupted_loss_trajectory_bitwise ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/checkpoint_aliases.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint_aliases-4fcbbfb659014bd2)
+
+running 9 tests
+test matching_tied_storage_restores_and_remains_tied ... ok
+test matching_cross_parameter_buffer_aliases_resume_optimizer_updates ... ok
+test missing_or_corrupt_storage_schema_rejects_atomically ... ok
+test parameter_buffer_alias_cannot_split_or_merge ... ok
+test unsupported_source_views_are_rejected ... ok
+test unsupported_target_views_reject_before_any_commit ... ok
+test split_buffers_cannot_merge_even_with_equal_values ... ok
+test tied_buffers_cannot_split ... ok
+test split_buffers_cannot_merge_with_different_values ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/checkpoint_dtype.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint_dtype-064a77af864a2911)
+
+running 9 tests
+test checkpoint_snapshots_do_not_alias_live_values_or_each_other ... ok
+test bool_checkpoint_roundtrip ... ok
+test f16_checkpoint_roundtrip ... ok
+test f32_checkpoint_roundtrip ... ok
+test integer_transactional_restore_preserves_values_above_f32_precision ... ok
+test named_snapshot_returns_device_copy_errors ... ok
+test f64_checkpoint_roundtrip ... ok
+test bf16_checkpoint_roundtrip ... ok
+test i64_checkpoint_roundtrip ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/checkpoint_grad_flags.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint_grad_flags-2422f44ad4ed6fb2)
+
+running 4 tests
+test shared_storage_with_independent_parameter_leaves_preserves_distinct_grad_flags ... ok
+test wholly_absent_legacy_namespace_restores_historical_grad_enabled_flags ... ok
+test malformed_partial_tied_and_late_optimizer_state_are_atomic ... ok
+test independent_flags_disk_restore_all_transitions_and_exact_suffix ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/checkpoint_typed_training.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint_typed_training-844dffb4a7063d6a)
+
+running 3 tests
+test typed_restore_capture_and_unsupported_layout_reject_before_f32_write ... ok
+test whole_training_typed_buffers_restore_exact_bits_and_owned_snapshots ... ok
+test typed_alias_conflicts_and_late_optimizer_faults_are_atomic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/compiled_chain.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/compiled_chain-30c175bf698138c9)
+
+running 12 tests
+test duplicate_seed_operands_work ... ok
+test binary_first_replays_all_steps ... ok
+test broadcast_right_leaf_is_supported ... ok
+test legacy_binary_seed_is_already_computed ... ok
+test computed_side_branch_reads_current_leaves ... ok
+test expanding_seed_is_replayed ... ok
+test oversized_broadcast_metadata_is_rejected_without_truncation ... ok
+test first_unary_and_current_upstream_leaves_are_replayed ... ok
+test scalar_mean_rejection_preserves_compiled_error_contract ... ok
+test scalar_broadcasts_replay_in_both_operand_positions ... ok
+test scalar_sum_rejection_preserves_compiled_error_contract ... ok
+test unsupported_graphs_are_rejected_not_frozen ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/data.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/data-e28584214680b8d0)
+
+running 6 tests
+test random_sampler_is_deterministic_and_covers_all ... ok
+test custom_collate_fn ... ok
+test batching_with_remainder ... ok
+test workers_overlap_prefetch ... ok
+test shuffle_determinism_given_seed ... ok
+test multiworker_matches_single_worker_ordering ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/data_failures.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/data_failures-9c2181585d988b27)
+
+running 4 tests
+
+thread 'dataset_and_collate_failures_keep_order_and_remaining_batches' (381225) panicked at crates/ferro-core/tests/data_failures.rs:23:29:
+collate failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'dataset_and_collate_failures_keep_order_and_remaining_batches' (381225) panicked at crates/ferro-core/tests/data_failures.rs:12:29:
+dataset failure
+test extreme_prefetch_and_worker_settings_are_bounded_by_epoch_size ... ok
+test dropping_prefetch_cancels_waiters_without_joining_running_callbacks ... ok
+
+thread '<unnamed>' (381244) panicked at crates/ferro-core/tests/data_failures.rs:23:29:
+collate failure
+
+thread '<unnamed>' (381245) panicked at crates/ferro-core/tests/data_failures.rs:12:29:
+dataset failure
+
+thread '<unnamed>' (381252) panicked at crates/ferro-core/tests/data_failures.rs:23:29:
+collate failure
+
+thread '<unnamed>' (381255) panicked at crates/ferro-core/tests/data_failures.rs:12:29:
+dataset failure
+test dataset_and_collate_failures_keep_order_and_remaining_batches ... ok
+test slow_first_batch_cannot_expand_the_reorder_buffer_past_prefetch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/ddp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/ddp-9395732a2183149b)
+
+running 4 tests
+test rejects_bad_device_lists ... ok
+test ddp_convergence_matches_single_device ... ok
+test averaging_pulls_each_replica_through_the_host ... ok
+test averaged_gradient_is_exact_mean_and_lands_on_primary ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/device.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/device-c891f2c6aa8f2742)
+
+running 20 tests
+test chained_ops_stay_resident ... ok
+test cross_entropy_on_device_logits_and_targets ... ok
+test device_broadcast_binary_matches_cpu ... ok
+test device_backward_gradients_match_cpu ... ok
+test device_prefix_view_is_not_the_whole_buffer ... ok
+test mean_dim_on_device_view_matches_cpu ... ok
+test mixed_device_composite_ops_error ... ok
+test host_fallback_ops_return_cpu_tensors ... ok
+test optimizer_steps_keep_params_on_device ... ok
+test mul_backward_on_device_view_operands ... ok
+test mean_dim_on_device_matches_cpu ... ok
+test non_f32_transfer_errors ... ok
+test reshape_of_device_view_keeps_real_device_storage ... ok
+test to_device_round_trip_and_metadata ... ok
+test to_dtype_reports_where_cast_storage_lives ... ok
+test static_lowering_covers_axis_permutation_expanding_seed_and_zero_reduction ... ok
+test unregistered_device_transfer_errors ... ok
+test view_ops_on_device_keep_device_and_grads ... ok
+test where_cond_backward_on_device_operands ... ok
+test training_loop_stays_resident ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/dispatch.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/dispatch-6981a28fbac0595f)
+
+running 7 tests
+test cpu_matmul_matches_reference ... ok
+test cpu_binary_kinds_match_reference ... ok
+test cpu_unary_kinds_match_reference ... ok
+test kind_routed_binary_broadcasts ... ok
+test registry_routes_per_device ... ok
+test kind_routed_tanh_grad_checks ... ok
+test unregistered_device_errors ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dtype.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/dtype-35cdd7b4247f4c5c)
+
+running 11 tests
+test arange_builds_i64_range ... ok
+test creation_and_dtype ... ok
+test embedding_forward_and_grad ... ok
+test index_select_t_grad ... ok
+test index_select_t_values_and_errors ... ok
+test requires_grad_on_i64_errors ... ok
+test reshape_of_strided_view_keeps_dtype ... ok
+test to_dtype_converts_and_detaches ... ok
+test strided_i64_view_materializes ... ok
+test typed_ops_promote_arithmetic_but_matmul_requires_matching_dtypes ... ok
+test to_vec_casts_between_dtypes ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/dtype_half.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/dtype_half-d3e28c1e290ebd4c)
+
+running 6 tests
+test bf16_bits_round_trip_and_materialize ... ok
+test f16_bits_round_trip_and_materialize ... ok
+test bits_accessors_refuse_other_dtypes ... ok
+test half_tensors_are_data_not_compute ... ok
+test to_dtype_casts_round_to_nearest_even_and_back_exactly ... ok
+test views_gather_half_storage ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/embedding_options.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/embedding_options-33cd0b2613b033ab)
+
+running 6 tests
+test padding_and_frequency_are_independent_of_weight_values ... ok
+test saved_indices_are_checked_but_weight_mutation_is_allowed ... ok
+test renorm_is_inplace_no_grad_and_multiple_forwards_remain_differentiable ... ok
+test zero_width_lookup_does_not_expand_indices_or_loop_over_virtual_rows ... ok
+test validation_and_capture_reject_before_weight_changes ... ok
+test ordinary_lookup_matches_finite_differences ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/empty_softmax.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/empty_softmax-787a5fd1a5070627)
+
+running 1 test
+test empty_softmax_cpu_and_partial_backend_preserve_shape ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/forward_ad.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/forward_ad-c7d79e3455b67ed8)
+
+running 6 tests
+
+thread 'dual_level_rejects_nested_mutation_and_restores_after_unwind' (381324) panicked at crates/ferro-core/tests/forward_ad.rs:106:9:
+test unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'dual_level_rejects_nested_mutation_and_restores_after_unwind' (381324) panicked at crates/ferro-core/src/autograd.rs:527:9:
+backward inside an active forward AD level is not supported
+test direct_view_cat_cast_empty_and_broadcast_matmul_rules_keep_real_tangents ... ok
+test dual_flows_through_no_grad_chain_without_creating_reverse_edges ... ok
+test dual_level_rejects_nested_mutation_and_restores_after_unwind ... ok
+test constant_multiply_and_divide_keep_structural_zero_derivatives ... ok
+test local_opaque_callback_fallback_preserves_numeric_no_grad_and_validates_errors ... ok
+test dual_values_reverse_derivatives_and_output_versions_share_the_existing_op ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_basis.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_basis-5f6c3e4a4a4b40c3)
+
+running 10 tests
+test devices_rejected_before_download ... ok
+test checked_contracts_degree_zero_nonclamped_and_empty ... ok
+test higher_order_input_rejected_coefficient_graph_preserved ... ok
+test quadratic_partition_endpoints_and_repeated_knots ... ok
+test basis_vjp_multispan_finite_differences_and_boundary_convention ... ok
+bernstein_basis n=4004 ulp_p50=0 ulp_p95=0 ulp_p99=0 ulp_max=0
+test repeated_knot_quadratics_match_piecewise_polynomial_oracle ... ok
+test cubic_basis_distribution_ulp_oracle ... ok
+test kan_forward_input_and_coefficient_adjoint_oracle ... ok
+test strided_inputs_coefficients_and_empty_batches ... ok
+training initial=0.143284112 final=0.000002490 held_out=0.000002473
+test two_layer_nonlinear_regression_shared_adam ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests/foundation_batchnorm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_batchnorm-373fabdb64539499)
+
+running 4 tests
+test zero_channels_return_error_not_panic ... ok
+test invalid_dtype_and_nonvector_affine_return_errors ... ok
+test empty_eval_is_empty_with_zero_affine_gradients ... ok
+test singleton_eval_values_stats_and_gradients ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_data.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_data-60a4da36cb418c96)
+
+running 7 tests
+test cat_axis_overflow_is_an_error_for_empty_tensors ... ok
+test f32_duplicate_selection_and_cat_accumulate_gradients ... ok
+test typed_cat_preserves_strided_i64_and_rejects_mixed_dtype ... ok
+test empty_and_large_integer_datasets_keep_exact_labels ... ok
+test typed_index_select_preserves_exact_strided_values ... ok
+test typed_float_and_half_data_are_bit_exact ... ok
+test integer_dataset_to_loss_train_step ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_grad_mode.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_grad_mode-0e2dbed975ae2f51)
+
+running 5 tests
+
+thread 'mode_is_nested_panic_safe_and_thread_local' (381359) panicked at crates/ferro-core/tests/foundation_grad_mode.rs:34:72:
+restore
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test explicit_capture_remains_independent_of_grad_mode ... ok
+test existing_graph_backward_works_inside_no_grad ... ok
+test mode_is_nested_panic_safe_and_thread_local ... ok
+test no_grad_suppresses_all_recording_seams_without_changing_inputs ... ok
+test create_graph_overrides_no_grad_and_restores_mode_on_error ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_leaf_copy.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_leaf_copy-b9a830864cd161e4)
+
+running 3 tests
+test leaf_copy_device_alias_and_device_mismatch_reject_before_dispatch ... ok
+test leaf_copy_rejects_enabled_mode_history_dtype_shape_and_nonwhole_views ... ok
+test checked_leaf_copy_preserves_identity_aliases_and_invalidates_saved_graphs ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_losses.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_losses-e1d7e8d5e66498f3)
+
+running 8 tests
+test bce_device_backward ... ok
+
+thread 'loss_gradchecks_and_saved_input_versions' (381371) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 1 of the op producing tensor id 272 was saved with version 0 but is now version 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test huber_device_backward ... ok
+test large_logits_and_zero_logit_have_finite_correct_gradients ... ok
+
+thread 'loss_gradchecks_and_saved_input_versions' (381371) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 1 of the op producing tensor id 446 was saved with version 0 but is now version 1
+test loss_invalid_parameters_and_zero_beta_subgradient ... ok
+test loss_backward_uses_preplaced_derivatives_without_host_transfers ... ok
+
+thread 'loss_gradchecks_and_saved_input_versions' (381371) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 1 of the op producing tensor id 663 was saved with version 0 but is now version 1
+test loss_gradchecks_and_saved_input_versions ... ok
+test loss_input_validation_returns_errors ... ok
+test smooth_l1_device_backward ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_recurrent.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_recurrent-19d64f63c3dbb044)
+
+running 6 tests
+test lstm_state_masking_and_explicit_detach ... ok
+test masked_unroll_skips_nan_padding_preserves_initial_and_resets ... ok
+test rnn_explicit_affines_and_gradients ... ok
+test shared_weights_match_reference_and_truncation_cuts_only_history ... ok
+test gated_cells_explicit_order_bias_and_finite_differences ... ok
+delayed-copy TBPTT SGD: first=0.14829803 last=0.00000000
+test delayed_copy_regression_trains_with_sgd_and_truncated_bptt ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/foundation_segment.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_segment-b3d1cd12a528ddd7)
+
+running 6 tests
+test empty_shapes_validation_and_integer_dtype ... ok
+test noncontiguous_segment_input_retains_logical_feature_order ... ok
+test softmax_matches_independent_f64_reference_on_unsorted_features ... ok
+test mean_and_max_exact_weighted_adjoints ... ok
+test unsorted_sum_has_isolated_rows_and_exact_adjoint ... ok
+test mean_max_and_softmax_forward_backward ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_sparse.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_sparse-8f7ce223257d0086)
+
+running 10 tests
+test disjoint_batch_matches_single_graphs_forward_and_gradients ... ok
+test duplicate_spmm_and_coalescing_have_independent_dense_adjoints ... ok
+test non_cpu_inputs_are_rejected_before_any_host_download ... ok
+test sparse_empty_validation_and_zero_width ... ok
+test spmm_matches_independent_f64_dense_matrix_and_adjoint ... ok
+test validated_integer_topology_and_stable_csr_conversion ... ok
+test sddmm_retains_duplicate_edges_and_accumulates_both_adjoints ... ok
+test differentiable_graph_attention_composition_checks_all_operands ... ok
+test node_edge_permutation_preserves_values_and_both_gradients ... ok
+test vector_coalescing_and_csr_gradients ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_state.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_state-3e2355a0f306a511)
+
+running 12 tests
+test conflicting_tied_names_are_rejected_before_mutation ... ok
+test invalid_model_restore_changes_nothing ... ok
+test corrupt_generation_is_rejected_without_touching_old_generation ... ok
+test named_buffers_restore_is_transactional_and_identity_stable ... ok
+test delayed_snapshot_owns_parameters_and_moments ... ok
+test namespaced_optimizer_configuration_roundtrip ... ok
+test owning_clone_does_not_alias_checkpoint ... ok
+test optimizer_invalid_late_buffer_is_transactional ... ok
+test rng_state_resumes_next_samples ... ok
+test successful_restore_preserves_live_parameter_handle ... ok
+test publication_uses_immutable_generation ... ok
+test tied_parameters_have_one_clipping_contribution_and_slot ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/foundation_tensor.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/foundation_tensor-8ecf4aa07d2ef30f)
+
+running 4 tests
+test checked_shape_boundaries ... ok
+test i64_device_views_follow_logical_order_without_float_roundtrip ... ok
+test partial_backend_reductions_fall_back_with_gradients ... ok
+
+thread 'operational_reduction_errors_are_not_host_fallbacks' (381416) panicked at crates/ferro-core/src/tensor.rs:1759:21:
+device reduction failed: reduce_dev: unsupported: injected launch failure
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'operational_reduction_errors_are_not_host_fallbacks' (381416) panicked at crates/ferro-core/src/tensor.rs:1759:21:
+device reduction failed: reduce_dev: unsupported: injected launch failure
+test operational_reduction_errors_are_not_host_fallbacks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/functional_frozen.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/functional_frozen-7754d658357dfc40)
+
+running 5 tests
+test frozen_mode_preserves_identity_shared_captures_modes_and_version_checks ... ok
+test frozen_saved_output_versions_protect_later_pullbacks ... ok
+test frozen_forward_operands_leave_captured_parameters_and_cotangents_live ... ok
+test frozen_views_distinguish_real_primal_flags_synthetic_inputs_and_computed_storage ... ok
+test frozen_mode_preserves_direct_primals_but_freezes_computed_views_and_outputs ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/functional_passthrough.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/functional_passthrough-7cde6a97ef1d7063)
+
+running 5 tests
+test passthrough_keeps_validation_mode_and_saved_version_contracts ... ok
+test internal_first_order_vjp_preserves_only_unchanged_cotangents ... ok
+test watermark_is_nonallocating_and_orders_existing_and_new_nodes ... ok
+test private_sum_pullbacks_are_typed_views_while_public_results_remain_detached ... ok
+test private_cat_and_stack_preserve_cotangent_views_and_duplicate_accumulation ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/functional_validation.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/functional_validation-0015b5b88e5ee691)
+
+running 1 test
+test invalid_functional_operands_reject_before_device_work ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fused.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/fused-29aca282e77f0397)
+
+running 7 tests
+test bias_add_gelu_values_match_unfused ... ok
+test bias_add_activation_grads ... ok
+test bias_add_relu_and_silu_values_match_unfused ... ok
+test residual_layernorm_value_matches_composition ... ok
+test bias_add_gelu_grad ... ok
+test residual_layernorm_without_affine_grads ... ok
+test residual_layernorm_grads_all_operands ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fusion_exec.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/fusion_exec-50fdf4598f43e36a)
+
+running 3 tests
+test fused_chain_matches_eager_and_issues_one_launch ... ok
+test compiled_chain_includes_first_op_in_one_launch ... ok
+test compiled_dag_shares_intermediates_without_transfers ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gather_fallback.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gather_fallback-5bac5bd770659e8b)
+
+running 3 tests
+test gather_errors_propagate_without_host_retry_even_for_empty_indices ... ok
+test gather_index_views_never_pass_unvalidated_backing_indices_to_kernel ... ok
+test legacy_gather_fallback_preserves_values_and_duplicate_gradients ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gnn.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gnn-864b3aaf217171bd)
+
+running 15 tests
+test checked_batch_preserves_empty_graphs_and_rejects_size_overflow ... ok
+test edge_index_validation_self_loops_and_round_trip ... ok
+test batched_graphs_match_separate_forwards_and_pool ... ok
+test custom_message_passing_layer ... ok
+test gcn_checkpoint_rejects_self_loop_mismatch ... ok
+test gcn_is_node_permutation_equivariant ... ok
+test gcn_validates_nodes_parameters_dtype_and_capture_before_compute ... ok
+test scatter_cpu_reductions_reject_device_inputs_before_compute ... ok
+test gcn_state_round_trips_through_save_module ... ok
+test gcn_without_self_loops_zeroes_sourceless_nodes ... ok
+test scatter_rejects_unsupported_dtypes_without_panicking ... ok
+test zero_width_reductions_do_not_allocate_per_group_storage ... ok
+test scatter_reductions_zero_fill_and_gradients ... ok
+test gcn_matches_dense_reference_values_and_gradients ... ok
+test two_layer_gcn_separates_two_communities ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/gpu_sticky.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gpu_sticky-37d225a6b88bcb7d)
+
+running 3 tests
+test gelu_silu_log_softmax_dispatch_device_kernels ... ok
+softmax dev [0.04679268, 0.09214493, 0.16217479, 0.23228331, 0.25510052, 0.21150376, 0.47552234, 0.25708696, 0.12887205, 0.06716168, 0.040540077, 0.030816814, 0.030645695, 0.040448807, 0.06717592, 0.1290552, 0.25738797, 0.47528645, 0.2127547, 0.25571737, 0.23201296, 0.16148725, 0.09156387, 0.04646378, 0.28914037, 0.16462885, 0.11529621, 0.10536039, 0.12752062, 0.1980536, 0.0337086, 0.06726084, 0.12890415, 0.21302332, 0.27930656, 0.27779654, 0.45255226, 0.27182907, 0.14132446, 0.07087964, 0.038449015, 0.024965486, 0.043484014, 0.048098426, 0.06931702, 0.12250412, 0.24158345, 0.475013, 0.15346311, 0.21844739, 0.2381922, 0.1961177, 0.12592337, 0.06785626, 0.37710875, 0.19701624, 0.11951555, 0.09145686, 0.09228695, 0.122615695]
+mul dev    [0.04679268, 0.08971842, 0.14531712, 0.17914757, 0.15454502, 0.086396635, 0.09017845, -0.010076175, -0.034275316, -0.032152075, -0.027010879, -0.025230791, -0.028441433, -0.039984934, -0.066969536, -0.12296615, -0.22097437, -0.3417397, -0.115236856, -0.08585416, -0.026020862, 0.018948913, 0.031191476, 0.02537034, 0.20894378, 0.14177711, 0.11003759, 0.105078354, 0.12595591, 0.18342048, 0.027496947, 0.04455175, 0.061117988, 0.055583358, 0.009489419, -0.054105233, -0.18701635, -0.16580668, -0.10946418, -0.06367534, -0.037481774, -0.024965145, -0.04228658, -0.042986613, -0.05322934, -0.07370546, -0.097530976, -0.08764492, 0.00681546, 0.05919807, 0.11511943, 0.1314305, 0.103473976, 0.063106656, 0.3730763, 0.19632769, 0.11368559, 0.07827214, 0.066020176, 0.06587457]
+sum dev    [1.0966282]
+softmax cpu [0.04679268, 0.09214493, 0.16217479, 0.23228331, 0.25510052, 0.21150376, 0.47552234, 0.25708696, 0.12887205, 0.06716168, 0.040540077, 0.030816814, 0.030645695, 0.040448807, 0.06717592, 0.1290552, 0.25738797, 0.47528645, 0.2127547, 0.25571737, 0.23201296, 0.16148725, 0.09156387, 0.04646378, 0.28914037, 0.16462885, 0.11529621, 0.10536039, 0.12752062, 0.1980536, 0.0337086, 0.06726084, 0.12890415, 0.21302332, 0.27930656, 0.27779654, 0.45255226, 0.27182907, 0.14132446, 0.07087964, 0.038449015, 0.024965486, 0.043484014, 0.048098426, 0.06931702, 0.12250412, 0.24158345, 0.475013, 0.15346311, 0.21844739, 0.2381922, 0.1961177, 0.12592337, 0.06785626, 0.37710875, 0.19701624, 0.11951555, 0.09145686, 0.09228695, 0.122615695]
+mul cpu    [0.04679268, 0.08971842, 0.14531712, 0.17914757, 0.15454502, 0.086396635, 0.09017845, -0.010076175, -0.034275316, -0.032152075, -0.027010879, -0.025230791, -0.028441433, -0.039984934, -0.066969536, -0.12296615, -0.22097437, -0.3417397, -0.115236856, -0.08585416, -0.026020862, 0.018948913, 0.031191476, 0.02537034, 0.20894378, 0.14177711, 0.11003759, 0.105078354, 0.12595591, 0.18342048, 0.027496947, 0.04455175, 0.061117988, 0.055583358, 0.009489419, -0.054105233, -0.18701635, -0.16580668, -0.10946418, -0.06367534, -0.037481774, -0.024965145, -0.04228658, -0.042986613, -0.05322934, -0.07370546, -0.097530976, -0.08764492, 0.00681546, 0.05919807, 0.11511943, 0.1314305, 0.103473976, 0.063106656, 0.3730763, 0.19632769, 0.11368559, 0.07827214, 0.066020176, 0.06587457]
+test debug_dump ... ok
+test softmax_forward_and_backward_never_round_trip ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gqa.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gqa-8d388db85994bda9)
+
+running 7 tests
+test kv_equal_heads_is_exactly_the_old_mha ... ok
+test learned_positions_add_rows_and_accumulate_grads ... ok
+test gqa_shapes_and_parameter_shapes ... ok
+test positions_module_composes_with_params ... ok
+test grouped_kv_grads_sum_over_the_query_group ... ok
+test mqa_and_full_heads_degenerate_cases_work ... ok
+test gqa_grad_check_end_to_end ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/grad_accumulation.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/grad_accumulation-ec2ef40d1614d13b)
+
+running 4 tests
+test unshared_grad_accumulates_in_place_with_stable_storage ... ok
+test multi_use_and_multi_backward_values_are_exact ... ok
+test user_held_grad_clone_keeps_its_value_across_further_accumulation ... ok
+test shared_seed_gradients_survive_repeated_accumulation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/gradient_layout.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gradient_layout-dafcfcb3f1d5af91)
+
+running 2 tests
+test assigned_dense_gradient_keeps_its_layout_and_float64_precision ... ok
+test initial_and_repeated_leaf_gradients_follow_dense_or_contiguous_layouts ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/graph_attention.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/graph_attention-9c2c77e8d2d4d1ff)
+
+running 8 tests
+test device_inputs_reject_before_download_or_compute ... ok
+test directed_attention_matches_dense_oracle_with_bias_and_isolated_rows ... ok
+test duplicate_edges_have_independent_bias_gradients ... ok
+test empty_topology_nodes_and_value_width_keep_zero_adjoint_shapes ... ok
+test invalid_metadata_capture_nonfinite_logits_and_higher_order_reject ... ok
+test node_and_edge_permutations_and_disjoint_batch_preserve_outputs_and_gradients ... ok
+test sparse_forward_and_backward_allocations_stay_far_below_a_dense_node_matrix ... ok
+test all_operands_pass_strict_gradient_check_with_duplicate_edges ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/graph_compiler.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/graph_compiler-5288bcdaed530bb9)
+
+running 3 tests
+test detects_gelu_bias_chain ... ok
+test matmul_is_a_fusion_barrier ... ok
+test longer_chain_and_fanout ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/higher_order.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/higher_order-204a968244a2d204)
+
+running 15 tests
+test changed_saved_constant_is_rejected ... ok
+test mixed_partials_and_third_derivatives ... ok
+test functional_derivatives_reject_capture_without_changing_grad_state ... ok
+test rejects_non_float_custom_vjps_before_accumulation ... ok
+test broadcast_reduction_and_transpose_are_differentiable ... ok
+test polynomial_second_derivative_and_functional_state ... ok
+test rejects_unsupported_formulas_and_invalid_seeds_without_grad_side_effects ... ok
+test scalar_mean_preserves_higher_order_graph_and_empty_semantics ... ok
+test smooth_exp_sigmoid_division_second_derivatives ... ok
+test sqrt_norm_gradient_penalty_has_parameter_gradient ... ok
+test unused_constants_duplicates_and_intermediate_selection ... ok
+test scalar_sum_preserves_higher_order_graph_and_functional_state ... ok
+test vector_seed_is_live_only_with_create_graph ... ok
+test tanh_second_derivative_analytic ... ok
+test smooth_mlp_gradient_penalty_and_pde_parameter_gradients ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/higher_order_layouts.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/higher_order_layouts-bf1c9bc1ad24ba8b)
+
+running 5 tests
+test empty_slices_preserve_normalized_offsets_and_reject_offset_overflow ... ok
+test generic_replay_executes_cat_slice_and_slice_adjoint_from_current_inputs ... ok
+test shared_strided_slice_cat_stack_support_four_derivatives ... ok
+test layout_vjp_retains_live_noncontiguous_seed_and_shared_input_contributions ... ok
+test slice_adjoint_handles_empty_shapes_and_rejects_impossible_materialization ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/host_reduce_dispatch.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/host_reduce_dispatch-4b7071b5caae6cf1)
+
+running 1 test
+test host_reductions_route_through_cpu_backend ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/indexing_grad.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/indexing_grad-96eea90d80de1f10)
+
+running 7 tests
+test index_select_backward_keeps_device_weight_on_device ... ok
+test gather_duplicate_columns_accumulate_exactly ... ok
+test duplicate_index_rows_accumulate_exactly ... ok
+test index_tensors_stay_non_differentiable ... ok
+test gather_grad_o1_inputs_with_duplicates ... ok
+test index_select_t_grad_o1_inputs ... ok
+test index_select_grad_o1_inputs_with_duplicates ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/inference_capture.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/inference_capture-ac48182034205759)
+
+running 8 tests
+test capture_discards_backward_closure ... ok
+
+thread 'capture_nesting_unwind_and_thread_isolation' (381534) panicked at crates/ferro-core/tests/inference_capture.rs:28:61:
+test
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test capture_keeps_untagged_barriers_visible ... ok
+
+thread 'capture_nesting_unwind_and_thread_isolation' (381534) panicked at crates/ferro-core/tests/inference_capture.rs:37:52:
+outer
+test capture_keeps_indexing_normalization_and_pool_barriers ... ok
+test capture_nesting_unwind_and_thread_isolation ... ok
+test capture_does_not_interfere_with_mixed_backward ... ok
+test capture_records_without_enabling_gradients ... ok
+test capture_tagged_activations ... ok
+test captured_chain_replays_current_leaves ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/inplace_device.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/inplace_device-1aa543137de57784)
+
+running 4 tests
+test shared_device_storage_is_refused ... ok
+test device_mutation_lands_in_the_original_buffer ... ok
+test cross_device_elementwise_is_refused ... ok
+test copy_from_moves_data_across_devices_into_stable_storage ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layer_norm_partial.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/layer_norm_partial-e75618030588b711)
+
+running 1 test
+test declined_fusion_and_partial_fused_backward_preserve_values_and_devices ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout_materialization.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/layout_materialization-aeac47355424d9d8)
+
+running 1 test
+test layout_materialization_uses_no_index_uploads ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/leaf_grad_assignment.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/leaf_grad_assignment-ae4916817ae202cc)
+
+running 4 tests
+test device_validation_and_valid_device_assignment_never_transfer_data ... ok
+test invalid_assignments_and_reference_cycles_leave_the_prior_slot_unchanged ... ok
+test capture_rejects_assignment_and_clearing_without_changing_mode_or_slots ... ok
+test direct_assignment_preserves_typed_handles_history_and_storage ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/linalg.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/linalg-0790e0efac4177a0)
+
+running 31 tests
+test determinant_sign_and_zero_norm_preserve_unused_input_gradients ... ok
+test cholesky_spd_symmetric_adjoint_finite_differences_and_failure_info ... ok
+test determinant_polynomial_singular_adjoints_and_logarithmic_extremes ... ok
+test eigen_capture_dtype_layout_and_saved_values_validate ... ok
+test eigen_selected_triangle_scaling_repeats_and_empty_shapes ... ok
+test least_squares_declared_scope_and_graph_boundaries ... ok
+test least_squares_rank_deficiency_and_unused_residual_gradients ... ok
+test least_squares_empty_large_batches_and_original_version_contract ... ok
+test least_squares_batch_broadcast_gradients_and_metadata ... ok
+test least_squares_truncated_forward_uses_torch_default_cutoff_adjoint ... ok
+test pivoted_lu_left_right_inverse_values_and_precision ... ok
+test pseudoinverse_empty_capacity_mutation_and_graph_guards ... ok
+test pseudoinverse_rank_deficient_has_true_constant_rank_adjoint ... ok
+test pseudoinverse_tolerance_batches_reduce_to_original_input ... ok
+test pseudoinverse_full_rank_tall_wide_and_real_adjoints ... ok
+test rank_and_inverse_tolerance_dtype_changes_exact_cutoff ... ok
+
+thread 'qr_layout_empty_rank_and_graph_boundaries' (381571) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 3629 was saved with version 0 but is now version 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test qr_layout_empty_rank_and_graph_boundaries ... ok
+test least_squares_tall_wide_both_input_adjoints ... ok
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'singular_invalid_metadata_capacity_and_stale_inputs_fail_cleanly' (381575) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 4022 was saved with version 0 but is now version 1
+test singular_invalid_metadata_capacity_and_stale_inputs_fail_cleanly ... ok
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+test reduced_qr_reconstruction_orthogonality_and_both_factor_adjoints ... ok
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+
+thread 'saved_output_and_sibling_versions_reject_before_any_gradient_publish' (381574) panicked at crates/ferro-core/src/autograd.rs:554:40:
+saved output version check failed: Unsupported { op: "backward", msg: "saved output modified inplace (version 0 -> 1)" }
+test saved_output_and_sibling_versions_reject_before_any_gradient_publish ... ok
+test strided_inputs_empty_shapes_and_graph_guards ... ok
+test svd_all_sibling_versions_validate_before_publishing_gradients ... ok
+
+thread 'diagonal_views_alias_strides_offsets_gradients_empty_and_version_guards' (381557) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 5377 was saved with version 1 but is now version 2
+test diagonal_views_alias_strides_offsets_gradients_empty_and_version_guards ... ok
+test solve_all_adjoint_inputs_and_broadcast_reduction_match_finite_differences ... ok
+test svd_zero_rank_complements_empty_layouts_and_graph_guards ... ok
+test symmetric_eigen_reconstruction_and_symmetric_manifold_adjoints ... ok
+test vector_norms_dimensions_ties_zero_empty_and_stable_extremes ... ok
+test triangular_flags_and_ignored_entries_have_exact_zero_gradients ... ok
+test svd_reconstruction_full_bases_and_all_factor_finite_differences ... ok
+test wide_qr_tail_and_leading_block_adjoints ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/matmul_nonfinite.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/matmul_nonfinite-4d0dd22dbc4e477d)
+
+running 3 tests
+test reference_kernel_does_not_skip_zero_products_with_nonfinite_rhs ... ok
+test zero_cotangent_materializes_nan_against_infinite_saved_matrix ... ok
+test ordinary_zero_matmul_agrees_with_double_nonfinite_values ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/model_replay.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/model_replay-a06ac420c8aba569)
+
+running 2 tests
+test residual_mlp_replays_current_input_and_weights ... ok
+test attention_layout_norm_replays_current_leaves ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/module_state.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/module_state-c29b234005809ff3)
+
+running 17 tests
+test dropout_checkpoint_restores_stream_and_mode ... ok
+test dropout_exact_counter_overflow_rejects_without_mutation ... ok
+test failed_dropout_forward_does_not_advance_counter ... ok
+test adamw_prepare_abort_and_commit_are_separate ... ok
+test batchnorm_module_matches_functional_and_rejects_singleton_training ... ok
+test device_compatibility::legacy_device_optimizer_restore_survives_cpu_transaction_restriction ... ok
+test module_restore_rejects_new_version_and_duplicate_keys ... ok
+test mixed_child_modes_restore_without_flattening_them ... ok
+test legacy_module_state_dict_restores_buffers_without_rebinding ... ok
+test nested_batchnorm_buffers_rank2_rank4_and_eval_resume ... ok
+test frozen_tied_parameter_preserves_identity_and_optimizer_state ... ok
+test shared_optimizer_buffers_are_rejected_before_transaction_writes ... ok
+test stale_optimizer_buffer_shape_rejects_before_model_commit ... ok
+test owning_optimizer_clones_restore_independent_state ... ok
+test training_restore_rejects_changed_tie_topology_even_without_optimizer ... ok
+continuation (input RNG draws, stochastic outputs, loss): [([0.9204347, -0.8446595, -0.44914377, 0.66819614, 0.8911881, 1.5709815, 0.5661473, 0.5191211], [0.32999787, -0.20544598, -0.0014653465, 0.0033807051], 0.037780054), ([0.826026, 0.5997668, -0.6372956, -1.2866179, 0.7772368, -1.4951476, -1.2547964, -0.1502543], [-0.048031367, -0.0039710165, 0.2975224, -0.23422226], 0.036425605), ([-0.08571961, -0.27982754, 0.7424715, -0.21660195, -0.06328116, 1.4090286, 0.16875133, 0.43873322], [0.052836496, -0.02362666, 0.022296838, 0.00051388], 0.0009618319), ([-0.58804095, 1.4831576, -0.49090958, -0.00755003, 0.28670174, -0.48942965, 0.019398108, 1.3191439], [-0.14129849, 0.03924576, 0.16956379, -0.060349625], 0.013474862), ([-0.20774285, -1.5413944, 1.9908226, 2.1153557, -2.4396644, 1.8641837, -1.4907888, -0.40744126], [-0.034613464, -0.035046894, -0.086534075, 0.017574443], 0.002555846)]
+test stochastic_two_optimizer_disk_restart_matches_uninterrupted ... ok
+test rejected_transaction_does_not_touch_any_live_state ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/modules.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/modules-3fecca5f894959fb)
+
+running 8 tests
+test dropout_train_eval_switch ... ok
+test batchnorm_train_normalizes_and_gradients_flow ... ok
+test conv2d_layer_known_values_and_grads ... ok
+test batchnorm_eval_uses_running_stats_not_batch_stats ... ok
+test param_discovery_counts_and_names ... ok
+test module_list_container ... ok
+test sequential_propagates_training_mode ... ok
+test linear_with_init_schemes_sample_right_std ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/mutable_grad_flags.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/mutable_grad_flags-ff1c8f2b78725713)
+
+running 6 tests
+
+thread 'invalid_flags_and_missing_direct_edges_reject_before_slot_changes' (381620) panicked at crates/ferro-core/src/autograd.rs:505:9:
+the output has no gradient edge; enable gradients before computing it
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'late_base_flags_do_not_create_view_edges_in_either_recording_mode' (381621) panicked at crates/ferro-core/src/autograd.rs:528:9:
+the output has no gradient edge; enable gradients before computing it
+
+thread 'late_enabled_operands_never_acquire_old_edges_but_saved_values_stay_checked' (381622) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 31 was saved with version 0 but is now version 1
+
+thread 'late_base_flags_do_not_create_view_edges_in_either_recording_mode' (381621) panicked at crates/ferro-core/src/autograd.rs:528:9:
+the output has no gradient edge; enable gradients before computing it
+test invalid_flags_and_missing_direct_edges_reject_before_slot_changes ... ok
+
+thread 'late_base_flags_do_not_create_view_edges_in_either_recording_mode' (381621) panicked at crates/ferro-core/src/autograd.rs:528:9:
+the output has no gradient edge; enable gradients before computing it
+
+thread 'late_base_flags_do_not_create_view_edges_in_either_recording_mode' (381621) panicked at crates/ferro-core/src/autograd.rs:528:9:
+the output has no gradient edge; enable gradients before computing it
+
+thread 'late_enabled_operands_never_acquire_old_edges_but_saved_values_stay_checked' (381622) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 153 was saved with version 0 but is now version 1
+test late_base_flags_do_not_create_view_edges_in_either_recording_mode ... ok
+test late_enabled_operands_never_acquire_old_edges_but_saved_values_stay_checked ... ok
+test ultimate_base_flags_and_saved_public_provenance_are_distinct_from_edges ... ok
+test mutable_leaf_flags_preserve_identity_shared_handles_and_existing_slots ... ok
+test old_view_edges_survive_own_flag_disable_when_inherited_flag_remains_true ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/nn.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/nn-f51945d20e930977)
+
+running 25 tests
+test attention_rejects_mismatched_shapes ... ok
+test attention_uniform_when_query_is_zero ... ok
+test cross_entropy_indices_matches_one_hot ... ok
+test cross_entropy_rejects_broadcastable_targets ... ok
+test embedding_module_shapes_and_grad ... ok
+test gelu_module_matches_op ... ok
+test cross_entropy_value_and_grad ... ok
+test layernorm_grad ... ok
+test layernorm_normalizes ... ok
+test layernorm_rejects_non_2d ... ok
+test attention_grad ... ok
+test linear_forward_shape_and_params ... ok
+test mha_is_causal_and_rejects_bad_shapes ... ok
+test mha_single_head_with_identity_projections_matches_sdpa ... ok
+test mlp_backward_populates_grads ... ok
+test one_hot_values_and_errors ... ok
+test rmsnorm_grad ... ok
+test rmsnorm_normalizes_any_rank ... ok
+test mha_grad ... ok
+test state_dict_names_and_roundtrip ... ok
+test cross_entropy_training_separates_classes ... ok
+test transformer_primitives_compose_end_to_end ... ok
+test training_loop_decreases_loss ... ok
+test layernorm_in_mlp_trains ... ok
+test transformer_block_learns_next_token ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running tests/op_abs.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_abs-dcdf28ecc489594b)
+
+running 2 tests
+test abs_values ... ok
+test abs_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_acos.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_acos-5bcb91e79536aeae)
+
+running 2 tests
+test acos_values ... ok
+test acos_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_acosh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_acosh-a04df51d71855150)
+
+running 2 tests
+test acosh_values ... ok
+test acosh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_addcdiv.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_addcdiv-489b24be27fb633d)
+
+running 3 tests
+test addcdiv_values ... ok
+test addcdiv_broadcast ... ok
+test addcdiv_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_addcmul.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_addcmul-a9636f7a67079f2d)
+
+running 3 tests
+test addcmul_broadcast ... ok
+test addcmul_values ... ok
+test addcmul_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_amp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_amp-b6624e557e91827b)
+
+running 8 tests
+test amp_matmul_value_matches_f32_matmul_on_exact_inputs ... ok
+test amp_matmul_value_shows_quantization_effect ... ok
+test autocast_disabled_passes_tensors_through ... ok
+test amp_matmul_master_grads_match_straight_through_reference ... ok
+test autocast_enabled_casts_matmul_inputs_but_not_fp32_class ... ok
+test amp_matmul_grad ... ok
+test cast_back_returns_f32_master_copy ... ok
+test bf16_quantization_matches_reference_values ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_argmax.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_argmax-172b7c3d60c5505c)
+
+running 4 tests
+test argmax_rejects_bad_dim ... ok
+test argmax_argmin_values ... ok
+test argmax_keepdim_shape ... ok
+test argmax_ties_take_lowest_index_and_nan_wins ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_asin.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_asin-8d385ab562bef0cd)
+
+running 2 tests
+test asin_values ... ok
+test asin_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_asinh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_asinh-e59ce2102533eee0)
+
+running 2 tests
+test asinh_values ... ok
+test asinh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_atan.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_atan-ff44099b5dc7d70d)
+
+running 2 tests
+test atan_values ... ok
+test atan_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_atan2.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_atan2-071c3bb0cd44c52f)
+
+running 2 tests
+test atan2_values ... ok
+test atan2_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_atanh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_atanh-6c3482479a7281d9)
+
+running 2 tests
+test atanh_values ... ok
+test atanh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_avg_pool2d.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_avg_pool2d-1a89641fb288ab8d)
+
+running 3 tests
+test avg_pool2d_errors ... ok
+test avg_pool2d_values ... ok
+test avg_pool2d_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_batch_norm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_batch_norm-19a9535030538ce1)
+
+running 6 tests
+test batch_norm_errors ... ok
+test batch_norm_eval_uses_running_stats ... ok
+test batch_norm_running_stats_update ... ok
+test batch_norm_train_normalizes_per_channel ... ok
+test batch_norm_grad_rank2 ... ok
+test batch_norm_grad_rank4 ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_bce_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_bce_loss-cbd7500f2243e34d)
+
+running 2 tests
+test bce_loss_values ... ok
+test bce_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_bce_with_logits_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_bce_with_logits_loss-d5cfbb2d4d208f9a)
+
+running 4 tests
+test bce_with_logits_loss_values ... ok
+test bce_with_logits_loss_large_logits_finite ... ok
+test bce_with_logits_loss_grad_at_zero_logit ... ok
+test bce_with_logits_loss_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_bmm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_bmm-41822dbefbd357a7)
+
+running 5 tests
+test bmm_perf_old_vs_dispatch ... ignored
+test bmm_values ... ok
+test bmm_shape_error ... ok
+test bmm_grad ... ok
+test bmm_dispatch_parity ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running tests/op_cat.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cat-4906d4cdab4d6d4e)
+
+running 5 tests
+test cat_preserves_large_i64_exactly ... ok
+test cat_shape_errors ... ok
+test cat_rejects_mismatched_dtypes ... ok
+test cat_values ... ok
+test cat_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_ceil.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_ceil-3cb29cdf0d2e4a18)
+
+running 2 tests
+test ceil_values ... ok
+test ceil_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_celu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_celu-24cd9e7052a7dc8c)
+
+running 3 tests
+test celu_zero_alpha_errors ... ok
+test celu_values ... ok
+test celu_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_clamp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_clamp-1aa60f27fbf98294)
+
+running 5 tests
+test clamp_propagates_nan ... ok
+test clamp_min_gt_max ... ok
+test clamp_values ... ok
+test clamp_boundary_passes_gradient ... ok
+test clamp_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_conv2d.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_conv2d-e08cb2f4cd23e865)
+
+running 8 tests
+test conv2d_errors ... ok
+test conv2d_identity ... ok
+test conv2d_grad ... ok
+test conv2d_padding_stride ... ok
+test conv_timing_im2col_vs_naive ... ignored
+test conv2d_matches_naive_forward ... ok
+test conv2d_grad_odd_configs ... ok
+test conv2d_chunked_grouped_matches_direct_f64_forward_and_backward ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 7.87s
+
+     Running tests/op_copysign.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_copysign-7ff54416e9abe7f1)
+
+running 3 tests
+test copysign_values ... ok
+test copysign_broadcast ... ok
+test copysign_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_cos.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cos-a5670223bd32bd7c)
+
+running 2 tests
+test cos_values ... ok
+test cos_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_cosh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cosh-f5fa0a35e1f28f12)
+
+running 2 tests
+test cosh_values ... ok
+test cosh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_cosine_embedding_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cosine_embedding_loss-f3aaafcde48e25e2)
+
+running 3 tests
+test cosine_embedding_loss_rejects_scalar ... ok
+test cosine_embedding_loss_values ... ok
+test cosine_embedding_loss_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/op_cosine_similarity.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cosine_similarity-f5fa4f53c5b85e5b)
+
+running 3 tests
+test cosine_similarity_out_of_range_is_err ... ok
+test cosine_similarity_values ... ok
+test cosine_similarity_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_cumsum.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_cumsum-aa4a6c7b0e477bb1)
+
+running 4 tests
+test cumsum_rejects_bad_dim ... ok
+test cumsum_values_1d ... ok
+test cumsum_values_2d_both_dims ... ok
+test cumsum_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_deg2rad.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_deg2rad-38d1166e1207e993)
+
+running 5 tests
+test deg2rad_values ... ok
+test deg2rad_rad2deg_roundtrip ... ok
+test rad2deg_values ... ok
+test deg2rad_grad ... ok
+test rad2deg_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_diff.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_diff-f8b53042f72707ef)
+
+running 3 tests
+test diff_rejects_bad_dims ... ok
+test diff_values ... ok
+test diff_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_dist.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_dist-c62ef22c5fa67365)
+
+running 3 tests
+test dist_values_p1 ... ok
+test dist_values_p2 ... ok
+test dist_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_dropout.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_dropout-3e66f3de6be7a81e)
+
+running 7 tests
+test dropout_eval_mode_is_identity ... ok
+test dropout_different_offset_differs ... ok
+test dropout_grad_check ... ok
+test dropout_grad_equals_mask_bitwise ... ok
+test dropout_rejects_invalid_p ... ok
+test dropout_same_seed_offset_is_bitwise_identical ... ok
+test dropout_scaling_and_zero_fraction ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/op_elu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_elu-d406c215c25f9000)
+
+running 2 tests
+test elu_values ... ok
+test elu_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_erf.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_erf-8e2f68ef5b5d65e2)
+
+running 2 tests
+test erf_values ... ok
+test erf_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_erfc.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_erfc-1f158f032e52d06c)
+
+running 2 tests
+test erfc_values ... ok
+test erfc_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_exp2.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_exp2-bbea664eeed25975)
+
+running 2 tests
+test exp2_values ... ok
+test exp2_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_expand.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_expand-9da21dd1ae5b16eb)
+
+running 3 tests
+test expand_errors ... ok
+test expand_values ... ok
+test expand_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_expm1.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_expm1-b80fbfc2e9acf0fe)
+
+running 2 tests
+test expm1_values ... ok
+test expm1_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_flatten.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_flatten-f6c172de47047c6e)
+
+running 3 tests
+test flatten_rejects_bad_ranges ... ok
+test flatten_values ... ok
+test flatten_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_flip.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_flip-c032104153ed1462)
+
+running 4 tests
+test flip_roll_errors ... ok
+test flip_values ... ok
+test roll_values ... ok
+test flip_roll_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_floor.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_floor-340a07956ef924a1)
+
+running 2 tests
+test floor_values ... ok
+test floor_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_fmod.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_fmod-5bdf82756ba8e3f6)
+
+running 2 tests
+test fmod_values ... ok
+test fmod_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_frac.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_frac-c028d9eef314b4a1)
+
+running 2 tests
+test frac_values ... ok
+test frac_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_gather.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_gather-cc9d7f5e57bf61d1)
+
+running 4 tests
+test gather_rejects_bad_inputs ... ok
+test gather_dim0_and_narrower_index ... ok
+test gather_values_torch_doc_example ... ok
+test gather_grad_accumulates_duplicates ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_gelu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_gelu-674f4cb80cdfa70c)
+
+running 2 tests
+test gelu_values ... ok
+test gelu_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_gelu_erf.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_gelu_erf-114c9b27c9ed8d74)
+
+running 4 tests
+test matches_normal_cdf_constants ... ok
+test diverges_from_the_tanh_approximation_but_only_slightly ... ok
+test backward_value_is_phi_plus_x_phi ... ok
+test grad_matches_finite_differences ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_group_norm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_group_norm-72cf46d05a89a5f8)
+
+running 5 tests
+test group_norm_errors ... ok
+test group_norm_values ... ok
+test group_norm_grad_rank4 ... ok
+test group_norm_grad_rank2 ... ok
+test group_norm_rank3_matches_rank4 ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hardshrink.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hardshrink-3333067e10113ba1)
+
+running 3 tests
+test hardshrink_negative_lambd_errors ... ok
+test hardshrink_values ... ok
+test hardshrink_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hardsigmoid.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hardsigmoid-30fbedbfd5cd57ef)
+
+running 2 tests
+test hardsigmoid_values ... ok
+test hardsigmoid_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hardswish.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hardswish-caf034723749c684)
+
+running 2 tests
+test hardswish_values ... ok
+test hardswish_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hardtanh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hardtanh-3d534b0822ae8ef7)
+
+running 2 tests
+test hardtanh_values ... ok
+test hardtanh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_heaviside.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_heaviside-a63fdd4944f7d5ef)
+
+running 3 tests
+test heaviside_values ... ok
+test heaviside_values_broadcast ... ok
+test heaviside_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hinge_embedding_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hinge_embedding_loss-41a3931929c8daab)
+
+running 2 tests
+test hinge_embedding_loss_values ... ok
+test hinge_embedding_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_huber_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_huber_loss-c0f4782b28f8cbd8)
+
+running 2 tests
+test huber_loss_values ... ok
+test huber_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_hypot.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_hypot-8a4487426c7b29a1)
+
+running 2 tests
+test hypot_values ... ok
+test hypot_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_index_add.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_index_add-195b9c57981163c3)
+
+running 3 tests
+test index_add_errors ... ok
+test index_add_values ... ok
+test index_add_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_index_select.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_index_select-bc7884ecfd60cf95)
+
+running 3 tests
+test index_select_errors ... ok
+test index_select_values ... ok
+test index_select_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_inplace.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_inplace-3fbe726e33320a7e)
+
+running 11 tests
+test aliased_dst_and_src_is_the_self_op ... ok
+test grad_requiring_and_history_carrying_tensors_are_refused ... ok
+test dtype_shape_and_scalar_gates ... ok
+test differentiable_sources_require_explicit_no_grad_in_public_mutations ... ok
+test mul_scalar_preserves_signed_zero_and_add_scalar_is_exact_identity ... ok
+test mutation_bumps_the_shared_version_once_per_op ... ok
+test non_whole_destinations_are_refused ... ok
+test mutation_is_visible_through_views_and_vice_versa ... ok
+test strided_source_is_materialized ... ok
+test public_mutation_is_rejected_before_writes_during_capture ... ok
+test values_for_every_op ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_kl_div_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_kl_div_loss-9cc9d1a65abdcfe2)
+
+running 2 tests
+test kl_div_loss_values ... ok
+test kl_div_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_l1_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_l1_loss-cc4c3fbef483aa8d)
+
+running 2 tests
+test l1_loss_values ... ok
+test l1_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_layer_norm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_layer_norm-14283f3630b7a96d)
+
+running 4 tests
+test layer_norm_row_independence ... ok
+test layer_norm_values ... ok
+test layer_norm_errors ... ok
+test layer_norm_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_leaky_relu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_leaky_relu-be4b71091f7a1111)
+
+running 2 tests
+test leaky_relu_values ... ok
+test leaky_relu_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_lerp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_lerp-52a5430b0cbbd826)
+
+running 3 tests
+test lerp_broadcast ... ok
+test lerp_values ... ok
+test lerp_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log-b1ee8a4fbcc9ff69)
+
+running 2 tests
+test log_values ... ok
+test log_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log10.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log10-be9600dff8e2be89)
+
+running 2 tests
+test log10_values ... ok
+test log10_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log1p.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log1p-c9942cac7a2a9abd)
+
+running 2 tests
+test log1p_values ... ok
+test log1p_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log2.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log2-a148fa47756d10f1)
+
+running 2 tests
+test log2_values ... ok
+test log2_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log_sigmoid.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log_sigmoid-1d4be81b83ab2359)
+
+running 3 tests
+test log_sigmoid_large_input_no_underflow ... ok
+test log_sigmoid_values ... ok
+test log_sigmoid_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_log_softmax.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_log_softmax-23c318cdf02eee44)
+
+running 3 tests
+test log_softmax_values ... ok
+test large_common_offsets_preserve_normalization_and_gradients ... ok
+test log_softmax_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_logaddexp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_logaddexp-4a13793ae94f554b)
+
+running 5 tests
+test logaddexp_large_magnitude ... ok
+test logaddexp_equal_infinities ... ok
+test logaddexp_broadcast ... ok
+test logaddexp_values ... ok
+test logaddexp_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_logit.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_logit-adbed20ad6459a07)
+
+running 2 tests
+test logit_values ... ok
+test logit_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_logsumexp.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_logsumexp-942789f799141ef9)
+
+running 3 tests
+test logsumexp_matches_manual ... ok
+test logsumexp_dim_shapes ... ok
+test logsumexp_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_margin_ranking_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_margin_ranking_loss-e12390e02f92d355)
+
+running 3 tests
+test margin_ranking_loss_shape_mismatch_is_err ... ok
+test margin_ranking_loss_values ... ok
+test margin_ranking_loss_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_masked_fill.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_masked_fill-a784fcb53e6e1c36)
+
+running 3 tests
+test masked_fill_errors ... ok
+test masked_fill_values ... ok
+test masked_fill_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_max.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_max-83cd14afdea95e70)
+
+running 7 tests
+test max_empty_is_err ... ok
+test max_nan_propagates ... ok
+test max_all_nan ... ok
+test max_grad ... ok
+test max_ties_split_gradient ... ok
+test max_value ... ok
+test max_nan_result_routes_gradient_to_nans ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_max_pool2d.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_max_pool2d-3272c02255b6a191)
+
+running 3 tests
+test max_pool_errors ... ok
+test max_pool_values ... ok
+test max_pool_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_maximum.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_maximum-018496d7fa118d3c)
+
+running 4 tests
+test maximum_values ... ok
+test maximum_propagates_nan ... ok
+test maximum_grad ... ok
+test maximum_grad_broadcast ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_mean_dim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_mean_dim-6a519f6bff0a7b89)
+
+running 4 tests
+test mean_dim_out_of_range_is_err ... ok
+test empty_mean_is_nan ... ok
+test mean_dim_values ... ok
+test mean_dim_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_minimum.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_minimum-18a5c1df0208d3c0)
+
+running 3 tests
+test minimum_values ... ok
+test minimum_values_broadcast ... ok
+test minimum_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_mish.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_mish-f27da9d0653b6549)
+
+running 2 tests
+test mish_values ... ok
+test mish_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_mse_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_mse_loss-9854f55b81ad55a8)
+
+running 2 tests
+test mse_loss_values ... ok
+test mse_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_normalize.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_normalize-f5fc34b86cec68c4)
+
+running 9 tests
+test normalize_out_of_range_is_err ... ok
+test normalize_overflowed_norm_returns_zero_values_and_gradients ... ok
+test normalize_grad ... ok
+test normalize_empty_shapes_and_invalid_dtype ... ok
+test normalize_tiny_nonzero_norm_avoids_backward_square_underflow ... ok
+test normalize_preserves_stale_version_checks_and_rejects_capture ... ok
+test normalize_values ... ok
+test normalize_clamp_boundary_and_strided_gradients ... ok
+test normalize_zero_rows_have_finite_gradients_for_tiny_eps ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_outer.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_outer-306e5366796207db)
+
+running 3 tests
+test outer_rejects_non_vectors ... ok
+test outer_values ... ok
+test outer_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_pad.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_pad-ea07d7e03547599d)
+
+running 3 tests
+test pad_constant_errors ... ok
+test pad_constant_values ... ok
+test pad_constant_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_pairwise_distance.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_pairwise_distance-3f8327c255a034b5)
+
+running 2 tests
+test pairwise_distance_values ... ok
+test pairwise_distance_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_permute.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_permute-b45dd4b73f6e86b8)
+
+running 3 tests
+test permute_errors ... ok
+test permute_values_and_view ... ok
+test permute_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_poisson_nll_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_poisson_nll_loss-4b3fa02d577a4da3)
+
+running 2 tests
+test poisson_nll_loss_values ... ok
+test poisson_nll_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_powf.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_powf-d8228edcdd795486)
+
+running 2 tests
+test powf_values ... ok
+test powf_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_prod_dim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_prod_dim-b281e0f155db5b3a)
+
+running 5 tests
+test prod_dim_out_of_range_is_err ... ok
+test prod_dim_two_zeros_gradient_is_all_zero ... ok
+test prod_dim_single_zero_gradient ... ok
+test prod_dim_values ... ok
+test prod_dim_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_reciprocal.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_reciprocal-7ecf84eb0b1e6c2e)
+
+running 2 tests
+test reciprocal_values ... ok
+test reciprocal_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_relu6.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_relu6-50d7bb76a2f06df9)
+
+running 2 tests
+test relu6_values ... ok
+test relu6_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_remainder.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_remainder-f8a4a1193263a76c)
+
+running 3 tests
+test remainder_values ... ok
+test remainder_grad ... ok
+test remainder_grad_broadcast ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_repeat.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_repeat-6316752addc75af9)
+
+running 3 tests
+test repeat_errors ... ok
+test repeat_values ... ok
+test repeat_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_rms_norm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_rms_norm-731658e01b8ea244)
+
+running 6 tests
+test rms_norm_bad_shapes_are_err ... ok
+test rms_norm_row_independence_and_eps ... ok
+test rms_norm_values ... ok
+test rms_norm_scale_invariance ... ok
+test rms_norm_grad ... ok
+test rms_norm_grad_with_weight ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_rope.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_rope-fa81dcaa8638e40f)
+
+running 6 tests
+test rope_position_zero_is_identity ... ok
+test rope_preserves_pair_norms ... ok
+test rope_explicit_positions_offset_decode ... ok
+test rope_rejects_bad_inputs ... ok
+test rope_values_manual_rotation ... ok
+test rope_grad ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_round.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_round-7902aa358ec0bdab)
+
+running 2 tests
+test round_values ... ok
+test round_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_rsqrt.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_rsqrt-62f64e8fc8b4e95e)
+
+running 2 tests
+test rsqrt_values ... ok
+test rsqrt_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_scatter.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_scatter-1219c723e1aeaeda)
+
+running 6 tests
+test scatter_duplicates_last_writer_wins ... ok
+test scatter_errors ... ok
+test scatter_duplicate_writes_grad_exactly ... ok
+test scatter_values_dim0_keeps_unwritten_cells ... ok
+test scatter_values_dim1 ... ok
+test scatter_grad_flows_to_src_at_selected_positions ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_scatter_add.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_scatter_add-238c9dfc60589375)
+
+running 3 tests
+test scatter_add_values ... ok
+test scatter_add_errors ... ok
+test scatter_add_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_selu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_selu-eb5197a7aaa5758d)
+
+running 2 tests
+test selu_values ... ok
+test selu_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sign.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sign-8b13a2e603de4051)
+
+running 2 tests
+test sign_values ... ok
+test sign_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_silu.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_silu-46c8856f59a77cff)
+
+running 3 tests
+test silu_values ... ok
+test silu_no_grad_path ... ok
+test silu_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sin.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sin-6cb6e94fe47ca750)
+
+running 2 tests
+test sin_values ... ok
+test sin_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sinc.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sinc-d888d4d2b3a47b8e)
+
+running 2 tests
+test sinc_values ... ok
+test sinc_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sinh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sinh-2dd4ac0320107c49)
+
+running 2 tests
+test sinh_values ... ok
+test sinh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_slice.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_slice-7530ffb797d5caf5)
+
+running 4 tests
+test slice_and_narrow_values ... ok
+test prefix_view_feeds_downstream_ops ... ok
+test slice_errors ... ok
+test slice_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_smooth_l1_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_smooth_l1_loss-cc88142e79d6bc38)
+
+running 2 tests
+test smooth_l1_loss_values ... ok
+test smooth_l1_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_soft_margin_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_soft_margin_loss-6f9cc811e1c0e308)
+
+running 2 tests
+test soft_margin_loss_values ... ok
+test soft_margin_loss_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_softmax.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_softmax-f1e1f7bccc06cc34)
+
+running 3 tests
+test softmax_dim_out_of_range_is_err ... ok
+test softmax_values ... ok
+test softmax_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_softmin.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_softmin-f25e7b7b200311ad)
+
+running 2 tests
+test softmin_values ... ok
+test softmin_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_softplus.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_softplus-3215ab3c665c19a5)
+
+running 3 tests
+test softplus_values ... ok
+test softplus_large_input_no_overflow ... ok
+test softplus_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_softshrink.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_softshrink-1d7449a63f28ac48)
+
+running 3 tests
+test softshrink_negative_lambd_errors ... ok
+test softshrink_values ... ok
+test softshrink_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_softsign.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_softsign-04831c3e1380cbdf)
+
+running 2 tests
+test softsign_values ... ok
+test softsign_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_split.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_split-253587595febdccf)
+
+running 3 tests
+test split_errors ... ok
+test split_and_chunk_values ... ok
+test split_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sqrt.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sqrt-66ec7d82705b87ae)
+
+running 2 tests
+test sqrt_values ... ok
+test sqrt_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_square.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_square-448844fb3ed49a51)
+
+running 2 tests
+test square_values ... ok
+test square_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_squeeze.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_squeeze-9c6a3f35b1b7604a)
+
+running 5 tests
+test squeeze_values ... ok
+test singleton_view_capture_replay_reads_updated_leaf_storage ... ok
+test squeeze_roundtrip_grad ... ok
+test singleton_views_preserve_strided_storage_aliases_and_typed_adjoints ... ok
+test unsqueeze_values ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_stack.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_stack-cdabcf7c2cbfaf9b)
+
+running 3 tests
+test stack_errors ... ok
+test stack_values ... ok
+test stack_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_std_dim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_std_dim-7062c612e789379c)
+
+running 5 tests
+test std_dim_out_of_range_is_err ... ok
+test std_dim_correction_too_large_is_err ... ok
+test std_dim_keepdim_shape ... ok
+test std_dim_values ... ok
+test std_dim_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_sum_dim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_sum_dim-fef2b1b3627e4702)
+
+running 3 tests
+test sum_dim_out_of_range_is_err ... ok
+test sum_dim_values ... ok
+test sum_dim_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_tan.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_tan-4d1a6935c9e3669f)
+
+running 2 tests
+test tan_values ... ok
+test tan_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_tanh.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_tanh-59c116709eb95a5e)
+
+running 2 tests
+test tanh_values ... ok
+test tanh_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_tanhshrink.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_tanhshrink-557bac32451df600)
+
+running 2 tests
+test tanhshrink_values ... ok
+test tanhshrink_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_threshold.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_threshold-23f971e5758da996)
+
+running 2 tests
+test threshold_values ... ok
+test threshold_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_topk.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_topk-722d631cef83584a)
+
+running 8 tests
+test empty_topk_keeps_dtype_and_argument_validation ... ok
+test topk_along_dim0 ... ok
+test topk_rejects_bad_args ... ok
+test topk_ties_take_lowest_index ... ok
+test topk_values_and_indices ... ok
+test empty_topk_preserves_zero_gradients_and_capture_barrier ... ok
+test empty_topk_skips_huge_outer_loops_and_source_materialization ... ok
+test topk_grad ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_trace.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_trace-440f31b36d3dc4f5)
+
+running 3 tests
+test trace_rejects_non_matrices ... ok
+test trace_values ... ok
+test trace_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_tri.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_tri-07ce3f0c2119c218)
+
+running 4 tests
+test tri_errors ... ok
+test tril_values ... ok
+test triu_values ... ok
+test tri_grad ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_triplet_margin_loss.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_triplet_margin_loss-e6acc4f9929f0144)
+
+running 3 tests
+test triplet_margin_loss_shape_mismatch_is_err ... ok
+test triplet_margin_loss_values ... ok
+test triplet_margin_loss_grad ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_trunc.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_trunc-f07e6d22818368ef)
+
+running 2 tests
+test trunc_values ... ok
+test trunc_grad ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_unflatten.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_unflatten-414939238d589222)
+
+running 4 tests
+test inference_capture_replays_unflatten_after_source_update ... ok
+test empty_inferred_and_broadcast_views_validate_metadata_without_allocating ... ok
+test strided_unflatten_retains_storage_and_exact_typed_values ... ok
+test floating_unflatten_gradients_and_higher_order_reshape_rule ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_var_dim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_var_dim-ccab2dd2591118ae)
+
+running 5 tests
+test var_dim_correction_too_large_is_err ... ok
+test var_dim_keepdim_shape ... ok
+test var_dim_out_of_range_is_err ... ok
+test var_dim_values ... ok
+test var_dim_grad ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_where_cond.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_where_cond-89f0eeca3b5bd380)
+
+running 4 tests
+test where_values_broadcast ... ok
+test where_values ... ok
+test where_grad ... ok
+test where_grad_broadcast ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/op_xlogy.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/op_xlogy-26d5e0373679bc9d)
+
+running 6 tests
+test xlogy_broadcast ... ok
+test xlogy_nan_b_propagates ... ok
+test xlogy_values ... ok
+test xlogy_grad_at_zero_is_masked_not_nan ... ok
+test xlogy_grad ... ok
+test xlogy_zero_zero_is_zero ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/optim.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim-6f67b424f3a48c68)
+
+running 8 tests
+test adam_bias_correction_ignores_skipped_steps ... ok
+test adamw_decay_is_decoupled_from_moments ... ok
+test capturable_on_cpu_params_falls_back_to_host_path ... ok
+test adam_minimizes_quadratic ... ok
+test step_skips_param_without_grad ... ok
+test sgd_fits_linear_regression ... ok
+test adamw_minimizes_quadratic ... ok
+test sgd_momentum_fits_linear_regression ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/optim_adafactor.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_adafactor-322da4d8657d5141)
+
+running 4 tests
+test derived_factor_capacity_is_checked_for_zero_storage_parameters ... ok
+test empty_active_gradients_capture_and_counter_overflow_reject_before_updates ... ok
+test actual_torch_matrix_and_vector_trajectory_and_all_factors ... ok
+test exact_checkpoint_factor_restore_and_late_corruption_transaction ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/optim_adaptive.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_adaptive-09e438bb9ebb3077)
+
+running 7 tests
+test asgd_step_zero_state_distinguishes_lazy_and_initialized_scalars ... ok
+test initialization_empty_slots_and_zero_epsilon_have_explicit_semantics ... ok
+test native_updates_and_every_moment_match_torch_twenty_step_fixtures ... ok
+test counter_capacity_and_capture_fail_before_any_step_mutation ... ok
+test malformed_late_state_and_configuration_leave_every_live_value_unchanged ... ok
+test rprop_step_zero_state_preserves_custom_step_sizes_and_lazy_learning_rates ... ok
+test owning_state_and_exact_resume_preserve_skips_and_freezing ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/optim_capture_validation.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_capture_validation-00c67dbbe5f6d31d)
+
+running 3 tests
+test capturable_optimizer_clone_owns_counter_and_moments ... ok
+
+thread 'capturable_partial_gradients_reject_before_device_work' (382326) panicked at crates/ferro-core/src/optim.rs:981:23:
+adamw step: Unsupported { op: "adamw_capturable", msg: "capturable AdamW requires gradients for every parameter or none" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'capturable_partial_gradients_reject_before_device_work' (382326) panicked at crates/ferro-core/src/optim.rs:981:23:
+adamw step: Unsupported { op: "adamw_capturable", msg: "capturable AdamW requires gradients for every parameter or none" }
+test capturable_restore_and_enable_require_synchronized_counters ... ok
+test capturable_partial_gradients_reject_before_device_work ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/optim_device.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_device-e8fb9ff821ab0549)
+
+running 4 tests
+test adam_step_downloads_nothing_uploads_only_bias_scalars ... ok
+test sgd_step_is_fully_device_resident ... ok
+test device_sgd_matches_cpu_bitwise_within_tolerance ... ok
+test device_adam_matches_cpu_within_tolerance ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/optim_inplace.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_inplace-a6463feedef0b970)
+
+running 5 tests
+
+thread 'stale_graph_backward_after_step_fails_loudly' (382336) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 131 was saved with version 0 but is now version 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test params_keep_identity_and_storage_across_steps ... ok
+test stale_graph_backward_after_step_fails_loudly ... ok
+test param_construction_copies_the_caller_tensor ... ok
+test step_consumes_the_grad ... ok
+test trajectories_match_the_prewave_reference_values ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/optim_lbfgs.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_lbfgs-b0059af9b2ef39ff)
+
+running 5 tests
+test strong_wolfe_rosenbrock_matches_torch_and_first_step_satisfies_both_conditions ... ok
+test checkpoint_restores_every_history_field_and_rejects_late_corruption_atomically ... ok
+test zero_gradient_and_boundary_preflight_preserve_parameters ... ok
+test fixed_step_history_matches_actual_torch_and_owns_snapshots ... ok
+test search_mode_restores_into_either_constructed_mode_and_rejects_invalid_flags ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/optim_lifecycle.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_lifecycle-328a440b34ada70b)
+
+running 6 tests
+test adamw_skipped_and_frozen_slots_match_independent_trajectories ... ok
+test empty_adamw_state_has_an_empty_counter_vector ... ok
+test adamw_counter_restore_rejects_invalid_states_atomically ... ok
+test optimizer_clones_own_state_and_share_parameter_slots ... ok
+test frozen_optimizers_and_shared_slots_keep_state_isolated ... ok
+test adamw_counter_roundtrip_and_legacy_scalar_preserve_continuation ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/optim_more.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_more-042fe705d0f875be)
+
+running 7 tests
+test schedulers_match_closed_forms ... ok
+test set_lr_lets_a_scheduler_drive_the_optimizer ... ok
+test sgd_nesterov_matches_hand_computed_steps ... ok
+test sgd_plain_momentum_unchanged_by_nesterov_flag_off ... ok
+test adamw_first_step_matches_hand_computed_value ... ok
+test global_norm_and_clipping_math ... ok
+test optimizers_converge_on_tiny_convex_problem ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/optim_options.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_options-11bd4be35b3a07cf)
+
+running 5 tests
+test coupled_decay_dampening_amsgrad_and_maximize_match_torch_history ... ok
+test custom_optimizer_default_retains_strict_snapshot_keys ... ok
+test saved_configuration_selects_exact_legacy_or_extended_optimizer_state_schema ... ok
+test adamw_amsgrad_maximize_matches_torch_and_restores_both_schema_directions ... ok
+test unknown_keys_bad_namespaces_and_config_state_mismatch_reject_before_mutation ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/optim_shared_parameters.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optim_shared_parameters-76ce2838448b597b)
+
+running 5 tests
+
+thread 'active_gradient_storage_aliases_reject_before_native_updates' (382367) panicked at crates/ferro-core/src/optim.rs:253:23:
+sgd step: Unsupported { op: "optimizer_step", msg: "active gradients must not share parameter storage" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'active_gradient_storage_aliases_reject_before_native_updates' (382367) panicked at crates/ferro-core/src/optim.rs:620:23:
+adam step: Unsupported { op: "optimizer_step", msg: "active gradients must not share parameter storage" }
+
+thread 'active_gradient_storage_aliases_reject_before_native_updates' (382367) panicked at crates/ferro-core/src/optim.rs:981:23:
+adamw step: Unsupported { op: "optimizer_step", msg: "active gradients must not share parameter storage" }
+test active_gradient_storage_aliases_reject_before_native_updates ... ok
+test shared_lbfgs_fixed_and_strong_wolfe_trials_match_actual_torch ... ok
+test shared_rmsprop_and_adafactor_match_actual_torch_regressions ... ok
+test strong_wolfe_rejected_closure_gradient_alias_restores_trial_baseline ... ok
+test every_adaptive_family_preserves_order_and_independent_moments_for_shared_leaves ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/optional_gradients.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/optional_gradients-f232eb9b70d5d454)
+
+running 7 tests
+test float64_none_and_no_grad_registration_keep_existing_contracts ... ok
+test none_skips_upstream_nodes_and_functional_queries_return_zeros ... ok
+test duplicate_inputs_and_changing_none_do_not_erase_existing_leaf_gradients ... ok
+
+thread 'invalid_optional_callbacks_publish_no_gradient_slots' (382375) panicked at crates/ferro-core/src/autograd.rs:567:13:
+op backward returned 1 gradients for 2 inputs; record_fn closures must return one gradient per input
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'invalid_optional_callbacks_publish_no_gradient_slots' (382375) panicked at crates/ferro-core/src/autograd.rs:577:17:
+gradient shape [2] does not match tensor shape []
+
+thread 'invalid_optional_callbacks_publish_no_gradient_slots' (382375) panicked at crates/ferro-core/src/autograd.rs:575:17:
+assertion `left == right` failed: gradient dtype must match its tensor
+  left: I64
+ right: F32
+
+thread 'saved_versions_are_checked_even_for_none_inputs_before_any_publication' (382378) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 158 was saved with version 0 but is now version 1
+test partial_none_and_mixed_output_branches_accumulate_only_present_gradients ... ok
+test invalid_optional_callbacks_publish_no_gradient_slots ... ok
+test saved_versions_are_checked_even_for_none_inputs_before_any_publication ... ok
+test strict_transform_seam_distinguishes_unused_from_numerical_zero ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/piecewise_autograd.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/piecewise_autograd-cb1823b087708b98)
+
+running 4 tests
+test piecewise_graph_derivatives_retain_real_input_and_seed_dependencies ... ok
+test relu_and_abs_match_nonfinite_forward_inputs_and_cotangents ... ok
+test relu_graph_derivative_suppresses_nonfinite_seed_where_inactive ... ok
+test relu_zero_higher_derivatives_keep_the_saved_result_dependency ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pool_zero_alloc.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/pool_zero_alloc-2b74d7794f78464b)
+
+running 3 tests
+test the_zero_miss_claim_has_teeth ... ok
+test mlp_step_allocates_nothing_fresh_after_warmup ... ok
+test recycled_numerics_match_a_pool_free_run ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/recurrent_validation.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/recurrent_validation-df64aacc34f5d48f)
+
+running 3 tests
+test unroll_rejects_output_layout_overflow_even_with_zero_batch ... ok
+test unroll_rejects_output_data_and_handle_capacity_before_constructing_steps ... ok
+test representable_empty_and_fully_masked_unrolls_preserve_initial_state ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/reduce_accuracy.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/reduce_accuracy-6dac0b8ee7260557)
+
+running 4 tests
+test sum_dim_is_bitwise_deterministic_across_calls ... ok
+test sum_is_bitwise_deterministic_across_calls ... ok
+test cancellation_recovers_small_residual ... ok
+test adversarial_sum_matches_f64_reference ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests/replay_exec.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/replay_exec-dd0c7b9b99e888b5)
+
+running 1 test
+test replay_matches_eager_with_fewer_launches ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/requires_grad_leaf.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/requires_grad_leaf-99477397d3dbe895)
+
+running 7 tests
+test interior_node_preserves_unchanged_flags_and_rejects_detaching_changes ... ok
+test gradient_checker_uses_fresh_leaf_slots_without_resetting_callers ... ok
+test gradient_path_unaffected_for_leaves ... ok
+test integer_leaf_rejected_with_result_error ... ok
+
+thread 'parameter_leaf_guards_do_not_depend_on_the_flag_setter' (382406) panicked at crates/ferro-core/src/params.rs:35:9:
+Param::new takes a leaf without autograd history
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'parameter_leaf_guards_do_not_depend_on_the_flag_setter' (382406) panicked at crates/ferro-core/src/params.rs:55:9:
+Param::set takes a leaf without autograd history
+test leaf_accepts_requires_grad ... ok
+test parameter_leaf_guards_do_not_depend_on_the_flag_setter ... ok
+test unchanged_leaf_flags_preserve_existing_graph_identity_and_slots ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/resident_model.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/resident_model-3f413cc751e46522)
+
+running 1 test
+test norm_and_layout_replay_never_download ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/review_capture_allocations.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/review_capture_allocations-c040a0bd991276e9)
+
+running 9 tests
+test gelu_capture_has_no_snapshot ... ok
+test exp_capture_has_no_snapshot ... ok
+test gelu_erf_capture_has_no_snapshot ... ok
+test sigmoid_capture_has_no_snapshot ... ok
+test log_softmax_capture_has_no_snapshot ... ok
+test silu_capture_has_no_snapshot ... ok
+test tanh_capture_has_no_snapshot ... ok
+test softmax_capture_has_no_snapshot ... ok
+test sqrt_capture_has_no_snapshot ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/review_capture_barriers.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/review_capture_barriers-cd848508dfc9135f)
+
+running 2 tests
+test residual_layernorm_remains_capture_barrier ... ok
+test triangular_masks_remain_capture_barriers ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/review_fixes.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/review_fixes-2b4d4e71166f39b3)
+
+running 6 tests
+test bf16_round_tiny_negative_is_negative_zero_not_inf ... ok
+test bf16_round_is_round_to_nearest_even_on_exact_ties ... ok
+test bf16_round_saturates_with_sign_on_overflow ... ok
+test mean_backward_scales_by_upstream_grad_over_n ... ok
+test scaled_sum_grad_check ... ok
+test sum_backward_scales_by_upstream_grad ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/review_layer_norm.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/review_layer_norm-afa7065633814e40)
+
+running 6 tests
+test layer_norm_all_kernels_declined ... ok
+test layer_norm_binary_declined ... ok
+test layer_norm_strided_input_without_layout_kernels ... ok
+test layer_norm_reduction_declined ... ok
+test layer_norm_unary_declined ... ok
+test layer_norm_broadcast_declined ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/safetensors.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/safetensors-101b61c4f22230ee)
+
+running 9 tests
+test escaped_names_roundtrip ... ok
+test golden_file_layout ... ok
+test half_load_parses_hand_built_bytes ... ok
+test loads_a_foreign_header_with_metadata_and_whitespace ... ok
+test rejects_duplicate_names_and_missing_paths ... ok
+test rejects_malformed_files ... ok
+test roundtrip_all_dtypes_and_ranks ... ok
+test half_dtypes_round_trip_byte_exactly ... ok
+test roundtrip_through_a_file ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/second_review_state.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/second_review_state-4803a06b3f54b10b)
+
+running 2 tests
+test inherited_scalar_validation_rejects_missing_custom_protocol ... ok
+test every_missing_or_duplicate_training_key_preserves_live_state ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/segment_dispatch.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/segment_dispatch-a5554d1abcb36c5c)
+
+running 3 tests
+test partial_backends_decline_explicitly_without_feature_download ... ok
+
+thread 'failures_never_download_or_silently_fallback' (382451) panicked at crates/ferro-core/src/segment.rs:49:18:
+resident segment sum backward failed: Unsupported { op: "injected_segment_launch", msg: "operational failure, not a fallback request" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test failures_never_download_or_silently_fallback ... ok
+test one_preparation_and_no_feature_transfers_in_forward_backward ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shared_parameters.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/shared_parameters-db063a3e1fd2ebbd)
+
+running 3 tests
+test unsupported_shared_destinations_reject_without_changing_source ... ok
+test frozen_shared_leaf_and_ordinary_owning_parameters_remain_distinct_contracts ... ok
+test shared_parameters_have_independent_leaf_flags_and_gradients ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/strided_fastpath.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/strided_fastpath-e31353bd5ab07355)
+
+running 10 tests
+test broadcast_scalar ... ok
+test broadcast_column_times_row ... ok
+test broadcast_bias_row ... ok
+test broadcast_bias_row_keepdim ... ok
+test empty_tensors ... ok
+test equal_shape_contiguous ... ok
+test grad_check_bias_add_composition ... ok
+test reshape_shares_storage ... ok
+test transpose_view_falls_back_and_stays_correct ... ok
+test transpose_view_that_stays_contiguous ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/strided_seeds.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/strided_seeds-c7d4047febc67516)
+
+running 12 tests
+test dtype_copies_preserve_bits_including_device_i64 ... ok
+test empty_singleton_and_higher_rank_transposes ... ok
+test detached_strided_seed_stays_resident ... ok
+test explicitly_unsupported_layouts_retain_legacy_host_fallback ... ok
+test backward_strided_seed_has_no_host_transfers ... ok
+test fresh_versions_alias_gates_and_seed_lifetime ... ok
+test live_strided_seed_retains_higher_order_dependency ... ok
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Io { op: "materialize_dev", msg: "injected OOM/launch failure" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Io { op: "materialize_dev", msg: "injected OOM/launch failure" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Io { op: "materialize_dev", msg: "injected OOM/launch failure" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "wrong stream/context" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "wrong stream/context" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "wrong stream/context" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "backend does not implement device-resident storage" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "backend does not implement device-resident storage" }
+
+thread 'operational_errors_never_download_or_retry' (382478) panicked at crates/ferro-core/src/tensor.rs:1288:43:
+detached device materialization failed: Unsupported { op: "materialize_dev", msg: "backend does not implement device-resident storage" }
+test operational_errors_never_download_or_retry ... ok
+test unmodified_legacy_backend_retains_host_fallback ... ok
+test functional_strided_seed_has_no_host_transfers ... ok
+test repeated_backward_preserves_returned_snapshots ... ok
+test whole_seed_preserves_shared_storage_fast_path ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/typed_copy.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_copy-8120c731ebe9c61d)
+
+running 5 tests
+test half_copies_preserve_raw_nan_payloads_and_subnormal_bits ... ok
+test exact_typed_copy_preserves_storage_aliases_and_handles_self_transpose ... ok
+test failed_typed_copies_leave_values_and_saved_versions_unchanged ... ok
+test leaf_copy_retains_id_grad_slot_and_shared_version_semantics ... ok
+test typed_copy_never_silently_loses_source_history ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/typed_layout.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_layout-7bf9ab1d7e239042)
+
+running 10 tests
+test clone_forward_replay_produces_real_independent_copies ... ok
+test detached_alias_shares_storage_version_but_not_history_or_slots ... ok
+test internal_view_vjp_retains_live_cotangent_flags_without_adding_edges ... ok
+test empty_offset_views_never_read_past_storage ... ok
+test no_grad_views_retain_flags_without_edges_and_explicit_leaf_enables_edges ... ok
+test same_shape_reshape_retains_all_typed_layouts_and_shared_versions ... ok
+test same_shape_reshape_preserves_autograd_and_forward_replay ... ok
+test owning_clone_does_not_save_parent_values_but_consumers_save_clone_values ... ok
+test saved_outputs_reject_alias_mutations_but_input_only_ops_allow_output_edits ... ok
+test clone_layouts_are_dense_preserving_or_contiguous_with_exact_typed_values ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/typed_math.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_math-5d96bd8a4ac0261a)
+
+running 11 tests
+test float64_values_and_gradients_never_narrow ... ok
+test empty_outputs_and_reduction_capacity_are_checked ... ok
+test functional_first_order_is_typed_and_has_no_persistent_grad_side_effects ... ok
+test invalid_typed_requests_reject_before_computation ... ok
+test integer_arithmetic_is_exact_wrapping_and_nondifferentiable ... ok
+test matrices_batches_vectors_and_strides_have_f64_adjoints ... ok
+
+thread 'mismatched_contributions_and_stale_parents_are_rejected' (382509) panicked at crates/ferro-core/src/autograd.rs:575:17:
+assertion `left == right` failed: gradient dtype must match its tensor
+  left: F32
+ right: F64
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'mismatched_contributions_and_stale_parents_are_rejected' (382509) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 1815 was saved with version 0 but is now version 1
+test typed_materialization_checks_precede_reading_broadcast_views ... ok
+test broadcast_arithmetic_and_unary_adjoints ... ok
+test powers_zero_and_one_preserve_boundary_derivatives ... ok
+test mismatched_contributions_and_stale_parents_are_rejected ... ok
+test typed_views_and_selectors_preserve_history ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/typed_nonlinear.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_nonlinear-2b7b0e056cbfdd1d)
+
+running 4 tests
+test double_softmax_empty_scalar_capacity_and_capture_contracts ... ok
+test double_unaries_have_finite_difference_adjoints ... ok
+test near_zero_transcendentals_preserve_precision_and_reciprocal_matches_ieee_order ... ok
+test softmax_both_modes_have_strided_axis_adjoints_and_stable_offsets ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/typed_promotion.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_promotion-e8b4ed0822344b23)
+
+running 8 tests
+test casts_and_promotions_reject_capture_and_nonportable_integer_values ... ok
+test boolean_arithmetic_has_explicit_torch_rules ... ok
+test differentiable_casts_preserve_identity_or_owned_copy_and_history ... ok
+test dimensional_dtype_precedence_matches_tensor_promotion ... ok
+test dropout_preserves_double_scale_gradients_and_counter_replay ... ok
+test mixed_comparisons_use_dimensioned_dtype_precedence_without_gradients ... ok
+test typed_batched_triangles_preserve_values_and_f64_adjoint ... ok
+test mixed_gradients_restore_each_original_floating_dtype ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/typed_random.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/typed_random-2d485a601dfca89b)
+
+running 3 tests
+test typed_random_validates_before_advancing_state_and_empty_draws_are_noops ... ok
+test double_uniform_keeps_53_bits_and_preserves_existing_float_stream ... ok
+test double_normals_are_finite_reproducible_and_not_narrowed ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/version_counters.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/version_counters-352dee7ba06ddcdb)
+
+running 6 tests
+
+thread 'mutated_saved_input_panics_on_backward' (382534) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 0 of the op producing tensor id 27 was saved with version 0 but is now version 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test detach_copy_has_independent_version ... ok
+test inplace_before_recording_is_fine_and_after_consuming_the_graph_too ... ok
+test mutated_saved_input_panics_on_backward - should panic ... ok
+
+thread 'real_inplace_op_on_a_saved_input_panics_on_backward' (382535) panicked at crates/ferro-core/src/autograd.rs:558:17:
+one of the variables needed for gradient computation has been modified by an inplace operation: input 1 of the op producing tensor id 36 was saved with version 0 but is now version 1
+test real_inplace_op_on_a_saved_input_panics_on_backward - should panic ... ok
+test repeated_backward_snapshots_are_per_record_not_per_backward ... ok
+test view_and_base_share_version ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/window_conv.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/window_conv-33073b53a3ad3e86)
+
+running 7 tests
+test noncontiguous_input_weight_and_columns ... ok
+test validation_and_empty_batch ... ok
+test rectangular_group_depthwise_oracle_exact ... ok
+test grouped_dilated_forward_backward_exact ... ok
+test window_overlap_values_and_adjoint ... ok
+test window_fold_and_unfold_finite_differences ... ok
+test grouped_and_depthwise_finite_differences ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/ferro_cuda-935e5f20d8d9858d)
+
+running 81 tests
+test host_read_tests::typed_downloads_validate_ordinal_and_drain_owner_errors ... ok
+
+running 1 test
+test install_tests::direct_registry_replacement_cannot_return_or_fence_stale_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::direct_registry_replacement_cannot_return_or_fence_stale_owner ... ok
+
+running 1 test
+test install_tests::concurrent_installs_leave_one_registered_owner ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::concurrent_installs_leave_one_registered_owner ... ok
+
+running 1 test
+test install_tests::overlapping_publications_cannot_leave_different_owners ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::overlapping_publications_cannot_leave_different_owners ... ok
+
+running 1 test
+test install_tests::paused_publication_does_not_expose_a_split_pair ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::paused_publication_does_not_expose_a_split_pair ... ok
+
+running 1 test
+test install_tests::reentrant_drop_direct_registration_without_cuda ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+REENTRANT_DROP_ENTER
+REENTRANT_DROP_COMPLETE
+test install_tests::reentrant_drop_direct_registration_without_cuda ... ok
+test kernels::tests::activation_gradient_sources_route_conditionals_through_all_layouts ... ok
+test kernels::tests::binary_exprs_cover_every_kind ... ok
+test kernels::tests::broadcast_binary_source_decomposes_flat_index ... ok
+test kernels::tests::broadcast_index_math_matches_reference ... ok
+test kernels::tests::broadcast_strides_follow_numpy_rules ... ok
+test kernels::tests::chain_bc_args_flatten_in_signature_order ... ok
+test kernels::tests::chain_dataflow_simulates_the_unfused_reference ... ok
+test kernels::tests::chain_source_keys_on_steps_and_bc_rank ... ok
+test kernels::tests::chain_source_threads_expressions_into_one_kernel ... ok
+test kernels::tests::fill_source_writes_the_parameter_value ... ok
+test kernels::tests::fused_step_sources_take_scalars_as_parameters ... ok
+test kernels::tests::gtz_source_is_the_relu_gradient_mask ... ok
+test kernels::tests::inplace_sources_declare_the_exported_kernel_and_mutate_dst ... ok
+test kernels::tests::parametrized_kinds_generate_distinct_sources ... ok
+test kernels::tests::reduce_grid_caps_blocks_and_handles_small_n ... ok
+test kernels::tests::reduce_sources_form_a_two_pass_pipeline ... ok
+test kernels::tests::scalar_formatting_handles_nonfinite_and_exponents ... ok
+
+running 1 test
+test install_tests::reentrant_drop_during_install ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test kernels::tests::softmax_sources_form_a_two_pass_pipeline ... ok
+test install_tests::reentrant_drop_during_install ... ok
+test kernels::tests::sum_dim_source_uses_outer_inner_decomposition ... ok
+test kernels::tests::unary_exprs_cover_every_kind ... ok
+test kernels::tests::sources_declare_the_exported_kernel ... ok
+
+running 1 test
+test install_tests::reentrant_drop_of_last_mismatch_snapshot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::reentrant_drop_of_last_mismatch_snapshot ... ok
+
+running 1 test
+test install_tests::selection_tracks_the_last_successful_ordinal ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+SKIP install tests: CUDA driver library (libcuda) not found; no GPU driver installed
+test install_tests::selection_tracks_the_last_successful_ordinal ... ok
+test static_graph::model::failure_tests::contiguous_layouts_alias_private_slots_without_allocations_or_nodes ... ok
+test static_graph::model::failure_tests::layout_alias_mapping_preserves_transposes_scratch_and_final_copies ... ok
+test static_graph::model::failure_tests::model_preparation_failure_releases_capture_and_resources ... ok
+test static_graph::model::failure_tests::zero_work_is_a_real_empty_graph_and_zero_gemm_rewrites_output ... ok
+test static_graph::native::gpu_tests::native_boundary_panics_restore_override_and_recover ... ok
+test static_graph::native::gpu_tests::real_resources_keep_sticky_exclusion_after_simulated_cleanup_failures ... ok
+test static_graph::native::tests::capture_cleanup_bind_failure_cannot_release_addresses_after_outer_success ... ok
+test static_graph::native::tests::cleanup_end_still_active_or_partial_destroy_failure_stays_quarantined ... ok
+test static_graph::native::tests::end_error_owns_partial_graph_without_instantiating ... ok
+test static_graph::native::tests::existing_null_and_partial_failure_ownership_matrix ... ok
+test static_graph::native::tests::failed_upload_completion_is_fenced_again_before_release ... ok
+test static_graph::native::tests::inner_cleanup_failure_cannot_be_erased_by_outer_fence_success ... ok
+test static_graph::native::gpu_tests::returned_native_errors_recover_next_model_and_pointwise_graph ... ok
+test static_graph::native::tests::native_cleanup_bind_retains_handles ... ok
+test static_graph::native::tests::native_cleanup_exec_retains_handles ... ok
+test static_graph::native::tests::native_cleanup_graph_retains_only_remaining_handle ... ok
+test static_graph::native::gpu_tests::private_warmup_fence_error_releases_only_after_cleanup_fence ... ok
+
+thread 'static_graph::native::tests::panic_after_end_output_destroys_once_without_ending_twice' (382612) panicked at crates/ferro-cuda/src/static_graph/native/tests.rs:16:44:
+injected native boundary unwind
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test static_graph::native::tests::null_graph_error_is_distinct_from_a_valid_zero_node_graph ... ok
+test static_graph::native::tests::panic_after_end_output_destroys_once_without_ending_twice ... ok
+test static_graph::native::tests::persistent_upload_fence_failure_quarantines_handles ... ok
+
+thread 'static_graph::native::tests::poisoned_quarantine_registry_still_retains_owned_handles' (382614) panicked at crates/ferro-cuda/src/static_graph/native/tests.rs:112:60:
+poison quarantine registry
+test static_graph::native::tests::poisoned_quarantine_registry_still_retains_owned_handles ... ok
+test static_graph::native::tests::skipped_end_is_closed_on_error_unwind ... ok
+test static_graph::native::tests::preparation_fences_before_buffers_and_releases_only_its_exclusion ... ok
+test static_graph::native::tests::successful_instantiate_with_null_exec_is_rejected ... ok
+test static_graph::native::tests::uncertain_preparation_completion_retains_buffers_and_exclusion ... ok
+test static_graph::native::tests::unknown_capture_status_does_not_blindly_end_twice ... ok
+test static_graph::native::tests::unwind_end_error_destroys_partial_graph ... ok
+test static_graph::native::tests::unknown_status_retains_capture_stream_addresses_and_exclusion ... ok
+test static_graph::native::tests::upload_error_fences_before_exec_and_graph_destruction ... ok
+test static_graph::native::gpu_tests::published_graph_drop_retains_owners_with_poisoned_exclusion_mutex ... ok
+test static_graph::tests::pointwise_validation_allows_scalar_broadcast_and_checks_later_runs ... ok
+test static_graph::tests::pointwise_validation_checks_all_addresses_before_cuda_work ... ok
+test static_graph::snapshot_tests::snapshot_completes_copy_before_returning_to_an_untracked_consumer ... ok
+test static_graph::tests::failed_graph_boundary_poison_is_sticky ... ok
+test static_graph::tests::private_capture_unwind_restores_stream_with_tracking_enabled ... ok
+test tests::backend_trait_is_fully_implemented ... ok
+SKIP CUDA unit test: CUDA driver library (libcuda) not found; no GPU driver installed
+test tests::captured_adamw_advances_bias_correction_across_replays ... ok
+SKIP CUDA unit test: CUDA driver library (libcuda) not found; no GPU driver installed
+test tests::adamw_capturable_dev_matches_host_reference ... ok
+test static_graph::tests::private_scratch_replay_preserves_foreign_stream_output_read_dependencies ... ok
+test static_graph::tests::replay_tracks_leaves_and_exported_output_not_private_scratch ... ok
+SKIP CUDA unit test: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP gpu_end_to_end: CUDA driver library (libcuda) not found; no GPU driver installed
+test tests::g6_zero_fresh_allocations_per_step_after_warmup ... ok
+test tests::gpu_end_to_end ... ok
+SKIP gpu_softmax_gelu_activations_match_cpu_forward_and_grad: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA unit test: CUDA driver library (libcuda) not found; no GPU driver installed
+test tests::gpu_softmax_gelu_activations_match_cpu_forward_and_grad ... ok
+test tests::gpu_inplace_kernels_mutate_the_original_buffer ... ok
+test tests::install_never_panics_without_gpu ... ok
+SKIP CUDA unit test: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP gpu_mini_block_forward_backward_fully_resident_converges: CUDA driver library (libcuda) not found; no GPU driver installed
+test tests::matmul_k_zero_is_zeroed_even_with_dirty_pool ... ok
+test tests::gpu_mini_block_forward_backward_fully_resident_converges ... ok
+
+thread 'tests::scoped_alias_relinquishes_on_return_error_and_unwind' (382640) panicked at crates/ferro-cuda/src/lib.rs:1977:66:
+injected alias closure panic
+test tests::sgemm_transpose_flags_match_row_major_matmul ... ok
+test tests::strided_batched_cfg_matches_per_slab_single_gemms ... ok
+test tests::scoped_alias_relinquishes_on_return_error_and_unwind ... ok
+test tests::sgemm_mapping_matches_row_major_matmul ... ok
+
+test result: ok. 81 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/checkpoint_dtype.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/checkpoint_dtype-86f2c7c3614c691f)
+
+running 1 test
+skipping CUDA: CUDA driver library (libcuda) not found; no GPU driver installed
+test checkpoint_device_copies_preserve_dtype_placement_and_ownership ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/concurrent_copy_replay.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/concurrent_copy_replay-d8af39435ef86bdd)
+
+running 1 test
+
+running 1 test
+test device_copy_between_replay_leaves_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+test device_copy_between_replay_leaves_completes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/gpu_integration.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/gpu_integration-51bff33694fc9b8f)
+
+running 26 tests
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test backward_on_device_gradients_match_cpu ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test captured_adamw_optimiser_advances_across_replays ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test capturable_adamw_missing_gradients_preserve_state ... ok
+test capturable_after_eager_warmup_preserves_timestep ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test captured_chain_graph_replays_correctly ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test chain_dev_runs_resident_and_matches_host_slice_path ... ok
+test captured_step_advances_params_across_replays ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test captured_three_step_chain_replays ... ok
+test compiled_broadcast_shape_cases_match_cpu ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test compiled_chain_replays_current_leaves_and_rejects_unsupported_graphs ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test embedding_on_device_matches_cpu_forward_and_grad ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test core_fusion_seam_runs_one_gpu_launch_and_matches_eager ... ok
+test compiled_dag_counts_real_pointwise_launches ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test foreign_device_buffers_are_rejected ... ok
+test fused_gelu_bias_add_chain_matches_cpu ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test fused_relu_mul_add_chain_matches_cpu ... ok
+test log_softmax_large_offsets_keep_values_and_gradients ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test i64_to_device_roundtrip_is_exact ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test missing_cuda_fails_required_integration ... ok
+test matmul_on_device_match_cpu_all_transpose_flags ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test reduce_dev_matches_cpu_across_sizes ... ok
+test normalize_zero_rows_and_overflowed_norms_keep_finite_gradients ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test restore_into_fresh_capturable_optimiser_keeps_moments_on_device ... ok
+test tensor_ops_on_device_match_cpu ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test replay_executor_matches_eager_on_gpu ... ok
+SKIP CUDA integration: CUDA driver library (libcuda) not found; no GPU driver installed
+test sum_dim_and_fill_on_device_match_reference ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/layer_norm_fused.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/layer_norm_fused-e485c447475c601e)
+
+running 2 tests
+SKIP CUDA: CUDA driver library (libcuda) not found; no GPU driver installed
+SKIP CUDA: CUDA driver library (libcuda) not found; no GPU driver installed
+test fused_layer_norm_is_one_resident_operation ... ok
+test fused_layer_norm_kernel_bounds_and_stability ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout_materialization.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/layout_materialization-bfe967e5d14ff9d0)
+
+running 2 tests
+SKIP CUDA layout verification: CUDA driver library (libcuda) not found; no GPU driver installed; set FERRO_REQUIRE_CUDA=1 to fail instead
+SKIP CUDA layout verification: CUDA driver library (libcuda) not found; no GPU driver installed; set FERRO_REQUIRE_CUDA=1 to fail instead
+test direct_layout_values_and_bounds ... ok
+test eager_and_compiled_model_layouts_have_zero_index_uploads ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/model_static_graph.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/model_static_graph-32eac76f904679d4)
+
+running 11 tests
+test compiled_static_matmul_reads_current_weights ... ok
+test compiled_static_attention_mlp_updates_input_and_weights ... ok
+test malformed_static_plan_is_rejected_without_panicking_or_allocating ... ok
+test static_empty_shapes_replay_without_invalid_launches ... ok
+test static_expanding_seed_preserves_operand_order_and_fresh_weights ... ok
+test empty_static_plans_still_validate_extents_strides_and_operands ... ok
+test static_layer_norm_supports_each_affine_combination ... ok
+test compiled_static_pointwise_reads_current_leaves_and_retains_snapshots ... ok
+test static_replay_orders_concurrent_whole_tensor_updates ... ok
+test static_softmax_arbitrary_axes_read_fresh_inputs ... ok
+test static_zero_reductions_overwrite_dirty_destinations_on_every_replay ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/registry_copy.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/registry_copy-919ad3b9f46db50c)
+
+running 4 tests
+CUDA unavailable: CUDA driver library (libcuda) not found; no GPU driver installed
+CUDA unavailable: CUDA driver library (libcuda) not found; no GPU driver installed
+test gather_rejects_index_buffers_from_another_owner_even_when_empty ... ok
+test host_reads_reject_foreign_buffer_types_even_when_empty ... ok
+CUDA unavailable: CUDA driver library (libcuda) not found; no GPU driver installed
+CUDA unavailable: CUDA driver library (libcuda) not found; no GPU driver installed
+test old_allocation_host_reads_survive_owner_drop_without_relaxing_compute ... ok
+test tensor_gather_propagates_foreign_owner_errors_without_cpu_fallback ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/segments.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/segments-b25b8d20a742d2d6)
+
+running 6 tests
+test backend_validation_stream_identity_and_plan_lifetime ... ok
+test f64_parity_and_finite_difference_vjp ... ok
+test prepared_topology_reuse_counts_and_empty_contracts ... ok
+test public_softmax_stable_and_adjoint ... ok
+test public_sum_is_resident_with_resident_adjoint ... ok
+test strided_features_remain_resident ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/static_graph_safety.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/static_graph_safety-1d27d2a0fbe314c9)
+
+running 6 tests
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test captured_chain_retains_original_inputs_and_recycles_each_allocation_once ... ok
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test captured_chain_broadcast_reads_current_inputs_without_disabling_tracking ... ok
+test legacy_capture_cannot_disable_tracking_with_live_static_graph ... ok
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test static_dag_retains_sources_and_replays_one_graph_without_allocations ... ok
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test rejects_invalid_or_unsupported_dag_before_allocating ... ok
+skipping GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test rejects_same_ordinal_foreign_stream_before_enqueue ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/strided_seed_residency.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/strided_seed_residency-9ccb291fe014b5ff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/ferro_fastcpu-b83a8326747ac1ff)
+
+running 32 tests
+test elementwise::tests::activation_gradient_kinds_handle_nonfinite_values_and_signed_zero ... ok
+test elementwise::tests::install_backend_routes_tensor_ops ... ok
+test elementwise::tests::log_softmax_keeps_large_offset_normalization ... ok
+softmax log=false 1x1: max 0.00 ulp from f64, at most 0.00 ulp further than CpuBackend
+softmax log=true 1x1: max 0.00 ulp from f64, at most 0.00 ulp further than CpuBackend
+softmax log=false 4x7: max 4.71 ulp from f64, at most 1.22 ulp further than CpuBackend
+softmax log=true 4x7: max 0.49 ulp from f64, at most 0.06 ulp further than CpuBackend
+softmax log=false 9x33: max 15.34 ulp from f64, at most 0.94 ulp further than CpuBackend
+softmax log=true 9x33: max 0.97 ulp from f64, at most 0.00 ulp further than CpuBackend
+test elementwise::tests::matmul_batch_is_deterministic ... ok
+test elementwise::tests::matmul_batch_matches_default_bitwise ... ok
+test elementwise::tests::tensor_ops_route_through_backend ... ok
+softmax log=false 1024x1024: max 34.15 ulp from f64, at most 2.40 ulp further than CpuBackend
+softmax log=true 1024x1024: max 1.01 ulp from f64, at most 0.48 ulp further than CpuBackend
+softmax log=false 2x5000: max 33.16 ulp from f64, at most 1.18 ulp further than CpuBackend
+softmax log=true 2x5000: max 0.71 ulp from f64, at most 0.00 ulp further than CpuBackend
+softmax log=false 300x129: max 32.94 ulp from f64, at most 1.97 ulp further than CpuBackend
+softmax log=true 300x129: max 0.99 ulp from f64, at most 0.09 ulp further than CpuBackend
+test elementwise::tests::softmax_tolerance ... ok
+test elementwise::tests::sum_and_sum_dim_match_reference_bitwise ... ok
+Exp: at most 0.95 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 0.95 ulp, max |fast-cpu|/|t| 1.16e-7
+test elementwise::tests::binary_parity_all_kinds ... ok
+test gemm_tests::check_skips_k_beyond_gamma_domain ... ok
+Log: at most 0.67 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 0.67 ulp, max |fast-cpu|/|t| 1.19e-7
+test gemm_tests::concurrent_callers_get_exact_results ... ok
+test gemm_tests::batched_matches_per_slab_for_every_thread_count ... ok
+Tanh: at most 0.86 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 0.86 ulp, max |fast-cpu|/|t| 1.07e-7
+test gemm_tests::error_is_within_gamma_k_bound_of_f64_reference ... ok
+Sigmoid: at most 1.30 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 1.95 ulp, max |fast-cpu|/|t| 1.63e-7
+Silu: at most 1.63 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 1.63 ulp, max |fast-cpu|/|t| 1.95e-7
+Gelu: at most 1.37 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 1.61 ulp, max |fast-cpu|/|t| 4.46e-7
+test gemm_tests::historical_fixture_is_exact_and_its_omission_fingerprint_breaches_the_check ... ok
+test gemm_tests::install_routes_default_backend_bmm_through_fast_gemm ... ok
+GeluErf: at most 1.70 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 1.70 ulp, max |fast-cpu|/|t| 4.15e-7
+test elementwise::tests::unary_parity_exact_kinds ... ok
+
+thread 'gemm_tests::shape_validation' (383080) panicked at crates/ferro-fastcpu/src/lib.rs:43:5:
+BMM A buffer too short
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'gemm_tests::shape_validation' (383080) panicked at crates/ferro-fastcpu/src/lib.rs:39:37:
+BMM row count overflow
+
+thread 'gemm_tests::shape_validation' (383080) panicked at crates/ferro-fastcpu/src/lib.rs:41:68:
+BMM input size overflow
+
+thread 'gemm_tests::shape_validation' (383080) panicked at crates/ferro-fastcpu/src/lib.rs:42:36:
+BMM output size overflow
+test gemm_tests::shape_validation ... ok
+test gemm_tests::simd_paths_agree_bitwise_with_each_other ... ok
+test gemm_tests::special_values_follow_the_oracle ... ok
+
+thread 'registry_tests::registry_scope_restores_after_unwind' (383083) panicked at crates/ferro-fastcpu/src/registry_tests.rs:40:9:
+intentional registry-owner unwind
+test registry_tests::registry_scope_restores_after_unwind ... ok
+test tests::install_routes_tensor_matmul ... ok
+test tests::matches_naive_across_shapes ... ok
+test tests::matches_naive_edge_dims ... ok
+GeluErfGrad: at most 2.76 ulp further from the f64 formula than CpuBackend; where CpuBackend is within 4 ulp and normal: max 1.89 ulp, max |fast-cpu|/|t| 4.42e-7
+test elementwise::tests::unary_tolerance_approx_kinds ... ok
+test tests::matches_naive_packed_remainders_threaded ... ok
+test tests::matches_naive_threaded_path ... ok
+test tests::zero_dims_produce_empty_or_zero_outputs ... ok
+
+thread 'ferro-fastcpu-0' (382726) panicked at crates/ferro-fastcpu/src/workers.rs:180:46:
+intentional task panic
+
+thread 'workers::tests::concurrent_callers_and_panics_are_contained' (383096) panicked at crates/ferro-fastcpu/src/workers.rs:144:5:
+a fastcpu worker task panicked
+test workers::tests::concurrent_callers_and_panics_are_contained ... ok
+test workers::tests::runs_every_task_once_and_nests_inline ... ok
+test gemm_tests::results_are_bitwise_independent_of_threads_and_split_direction ... ok
+test tests::matches_naive_packed_remainders ... ok
+test gemm_tests::every_isa_matches_its_exact_oracle_across_tile_and_block_edges ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.77s
+
+     Running unittests src/bin/bench.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bench-497645eabd426c73)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/bench_elementwise.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bench_elementwise-c35a82ced5c39e94)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/roofline.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/roofline-4323c09c21592353)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bmm_containment.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bmm_containment-9b067b1e18f3d5b5)
+
+running 2 tests
+test serial_cpu_cost_probe ... ignored, serial CPU cost probe; not a historical BMM performance claim
+test installed_cpu_bmm_shapes_transposes_and_gradients ... ok
+
+test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/bmm_parity.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bmm_parity-663901784ef626b4)
+
+running 6 tests
+test injected_input_byte_changes_are_distinguished_by_stage ... ok
+BMM evidence origin=injected_omission_p90_test_buffer: /workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-fastcpu/../../verification/foundation-wave/fastcpu-diagnostics/injected-383140-1793740763906564617-1.jsonl
+test injected_omission_report_is_bounded_and_counts_all_mismatches ... ok
+test concurrent_batches_match_independent_oracle ... ok
+original fixture a=7941b9771e16be98 b=b7341444d1f06a41 oracle=ea9347934355c9b6 index231244=11.969769 bits=1094681644 threads=Ok(4)
+test original_failure_fixture_matches_independent_oracle ... ok
+test batch_tails_and_k_blocks_match_independent_oracle ... ok
+BMM evidence origin=injected_omission_p90_test_buffer: /workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-fastcpu/../../verification/foundation-wave/fastcpu-diagnostics/injected-383140-1793740766130551129-2.jsonl
+test injected_historical_coordinate_omission_retains_operands ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.39s
+
+     Running tests/bmm_perf.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bmm_perf-cbb4def1d5f16051)
+
+running 1 test
+test bmm_perf_naive_vs_fastcpu ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/ferro_tokenizer-891c94de83a9c593)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bpe.rs (work/completeness-2026-11-03/native-target-candidate12/debug/deps/bpe-a8962ada27002bea)
+
+running 8 tests
+test letter_class_matches_unicode_general_category_not_the_alphabetic_property ... ok
+test pretokenizer_matches_gpt2_splits ... ok
+test real_gpt2_vocab_if_available ... ok
+test decode_inverts_encode ... ok
+test unknown_symbols_error_loudly ... ok
+test merge_order_follows_ranks ... ok
+test vocab_json_escapes_and_lookup ... ok
+test full_byte_vocab_round_trips_arbitrary_text ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ferro_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ferro_cuda
+
+running 2 tests
+error[E0502]: cannot borrow `*graph` as mutable because it is also borrowed as immutable
+   --> crates/ferro-cuda/src/static_graph.rs:162:5
+    |
+161 |     let output = graph.output().unwrap();
+    |                  ----- immutable borrow occurs here
+162 |     graph.replay().unwrap();
+    |     ^^^^^^^^^^^^^^ mutable borrow occurs here
+163 |     let _ = output.len();
+    |             ------ immutable borrow later used here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0502`.
+error[E0502]: cannot borrow `*chain` as mutable because it is also borrowed as immutable
+  --> crates/ferro-cuda/src/static_graph.rs:57:5
+   |
+56 |     let output = chain.output();
+   |                  ----- immutable borrow occurs here
+57 |     chain.replay().unwrap();
+   |     ^^^^^^^^^^^^^^ mutable borrow occurs here
+58 |     let _ = output.len();
+   |             ------ immutable borrow later used here
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0502`.
+test crates/ferro-cuda/src/static_graph.rs - static_graph::StaticPointwiseGraph::output (line 158) - compile fail ... ok
+test crates/ferro-cuda/src/static_graph.rs - static_graph::CapturedChain::replay (line 53) - compile fail ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests ferro_fastcpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests ferro_tokenizer
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

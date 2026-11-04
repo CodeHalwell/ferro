@@ -35,6 +35,17 @@ impl Counting {
     }
 }
 impl Backend for Counting {
+    fn copy_dev(&self, source: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(Box::new(Buf(Mutex::new(data(source)))))
+    }
+    fn copy_into_dev(&self, destination: &dyn DeviceBuffer, source: &dyn DeviceBuffer) -> Result<()> {
+        let values = data(source);
+        destination.as_any().downcast_ref::<Buf>().unwrap().0.lock().unwrap().copy_from_slice(&values); Ok(())
+    }
+    fn write_dev_from_host(&self, destination: &dyn DeviceBuffer, values: &[f32]) -> Result<()> {
+        self.uploads.fetch_add(1, Ordering::SeqCst);
+        destination.as_any().downcast_ref::<Buf>().unwrap().0.lock().unwrap().copy_from_slice(values); Ok(())
+    }
     fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { panic!("unexpected host kernel") }
     fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { panic!("unexpected host kernel") }
     fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { panic!("unexpected host kernel") }
@@ -42,6 +53,7 @@ impl Backend for Counting {
         let values = data(a).iter().zip(data(b)).map(|(&a, b)| match kind {
             BinaryKind::Add => a + b, BinaryKind::Sub => a - b,
             BinaryKind::Mul => a * b, BinaryKind::Div => a / b,
+            BinaryKind::ReluBackward => if b <= 0.0 { 0.0 } else { a },
         }).collect();
         Ok(Box::new(Buf(Mutex::new(values))))
     }
@@ -111,7 +123,7 @@ fn check(mode: &str, transposed: bool) {
     assert!(seed.grad().is_none());
     assert_eq!(delta, vec![0, 0, 0, usize::from(transposed)], "{mode}: [f32 uploads, downloads, i64 uploads, layouts]");
     assert_eq!(result.device(), DEV);
-    if transposed { assert_ne!(result._storage_ptr(), seed._storage_ptr()); }
+    if transposed || mode == "backward" { assert_ne!(result._storage_ptr(), seed._storage_ptr()); }
     else { assert_eq!(result._storage_ptr(), seed._storage_ptr()); }
 }
 
@@ -234,7 +246,7 @@ fn live_strided_seed_retains_higher_order_dependency() {
 }
 
 #[test]
-fn repeated_backward_preserves_returned_snapshots() {
+fn repeated_backward_updates_held_gradient_handles() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let backend = Arc::new(Counting::default());
     register_backend(DEV, backend.clone());
@@ -250,12 +262,12 @@ fn repeated_backward_preserves_returned_snapshots() {
         let second = leaf.grad().unwrap();
         let after = backend.counts();
         if !op_root { assert_eq!(&after[..3], &before[..3]); }
-        // Transpose's ordinary adjoint yields a strided contribution; repeated
-        // accumulation of that contribution is a separate host-fallback path.
+        // Transpose's ordinary adjoint can require a resident layout copy.
         let expected = if op_root { vec![1., 2., 3., 4., 5., 6.] } else { vec![1., 4., 2., 5., 3., 6.] };
-        assert_eq!(first.to_vec(), expected);
-        assert_eq!(second.to_vec(), expected.iter().map(|x| 2. * x).collect::<Vec<_>>());
-        assert_ne!(first._storage_ptr(), second._storage_ptr());
+        assert_eq!(first.to_vec(), expected.iter().map(|x| 2. * x).collect::<Vec<_>>());
+        assert_eq!(second.to_vec(), first.to_vec());
+        assert_eq!(first.id(), second.id());
+        assert_eq!(first._storage_ptr(), second._storage_ptr());
         assert!(!first.requires_grad());
     }
 }
@@ -312,6 +324,6 @@ fn backward_strided_seed_has_no_host_transfers() { check("backward", true); }
 #[test]
 fn functional_strided_seed_has_no_host_transfers() { check("vjp", true); }
 #[test]
-fn whole_seed_preserves_shared_storage_fast_path() {
+fn whole_seed_separates_public_ownership_from_functional_sharing() {
     for mode in ["detach", "backward", "vjp"] { check(mode, false); }
 }

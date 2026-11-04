@@ -7,9 +7,10 @@ use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn log(&self) -> Tensor {
+        if self.dtype() == crate::DType::F64 { return crate::typed_math::unary_grad_tensor(self, "log", |x| x.ln(), false, |g, x| g.div(x)).expect("float64 unary"); }
         let out = raw_unary_k(self, UnaryKind::Log).expect("cpu backend is always registered");
         let x = self.clone();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Log), move |g| {
             vec![raw_binary("log_bw", g, &x, |gg, xx| gg / xx).unwrap()]
         })
     }

@@ -55,7 +55,9 @@ fn legacy_capture_cannot_disable_tracking_with_live_static_graph() {
     if start.is_ok() { let _ = b.end_step_capture(); }
     assert!(start.is_err(), "legacy capture must not disable static graph tracking");
     let y = b.alloc_from_host(&[2.0]).unwrap();
-    assert!(b.capture_chain(&[ferro_cuda::ChainStep::Unary(UnaryKind::Relu)], &[y.as_ref()]).is_err(), "legacy chain capture must not disable tracking");
+    let mut chain = b.capture_chain(&[ferro_cuda::ChainStep::Unary(UnaryKind::Relu)], &[y.as_ref()]).unwrap();
+    chain.replay().unwrap();
+    assert_eq!(chain.copy_output_to_host(&b).unwrap(), vec![2.0]);
     graph.replay().unwrap();
     assert_eq!(graph.copy_output_to_host().unwrap(), vec![1.0]);
 }
@@ -70,7 +72,7 @@ fn rejects_invalid_or_unsupported_dag_before_allocating() {
         StaticPointwiseRun { inputs: vec![9], steps: vec![ferro_cuda::ChainStep::Unary(UnaryKind::Relu)] },
         StaticPointwiseRun { inputs: vec![0], steps: vec![ferro_cuda::ChainStep::Binary { kind: ferro_core::BinaryKind::Add, other: usize::MAX }] },
         StaticPointwiseRun { inputs: vec![0], steps: vec![] },
-        StaticPointwiseRun { inputs: vec![0], steps: vec![ferro_cuda::ChainStep::BinaryBc { kind: ferro_core::BinaryKind::Add, other: 0, dims: vec![2], strides: vec![1] }] },
+        StaticPointwiseRun { inputs: vec![0], steps: vec![ferro_cuda::ChainStep::BinaryBc { kind: ferro_core::BinaryKind::Add, other: 0, dims: vec![2], strides: vec![2] }] },
     ];
     for run in invalid {
         let before = b.alloc_stats();
@@ -100,4 +102,46 @@ fn rejects_same_ordinal_foreign_stream_before_enqueue() {
     assert!(result.is_err(), "same device ordinal is not backend ownership");
     assert_eq!(b.alloc_stats().requests, before.requests);
     assert_eq!(a.copy_to_host(x.as_ref()).unwrap(), vec![1.0, -2.0]);
+}
+
+#[test]
+fn captured_chain_retains_original_inputs_and_recycles_each_allocation_once() {
+    let Some(b) = backend() else { return };
+    let b = Arc::new(b);
+    let x = b.alloc_from_host(&[1., 2.]).unwrap();
+    let steps = [ferro_cuda::ChainStep::Binary { kind: ferro_core::BinaryKind::Add, other: 1 }];
+    let mut chain = b.capture_chain(&steps, &[x.as_ref(), x.as_ref()]).unwrap();
+    b.copy_into(x.as_ref(), &[3., -4.]).unwrap();
+    let recycled = b.alloc_stats().recycled;
+    drop(x);
+    assert_eq!(b.alloc_stats().recycled, recycled, "capture must retain the original allocation");
+    let pressure: Vec<_> = (0..32).map(|_| b.alloc_from_host(&[99., 99.]).unwrap()).collect();
+    chain.replay().unwrap();
+    assert_eq!(chain.copy_output_to_host(&b).unwrap(), vec![6., -8.]);
+    drop(chain);
+    assert_eq!(b.alloc_stats().recycled, recycled + 1, "duplicate input handles retire only one allocation");
+    drop(pressure);
+}
+
+#[test]
+fn captured_chain_broadcast_reads_current_inputs_without_disabling_tracking() {
+    let Some(b) = backend() else { return };
+    let b = Arc::new(b);
+    let x = b.alloc_from_host(&[1., 2., 3., 4., 5., 6.]).unwrap();
+    let bias = b.alloc_from_host(&[10., 20., 30.]).unwrap();
+    let steps = [ferro_cuda::ChainStep::BinaryBc {
+        kind: ferro_core::BinaryKind::Add, other: 1, dims: vec![2, 3], strides: vec![0, 1],
+    }];
+    let mut chain = b.capture_chain(&steps, &[x.as_ref(), bias.as_ref()]).unwrap();
+    chain.replay().unwrap();
+    assert_eq!(chain.copy_output_to_host(&b).unwrap(), vec![11., 22., 33., 14., 25., 36.]);
+    b.copy_into(bias.as_ref(), &[-1., -2., -3.]).unwrap();
+    drop(bias);
+    chain.replay().unwrap();
+    assert_eq!(chain.copy_output_to_host(&b).unwrap(), vec![0., 0., 0., 3., 3., 3.]);
+    let run = StaticPointwiseRun { inputs: vec![0], steps: vec![ferro_cuda::ChainStep::Unary(UnaryKind::Relu)] };
+    let leaf: Arc<dyn ferro_core::dispatch::DeviceBuffer> = Arc::from(x);
+    let mut other = b.prepare_pointwise_graph(&[run], vec![leaf]).unwrap();
+    other.replay().unwrap();
+    assert_eq!(other.copy_output_to_host().unwrap(), vec![1., 2., 3., 4., 5., 6.]);
 }

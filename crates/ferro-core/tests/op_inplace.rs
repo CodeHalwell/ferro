@@ -111,7 +111,10 @@ fn non_whole_destinations_are_refused() {
 #[test]
 fn dtype_shape_and_scalar_gates() {
     let i = Tensor::from_vec_i64(vec![1, 2, 3], &[3]).unwrap();
-    assert!(i.zero_().is_err(), "i64 destination");
+    i.zero_().unwrap();
+    assert_eq!(i.to_vec_i64(), vec![0, 0, 0]);
+    assert_eq!(i._version(), 1);
+    assert!(i.fill_(1.).is_err(), "float32 scalar requires matching destination dtype");
 
     let x = t(&[1.0, 2.0]);
     assert!(x.add_(&t(&[1.0, 2.0, 3.0])).is_err(), "shape mismatch");
@@ -138,4 +141,44 @@ fn mul_scalar_preserves_signed_zero_and_add_scalar_is_exact_identity() {
     let y = t(&[1.5, -3.25]);
     y.add_scalar_(0.0).unwrap();
     assert_eq!(y.to_vec(), vec![1.5, -3.25]);
+}
+
+#[test]
+fn public_mutation_is_rejected_before_writes_during_capture() {
+    let destination = t(&[2., 3.]);
+    let source = t(&[4., 5.]);
+    let operations: [fn(&Tensor, &Tensor) -> ferro_core::Result<()>; 9] = [
+        |x, _| x.zero_(), |x, _| x.fill_(7.), Tensor::add_, Tensor::sub_, Tensor::mul_, Tensor::div_,
+        |x, _| x.add_scalar_(2.), |x, _| x.mul_scalar_(3.), Tensor::copy_from,
+    ];
+    for operation in operations {
+        assert!(ferro_core::capture(|| operation(&destination, &source)).is_err());
+        assert_eq!(destination.to_vec(), vec![2., 3.]);
+        assert_eq!(destination._version(), 0);
+        assert!(ferro_core::autograd::is_grad_enabled());
+    }
+    let leaf = destination.requires_grad_(true).unwrap();
+    assert!(ferro_core::capture(|| leaf.copy_leaf_from(&source)).is_err());
+    assert_eq!(leaf._version(), 0);
+    let output = ferro_core::capture(|| destination.mul(&source)).unwrap();
+    let chain = ferro_core::graph::CompiledChain::compile(&output).unwrap();
+    assert_eq!(chain.replay().unwrap().to_vec(), vec![8., 15.]);
+}
+
+#[test]
+fn differentiable_sources_require_explicit_no_grad_in_public_mutations() {
+    let source = t(&[2., 4.]).requires_grad_(true).unwrap();
+    let operations: [fn(&Tensor, &Tensor) -> ferro_core::Result<()>; 5] = [
+        Tensor::add_, Tensor::sub_, Tensor::mul_, Tensor::div_, Tensor::copy_from,
+    ];
+    for operation in operations {
+        let destination = t(&[6., 8.]);
+        assert!(operation(&destination, &source).is_err());
+        assert_eq!(destination.to_vec(), vec![6., 8.]);
+        assert_eq!(destination._version(), 0);
+        ferro_core::autograd::with_grad_enabled(false, || operation(&destination, &source)).unwrap();
+        assert_eq!(destination._version(), 1);
+        assert!(!destination.requires_grad());
+        assert!(source.grad().is_none());
+    }
 }

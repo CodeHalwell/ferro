@@ -40,3 +40,23 @@ fn log_softmax_grad() {
     // Along dim 0.
     grad_check(&[a], |t| t[0].log_softmax(0).unwrap().sum());
 }
+
+#[test]
+fn large_common_offsets_preserve_normalization_and_gradients() {
+    for offset in [1e8, -1e8, 3e38] {
+        for dim in 0..3 {
+            let x = Tensor::full(&[2,3,2], offset).requires_grad_(true).unwrap();
+            let y = x.log_softmax(dim).unwrap();
+            let width = x.shape()[dim];
+            for value in y.to_vec() {
+                assert!((value + (width as f32).ln()).abs() < 2e-6, "offset={offset}, dim={dim}, value={value}");
+            }
+            let seed = Tensor::from_vec((0..12).map(|i| (i % 5) as f32 - 2.).collect(), &[2,3,2]).unwrap();
+            y.backward_with(&seed);
+            let expected = seed.sub(&seed.sum_dim(dim, true).unwrap().div(&Tensor::scalar(width as f32)).unwrap()).unwrap();
+            for (actual, expected) in x.grad().unwrap().to_vec().iter().zip(expected.to_vec()) {
+                assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
+            }
+        }
+    }
+}

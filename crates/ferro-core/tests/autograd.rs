@@ -127,6 +127,22 @@ fn record_fn_wrong_grad_shape_panics() {
 }
 
 #[test]
+fn record_fn_wrong_grad_dtype_panics_without_poisoning_grad_slot() {
+    let x = Tensor::scalar(2.0).requires_grad_(true).unwrap();
+    x.mul(&x).unwrap().backward();
+    for invalid in [Tensor::from_vec_i64(vec![1], &[]).unwrap(), Tensor::from_vec_f64(vec![1.0], &[]).unwrap()] {
+        let out = Tensor::scalar(1.0).record_fn(vec![x.clone()], move |_| vec![invalid.clone()]);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.backward()));
+        let message = panic.expect_err("invalid gradient dtype must fail");
+        let message = message.downcast_ref::<String>().map(String::as_str).or_else(|| message.downcast_ref::<&str>().copied()).unwrap();
+        assert!(message.contains("gradient dtype must match its tensor"));
+        assert_eq!(x.grad().unwrap().item(), 4.0);
+    }
+    x.mul(&x).unwrap().backward();
+    assert_eq!(x.grad().unwrap().item(), 8.0);
+}
+
+#[test]
 fn linear_regression_converges() {
     // Fit y = x @ w_true + b_true with plain SGD; loss must drop sharply.
     let rng = Rng::new(42);

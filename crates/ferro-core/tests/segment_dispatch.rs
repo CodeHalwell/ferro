@@ -18,6 +18,9 @@ impl SegmentPlan for Plan { fn as_any(&self) -> &dyn Any { self } }
 struct Fake { uploads: AtomicUsize, downloads: AtomicUsize, prepares: AtomicUsize, calls: AtomicUsize, fail: AtomicUsize }
 fn failure() -> Error { Error::Unsupported { op: "injected_segment_launch", msg: "operational failure, not a fallback request".into() } }
 impl Backend for Fake {
+    fn copy_dev(&self, source: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(Box::new(Buffer(source.as_any().downcast_ref::<Buffer>().unwrap().0.clone())))
+    }
     fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { panic!("host fallback") }
     fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { panic!("host fallback") }
     fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { panic!("host fallback") }

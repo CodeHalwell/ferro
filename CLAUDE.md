@@ -32,12 +32,16 @@ python ../examples/safetensors_vs_python.py  # file-format parity (pip install s
   bindings live in sibling crates that may take dependencies.
 - One autograd mechanism: ops record through `Tensor::record_fn` (inputs plus
   a backward closure returning one gradient per input; the engine asserts
-  arity and shapes). Never capture the live output in a backward closure -
+  arity and shapes). `record_fn_optional` uses that same Op and engine with
+  explicit absent contributions; all present gradients are validated before
+  ordinary backward publishes gradient slots. Never capture the live output in a backward closure -
   capture `out.detach_copy()`.
 - Storage is Arc-shared behind a per-cell RwLock; a cell's variant and buffer
   identity NEVER change after construction (values may). In-place mutation
-  goes only through the seams in inplace.rs, always bumps the storage
-  version, and requires a whole-contiguous f32 destination; the public
+  goes only through the seams in inplace.rs and bumps the storage version
+  after an effective write. Arithmetic mutation requires a whole-contiguous
+  f32 destination; exact same-dtype CPU copies also support the other storage
+  types without replacing the storage cell or buffer. The public
   in-place API additionally refuses tensors with autograd history, and
   device tensors with shared storage (device detach_copy shares buffers
   with backward-closure snapshots). Optimizers use the raw no-grad seams.

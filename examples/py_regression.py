@@ -9,7 +9,7 @@ Run inside the ferro-py venv after `maturin develop --release`:
 Covers: in-place requires_grad_, the requires_grad getter, ValueError on
 non-scalar backward()/item(), DLPack round-trips, the DLPack export memory
 leak fix, torch-style grad accumulation across backward calls, and the
-removal of the named neg() alias.
+the named neg()/negative() aliases.
 """
 
 import sys
@@ -114,10 +114,14 @@ def test_grad_accumulation():
 
 
 def test_neg():
-    t = ferro.Tensor([1.0, -2.0], [2])
-    assert (-t).tolist() == [-1.0, 2.0]
-    assert not hasattr(t, "neg"), "named neg() should be removed; use -t"
-    print("__neg__ works, named neg() removed: OK")
+    for operation in (lambda value: -value, lambda value: value.neg(), lambda value: value.negative()):
+        t = ferro.Tensor([1.0, -2.0], [2]).requires_grad_(True)
+        result = operation(t)
+        assert result.tolist() == [-1.0, 2.0]
+        assert not result._shares_storage(t)
+        result.sum().backward()
+        assert t.grad.tolist() == [-1.0, -1.0]
+    print("__neg__, neg() and negative() values and gradients: OK")
 
 
 def test_reflected_ops():
@@ -160,7 +164,11 @@ def test_view_ops():
     assert y.shape == [2, 2] and y.requires_grad
     (y.sum() + x[..., ::-1][0].sum()).backward()
     assert x.grad.tolist() == [[[1.0, 1.0]] * 3, [[0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]], x.grad.tolist()
-    assert x[0, 0, 0].requires_grad is False  # rank-0 picks stay detached copies
+    x.zero_grad()
+    scalar = x[0, 0, 0]
+    assert scalar.shape == [] and scalar.requires_grad
+    scalar.backward()
+    assert x.grad.tolist() == [[[1.0, 0.0], [0.0, 0.0], [0.0, 0.0]], [[0.0, 0.0]] * 3]
     assert x[:, 3:].shape == [2, 0, 2]
     t = ferro.Tensor([float(i) for i in range(6)], [2, 3])
     assert t.permute(1, 0).tolist() == t.transpose(0, 1).tolist()
@@ -355,7 +363,11 @@ def test_functional_bindings():
         x.zero_grad()
         mean.backward()
         assert x.grad is not None and x.grad.shape == [2, 3], name
-        _expect(ValueError, lambda: fn("none"), "reduction")
+        unreduced = fn("none")
+        shape = [2] if name in ("cross_entropy", "cross_entropy_probs", "nll", "cosine_embedding", "triplet") else [2, 3]
+        assert unreduced.shape == shape, name
+        assert abs(unreduced.sum().item() - total.item()) < 1e-6, name
+        _expect(ValueError, lambda: fn("invalid"), "reduction")
     assert abs(F.kl_div(x.log_softmax(1), p.softmax(1), "batchmean").item() - 3 * F.kl_div(x.log_softmax(1), p.softmax(1)).item()) < 1e-5
     assert F.gelu(x).shape == F.gelu(x, "tanh").shape == [2, 3]
     assert F.pad(x, (1, 1)).shape == [2, 5] and F.pad(x, (0, 1, 2, 0), value=3.0).shape == [4, 4]
@@ -367,11 +379,15 @@ def test_functional_bindings():
     assert F.dropout(x, 0.5, training=False) is x
     a, b = F.dropout(x, 0.5, seed=9).tolist(), F.dropout(x, 0.5, seed=9).tolist()
     assert a == b, "explicit dropout seed must be reproducible"
-    _expect(ValueError, lambda: F.max_pool2d(q, 2, padding=1), "padding")
-    _expect(ValueError, lambda: F.avg_pool2d(q, (2, 3)), "square")
-    _expect(ValueError, lambda: F.layer_norm(x, (2, 3)), "last dimension")
+    assert F.max_pool2d(q, 2, padding=1).shape == [2, 2, 2, 3]
+    _expect(ValueError, lambda: F.max_pool2d(q, 2, padding=2), "padding")
+    assert F.avg_pool2d(q, (2, 3)).shape == [2, 2, 1, 1]
+    assert F.layer_norm(x, (2, 3)).shape == [2, 3]
+    _expect(ValueError, lambda: F.layer_norm(x, (4, 3)))
     _expect(ValueError, lambda: F.pad(x, (1,)))
-    _expect(NotImplementedError, lambda: F.scaled_dot_product_attention(q, q, q, attn_mask=q))
+    _expect(ValueError, lambda: F.scaled_dot_product_attention(q, q, q, attn_mask=q), 'mask')
+    masked = F.scaled_dot_product_attention(q, q, q, attn_mask=ferro.Tensor.zeros([3, 3]))
+    assert (masked - F.scaled_dot_product_attention(q, q, q)).abs().max().item() < 1e-5
     print("functional losses/activations/attention bindings: OK")
 
 
@@ -416,16 +432,18 @@ def test_nn_modules():
     out = emb(ferro.Tensor.from_i64([1, 2, 2, 9, 0, 1], [2, 3]))
     assert out.shape == [2, 3, 4]
     _all_params_get_grads("Embedding", emb, out)
-    mha = nn.MultiheadAttention(8, 2)
+    mha = nn.MultiheadAttention(8, 2, batch_first=True)
     out, weights = mha(seq, ferro.Tensor.randn([2, 7, 8], seed=4), ferro.Tensor.randn([2, 7, 8], seed=5))
     assert out.shape == [2, 5, 8] and weights.shape == [2, 5, 7]
     assert [n for n, _ in mha.named_parameters()] == ["in_proj_weight", "in_proj_bias", "out_proj.weight", "out_proj.bias"]
     _all_params_get_grads("MultiheadAttention", mha, out)
     assert mha(seq, seq, seq, need_weights=False)[1] is None
-    causal = mha(seq, seq, seq, is_causal=True)[1].tolist()
+    causal_mask = ferro.tensor([[j > i for j in range(5)] for i in range(5)], dtype='bool')
+    causal = mha(seq, seq, seq, is_causal=True, attn_mask=causal_mask)[1].tolist()
     assert all(row[j] < 1e-6 for batch in causal for i, row in enumerate(batch) for j in range(i + 1, 5)), "causal weights leak"
+    _expect(NotImplementedError, lambda: nn.ReLU6(inplace=True), "inplace")
     acts = [nn.ReLU(), nn.Sigmoid(), nn.Tanh(), nn.GELU(), nn.GELU("tanh"), nn.SiLU(), nn.Mish(), nn.ELU(0.5),
-            nn.CELU(), nn.SELU(), nn.LeakyReLU(0.2), nn.ReLU6(inplace=True), nn.Hardtanh(), nn.Hardsigmoid(),
+            nn.CELU(), nn.SELU(), nn.LeakyReLU(0.2), nn.ReLU6(), nn.Hardtanh(), nn.Hardsigmoid(),
             nn.Hardswish(), nn.Hardshrink(), nn.Softshrink(), nn.Tanhshrink(), nn.Softplus(beta=2.0), nn.Softsign(),
             nn.LogSigmoid(), nn.Threshold(0.1, 0.0), nn.Softmax(-1), nn.LogSoftmax(1), nn.Softmin(0), nn.Identity()]
     for act in acts:
@@ -435,14 +453,17 @@ def test_nn_modules():
         (y * y).sum().backward()
         assert t.grad is not None, type(act).__name__
         assert list(act.parameters()) == []
-    _expect(ValueError, lambda: nn.LayerNorm((2, 3)), "last dimension")
-    _expect(ValueError, lambda: nn.Conv2d(3, 4, 3, groups=2), "divisible")
-    _expect(ValueError, lambda: nn.MaxPool2d(2, padding=1), "padding")
-    _expect(ValueError, lambda: nn.Dropout(1.0))
+    assert nn.LayerNorm((2, 3))(ferro.ones(4, 2, 3)).shape == [4, 2, 3]
+    _expect(ValueError, lambda: nn.Conv2d(3, 4, 3, groups=2), "divide")
+    assert nn.MaxPool2d(2, padding=1)(img).shape == [2, 3, 4, 4]
+    _expect(ValueError, lambda: nn.MaxPool2d(2, padding=2), "padding")
+    assert nn.Dropout(1.0)(seq).tolist() == ferro.zeros(seq.shape).tolist()
+    _expect(ValueError, lambda: nn.Dropout(1.1))
     _expect(ValueError, lambda: nn.SelfAttention(8, 3))
-    _expect(ValueError, lambda: nn.BatchNorm2d(3)(seq), "rank-4")
+    _expect(ValueError, lambda: nn.BatchNorm2d(3)(seq), "rank")
     _expect(TypeError, lambda: nn.Softmax(None))
-    _expect(NotImplementedError, lambda: nn.MultiheadAttention(8, 2, batch_first=False))
+    seq_first = nn.MultiheadAttention(8, 2, batch_first=False)
+    assert seq_first(ferro.Tensor.ones([3, 2, 8]), ferro.Tensor.ones([4, 2, 8]), ferro.Tensor.ones([4, 2, 8]))[0].shape == [3, 2, 8]
     print("nn modules: shapes, parameter names and gradients: OK")
 
 
@@ -467,7 +488,7 @@ def test_loss_modules():
         out = loss(*args)
         (out.sum() if out.shape else out).backward()
         assert x.grad is not None and x.grad.shape == [2, 3], type(loss).__name__
-    _expect(ValueError, lambda: nn.L1Loss(reduction="none"), "reduction")
+    assert nn.L1Loss(reduction="none")(x, t).shape == [2, 3]
     _expect(ValueError, lambda: nn.HuberLoss(reduction="batchmean"), "reduction")
     print("loss modules: forward + input gradients: OK")
 
@@ -512,7 +533,7 @@ def test_train_eval_modes():
     assert bn.running_mean is mean_buffer, "running stats must update in place"
     assert bn.running_mean.tolist() == [1.0, 2.0, 3.0], bn.running_mean.tolist()
     assert [round(v, 5) for v in bn.running_var.tolist()] == [1.5, 4.5, 9.5], bn.running_var.tolist()
-    assert dict(bn.named_buffers()).keys() == {"running_mean", "running_var"}
+    assert dict(bn.named_buffers()).keys() == {"running_mean", "running_var", "num_batches_tracked"}
     bn.eval()
     frozen = bn.running_mean.tolist()
     eval_out = bn(batch)
@@ -582,7 +603,10 @@ def test_dataloader():
     assert sorted(e0) == list(range(10)) and e0 != list(range(10))
     assert e0 != e1, "shuffle must reorder each epoch"
     assert order(b) == e0 and order(b) == e1, "worker threads must preserve sampler order"
-    _expect(TypeError, lambda: ferro.data.DataLoader([(xs, ys)], 2))
+    custom_batch = next(iter(ferro.data.DataLoader([(xs, ys)], 2)))
+    assert custom_batch[0].shape == [1, 10, 2] and custom_batch[1].shape == [1, 10]
+    assert custom_batch[1].dtype == 'int64' and custom_batch[1].tolist() == [ys.tolist()]
+    _expect(TypeError, lambda: ferro.data.DataLoader(object(), 2))
     _expect(ValueError, lambda: ferro.data.DataLoader(ds, 0))
     _expect(ValueError, lambda: ferro.data.TensorDataset(xs, ferro.Tensor.zeros([3])))
     _expect(ValueError, lambda: ds[10], "out of bounds")

@@ -3,7 +3,116 @@ import unittest
 import ferro as fr
 
 
+def checkpoint_values(model, optimizers, generator):
+    cp = fr.checkpoint.snapshot_training(model, optimizers=optimizers, generator=generator)
+    return {key: (tensor.shape, tensor.tolist()) for key, tensor in cp.tensors().items()}
+
+
+def rewrite_checkpoint(checkpoint, directory, replacements):
+    import json
+    from pathlib import Path
+    checkpoint.save(directory)
+    pointer = Path(directory) / 'checkpoint.json'
+    metadata = json.loads(pointer.read_text())
+    payload = Path(directory) / metadata['generation'] / 'model.safetensors'
+    tensors = checkpoint.tensors()
+    tensors.update(replacements)
+    fr.save_safetensors(str(payload), tensors)
+    checksum = 0xcbf29ce484222325
+    for byte in payload.read_bytes():
+        checksum = ((checksum ^ byte) * 0x100000001b3) & ((1 << 64) - 1)
+    metadata['checksum'] = checksum
+    pointer.write_text(json.dumps(metadata, indent=2))
+    return fr.checkpoint.load(directory)
+
+
 class TrainingCheckpointTests(unittest.TestCase):
+    def test_named_adamw_unequal_slot_counts_resume_into_fresh_objects(self):
+        class Model(fr.nn.Module):
+            def build(self):
+                self.generator = fr.nn.Parameter(fr.Tensor([0.7], [1]))
+                self.critic = fr.nn.Parameter(fr.Tensor([0.4], [1]))
+                self.delayed = fr.nn.Parameter(fr.Tensor([-0.2], [1]))
+        def setup(seed, lr):
+            model, rng = Model(), fr.Generator(seed)
+            opts = {'generator': fr.optim.AdamW([model.generator], lr=lr),
+                    'critic': fr.optim.AdamW([model.critic, model.delayed], lr=lr)}
+            return model, opts, rng
+        def update(model, opts, rng, selected):
+            for opt in opts.values(): opt.zero_grad()
+            p = getattr(model, selected)
+            p.trainable = True
+            loss = (p.tensor() * fr.Tensor.randn([1], generator=rng)).pow(2).sum()
+            loss.backward()
+            opts['generator' if selected == 'generator' else 'critic'].step()
+            for opt in opts.values(): opt.zero_grad()
+            return loss.item()
+        source, opts, rng = setup(43, 0.03)
+        for selected in ['generator'] * 2 + ['critic'] * 4 + ['delayed']:
+            update(source, opts, rng, selected)
+        source.delayed.trainable = False
+        cp = fr.checkpoint.snapshot_training(source, optimizers=opts, generator=rng, step=7)
+        self.assertEqual(cp.tensors()['optim.generator.t'].tolist(), [2.0])
+        self.assertEqual(cp.tensors()['optim.critic.t'].tolist(), [4.0, 1.0])
+        saved = checkpoint_values(source, opts, rng)
+        continuation = ['critic', 'generator', 'delayed', 'critic', 'generator']
+        expected = [update(source, opts, rng, selected) for selected in continuation]
+        expected_state = checkpoint_values(source, opts, rng)
+        target, target_opts, target_rng = setup(987, 0.9)
+        with tempfile.TemporaryDirectory() as directory:
+            cp.save(directory)
+            reversed_names = dict(reversed(list(target_opts.items())))
+            step = fr.checkpoint.load_training(directory, target, optimizers=reversed_names, generator=target_rng)
+        self.assertEqual(step, 7)
+        self.assertFalse(target.delayed.trainable)
+        self.assertEqual(checkpoint_values(target, target_opts, target_rng), saved)
+        self.assertEqual([update(target, target_opts, target_rng, selected) for selected in continuation], expected)
+        self.assertEqual(checkpoint_values(target, target_opts, target_rng), expected_state)
+
+    def test_second_adamw_counter_schema_compatibility_and_atomic_rejection(self):
+        class Model(fr.nn.Module):
+            def build(self):
+                self.generator = fr.nn.Parameter(fr.Tensor([0.7], [1]))
+                self.critic = fr.nn.Parameter(fr.Tensor([0.4], [1]))
+                self.other = fr.nn.Parameter(fr.Tensor([-0.2], [1]))
+                self.tied = self.other
+        def setup(seed, lr):
+            model, rng = Model(), fr.Generator(seed)
+            opts = {'generator': fr.optim.Adam([model.generator], lr=lr),
+                    'critic': fr.optim.AdamW([model.critic, model.other], lr=lr)}
+            for _ in range(3):
+                for p in model.parameters(): p.tensor().pow(2).sum().backward()
+                for opt in opts.values():
+                    opt.step()
+                    opt.zero_grad()
+            return model, opts, rng
+        source, opts, rng = setup(43, 0.03)
+        cp = fr.checkpoint.snapshot_training(source, optimizers=opts, generator=rng)
+        self.assertEqual(cp.tensors()['optim.critic.t'].tolist(), [3.0, 3.0])
+        target, target_opts, target_rng = setup(987, 0.9)
+        target.eval()
+        target.other.trainable = False
+        before = checkpoint_values(target, target_opts, target_rng)
+        invalid = [
+            fr.Tensor([3.0], [1]), fr.Tensor([3.0, 3.0], [2, 1]),
+            fr.Tensor([3.0, -1.0], [2]), fr.Tensor([3.0, 1.5], [2]),
+            fr.Tensor([3.0, float('nan')], [2]), fr.Tensor([3.0, float('inf')], [2]),
+            fr.Tensor([3.0, float(2**32)], [2]), fr.Tensor.from_i64([3, 3], [2]),
+        ]
+        for counter in invalid:
+            with self.subTest(shape=counter.shape, value=counter.tolist()), tempfile.TemporaryDirectory() as directory:
+                malformed = rewrite_checkpoint(cp, directory, {'optim.critic.t': counter})
+                with self.assertRaises(ValueError):
+                    malformed.restore(target, optimizers=target_opts, generator=target_rng)
+                self.assertEqual(checkpoint_values(target, target_opts, target_rng), before)
+                self.assertFalse(target.training)
+                self.assertFalse(target.other.trainable)
+                self.assertIs(target.other, target.tied)
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = rewrite_checkpoint(cp, directory, {'optim.critic.t': fr.Tensor([3.0], [])})
+            legacy.restore(target, optimizers=target_opts, generator=target_rng)
+        self.assertEqual(checkpoint_values(target, target_opts, target_rng), checkpoint_values(source, opts, rng))
+
     def test_stochastic_resume(self):
         self.assertTrue(hasattr(fr, 'checkpoint'), 'training checkpoint facade missing')
         class Model(fr.nn.Module):
@@ -172,7 +281,7 @@ class TrainingCheckpointTests(unittest.TestCase):
                 after = fr.checkpoint.snapshot_training(m, optimizers=opts, generator=g).tensors()
                 self.assertEqual({k:v.tolist() for k,v in before.items()}, {k:v.tolist() for k,v in after.items()})
 
-    def test_unsupported_cursor_and_dtype_rejected(self):
+    def test_unsupported_cursor_rejected_and_f64_buffer_restores_exactly(self):
         import struct
         import json
         from pathlib import Path
@@ -186,8 +295,12 @@ class TrainingCheckpointTests(unittest.TestCase):
             path.write_bytes(struct.pack('<Q', len(header)) + header + data)
             double = fr.load_safetensors(str(path))['x']
             m.register_buffer('double', double)
-            with self.assertRaisesRegex(ValueError, 'CPU f32'):
-                fr.checkpoint.snapshot_training(m, optimizers={}, generator=fr.Generator(1))
+            checkpoint = fr.checkpoint.snapshot_training(m, optimizers={}, generator=fr.Generator(1))
+            target = fr.nn.Linear(1, 1)
+            target.register_buffer('double', fr.tensor([0.], dtype='float64'))
+            checkpoint.restore(target, optimizers={}, generator=fr.Generator(2))
+            self.assertEqual(target.double.dtype, 'float64')
+            self.assertEqual(struct.pack('<d', target.double.item()), data)
 
     def test_generation_republication_keeps_old_payload(self):
         import json

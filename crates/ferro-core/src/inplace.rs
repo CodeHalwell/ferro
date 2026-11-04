@@ -16,9 +16,11 @@
 //!   fresh allocations, so host targets may be freely aliased by views:
 //!   mutation is visible through every view (torch semantics) and any graph
 //!   input among them is version-protected.
-//! - `copy_leaf_from` permits a grad-requiring leaf only under explicit no-grad,
-//!   retaining the same storage/layout/history gates and shared version bumps.
-//!   General public mutation methods retain their original grad rejection.
+//! - `copy_leaf_from` and scalar fills permit a grad-requiring leaf under explicit
+//!   no-grad, retaining storage/layout/history gates and shared version bumps.
+//!   Other public mutation methods retain their original grad rejection.
+//! - CPU copies preserve all storage types; scalar fills additionally support
+//!   F64/I64/Bool. Arithmetic mutation and device kernels retain f32 storage.
 //!
 //! Locking protocol: layout metadata (shape/stride/offset) is immutable, so
 //! preconditions are checked lock-free; then every needed storage lock is
@@ -35,9 +37,11 @@ use crate::dtype::DType;
 use crate::error::{Error, Result};
 use crate::tensor::{PairGuard, Storage, Tensor};
 
-/// The destination contract every in-place mutation requires: f32 elements
-/// in a whole contiguous buffer (offset 0, row-major, view covers the whole
-/// allocation), so host slices and device kernels see the entire storage.
+/// Exact scalar types accepted by checked fill; no implicit narrowing occurs.
+#[derive(Clone, Copy, Debug)]
+pub enum FillValue { F32(f32), F64(f64), I64(i64), Bool(bool) }
+
+/// Arithmetic mutation requires f32 elements in a whole contiguous buffer.
 fn check_dst(op: &'static str, t: &Tensor) -> Result<()> {
     if t.dtype() != DType::F32 {
         return Err(Error::DtypeMismatch {
@@ -45,6 +49,16 @@ fn check_dst(op: &'static str, t: &Tensor) -> Result<()> {
             expected: DType::F32,
             got: t.dtype(),
         });
+    }
+    check_dst_layout(op, t)
+}
+
+fn check_dst_layout(op: &'static str, t: &Tensor) -> Result<()> {
+    if crate::forward_ad::is_active() {
+        return Err(Error::Unsupported { op, msg: "in-place mutation during forward AD is unsupported".into() });
+    }
+    if t.is_structural_zero() {
+        return Err(Error::Unsupported { op, msg: "structural zero storage is immutable; clone it before mutation".into() });
     }
     if t.0.offset != 0 || !t.is_contiguous() || t.storage_len() != t.numel() {
         return Err(Error::Unsupported {
@@ -80,6 +94,27 @@ pub(crate) fn raw_fill_(op: &'static str, dst: &Tensor, value: f32) -> Result<()
     Ok(())
 }
 
+fn raw_fill_value_(op: &'static str, dst: &Tensor, value: FillValue) -> Result<()> {
+    let dtype = match value { FillValue::F32(_) => DType::F32, FillValue::F64(_) => DType::F64, FillValue::I64(_) => DType::I64, FillValue::Bool(_) => DType::Bool };
+    if dst.dtype() != dtype { return Err(Error::DtypeMismatch { op, expected: dst.dtype(), got: dtype }); }
+    if let FillValue::F32(value) = value { return raw_fill_(op, dst, value); }
+    if dst.device() != Device::Cpu {
+        return Err(Error::Unsupported { op, msg: "typed scalar fills require CPU storage; device fills require float32".into() });
+    }
+    check_dst_layout(op, dst)?;
+    {
+        let mut storage = dst.0.storage.write();
+        match (&mut *storage, value) {
+            (Storage::F64(values), FillValue::F64(value)) => values.fill(value),
+            (Storage::I64(values), FillValue::I64(value)) => values.fill(value),
+            (Storage::Bool(values), FillValue::Bool(value)) => values.fill(value),
+            _ => unreachable!("validated scalar and storage dtype"),
+        }
+    }
+    dst.bump_version();
+    Ok(())
+}
+
 /// dst = dst * mul + add. `mul_scalar_` passes add = -0.0 and `add_scalar_`
 /// passes mul = 1.0: both identities are exact in IEEE f32 (x + -0.0 == x
 /// and 1.0 * x == x for every x), so the shared kernel changes no results.
@@ -101,10 +136,10 @@ pub(crate) fn raw_affine_(op: &'static str, dst: &Tensor, mul: f32, add: f32) ->
 
 /// Shared shape/device/dtype validation for the two-operand mutations.
 fn check_src(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<()> {
-    if src.dtype() != DType::F32 {
+    if src.dtype() != dst.dtype() {
         return Err(Error::DtypeMismatch {
             op,
-            expected: DType::F32,
+            expected: dst.dtype(),
             got: src.dtype(),
         });
     }
@@ -122,6 +157,29 @@ fn check_src(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<()> {
             rhs: src.0.shape.clone(),
         });
     }
+    Ok(())
+}
+
+/// The zero-element case of CPU floating addition in place. No values need
+/// reading or writing, but a successful mutation still advances the shared
+/// version. The autograd input buffer calls this only for an exclusively owned
+/// ordinary cotangent; this is not a public arbitrary-view mutation API.
+pub(crate) fn raw_empty_add_(dst: &Tensor, src: &Tensor) -> Result<()> {
+    let op = "empty cotangent accumulation";
+    check_src(op, dst, src)?;
+    if crate::autograd::is_grad_enabled() || crate::forward_ad::is_active()
+        || crate::capture::is_recording() || dst.device() != Device::Cpu
+        || !matches!(dst.dtype(), DType::F32 | DType::F64)
+        || dst.numel() != 0 || dst.is_structural_zero()
+    {
+        return Err(Error::Unsupported { op, msg: "requires an ordinary empty CPU floating destination outside gradient recording".into() });
+    }
+    // Empty strided tensors have no addressed elements, including an empty
+    // view with a nonzero offset. Do not materialize either underlying storage.
+    let guard = dst.0.storage.write();
+    debug_assert!(matches!(&*guard, Storage::F32(_) | Storage::F64(_)));
+    dst.bump_version();
+    drop(guard);
     Ok(())
 }
 
@@ -183,7 +241,7 @@ fn with_dst_src(
             let Storage::F32(v) = &mut *gd else { unreachable!() };
             let Storage::F32(s) = &*gs else { unreachable!() };
             let n = src.numel();
-            host(v, &s[src.0.offset..src.0.offset + n]);
+            host(v, if n == 0 { &[] } else { &s[src.0.offset..src.0.offset + n] });
         } else {
             let data = src.to_vec();
             let mut g = dst.0.storage.write();
@@ -226,9 +284,46 @@ pub(crate) fn raw_axpy_(op: &'static str, alpha: f32, dst: &Tensor, src: &Tensor
     )
 }
 
-/// dst's contents become src's values (same shape; src may live on any
-/// device and be any f32 view - copy_from is the explicit transfer escape).
+/// Exact CPU typed copy keeps the allocation and shared version cell. Reading
+/// the source before locking the destination also handles aliased strided views.
+fn raw_typed_copy_(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<()> {
+    if crate::capture::is_recording() {
+        return Err(Error::Unsupported { op, msg: "typed copy does not support inference capture".into() });
+    }
+    check_dst_layout(op, dst)?;
+    check_src(op, dst, src)?;
+    if dst.device() != Device::Cpu {
+        return Err(Error::Unsupported { op, msg: "typed copy currently requires CPU tensors".into() });
+    }
+    if Arc::ptr_eq(&dst.0.storage, &src.0.storage) && src.is_contiguous() && src.0.offset == 0 {
+        return Ok(());
+    }
+    macro_rules! copy {
+        ($data:expr, $variant:ident) => {{
+            let data = $data;
+            let mut guard = dst.0.storage.write();
+            let Storage::$variant(values) = &mut *guard else { unreachable!() };
+            values.copy_from_slice(&data);
+        }};
+    }
+    match dst.dtype() {
+        DType::F64 => copy!(src.to_vec_f64(), F64),
+        DType::I64 => copy!(src.to_vec_i64(), I64),
+        DType::Bool => copy!(src.to_vec_bool(), Bool),
+        DType::F16 => copy!(src.to_vec_f16_bits()?, F16),
+        DType::BF16 => copy!(src.to_vec_bf16_bits()?, BF16),
+        DType::F32 => unreachable!(),
+    }
+    dst.bump_version();
+    Ok(())
+}
+
+/// dst's contents become src's values. CPU copies preserve matching dtypes;
+/// f32 copies also support cross-device transfer through the existing backend.
 pub(crate) fn raw_copy_(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<()> {
+    if dst.dtype() != DType::F32 {
+        return raw_typed_copy_(op, dst, src);
+    }
     check_dst(op, dst)?;
     if src.dtype() != DType::F32 {
         return Err(Error::DtypeMismatch {
@@ -468,7 +563,10 @@ fn check_step_operands(op: &'static str, ts: &[&Tensor]) -> Result<()> {
 impl Tensor {
     /// The public-API gates on top of the raw seams (see module docs).
     fn check_inplace_allowed(&self, op: &'static str) -> Result<()> {
-        if self.0.requires_grad || self.0.op.is_some() {
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op, msg: "in-place mutation is not supported during inference capture".into() });
+        }
+        if self.requires_grad() || self.0.op.is_some() {
             return Err(Error::Unsupported {
                 op,
                 msg: "in-place ops are not allowed on tensors that require grad or \
@@ -478,6 +576,14 @@ impl Tensor {
             });
         }
         self.check_inplace_storage(op)
+    }
+
+    fn check_inplace_source(&self, op: &'static str, source: &Tensor) -> Result<()> {
+        self.check_inplace_allowed(op)?;
+        if source.requires_grad() && crate::autograd::is_grad_enabled() {
+            return Err(Error::Unsupported { op, msg: "mutation with a differentiable source requires disabled grad recording".into() });
+        }
+        Ok(())
     }
 
     fn check_inplace_storage(&self, op: &'static str) -> Result<()> {
@@ -495,37 +601,58 @@ impl Tensor {
 
     /// Set every element to zero, in place.
     pub fn zero_(&self) -> Result<()> {
-        self.check_inplace_allowed("zero_")?;
-        raw_fill_("zero_", self, 0.0)
+        let value = match self.dtype() {
+            DType::F32 => FillValue::F32(0.), DType::F64 => FillValue::F64(0.),
+            DType::I64 => FillValue::I64(0), DType::Bool => FillValue::Bool(false),
+            _ => return Err(Error::Unsupported { op: "zero_", msg: "scalar fills support float32, float64, int64 and bool storage".into() }),
+        };
+        self.fill_value_("zero_", value)
     }
 
     /// Set every element to `value`, in place.
     pub fn fill_(&self, value: f32) -> Result<()> {
-        self.check_inplace_allowed("fill_")?;
-        raw_fill_("fill_", self, value)
+        self.fill_typed_(FillValue::F32(value))
+    }
+
+    /// Fill whole storage with an exact matching scalar. CPU supports F32/F64/
+    /// I64/Bool; devices retain their F32 kernel. Requiring leaves need no-grad,
+    /// and tensors with history remain unsupported even under no-grad.
+    pub fn fill_typed_(&self, value: FillValue) -> Result<()> {
+        self.fill_value_("fill_", value)
+    }
+
+    fn fill_value_(&self, op: &'static str, value: FillValue) -> Result<()> {
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op, msg: "in-place mutation is not supported during inference capture".into() });
+        }
+        if self.0.op.is_some() || self.requires_grad() && crate::autograd::is_grad_enabled() {
+            return Err(Error::Unsupported { op, msg: "fill requires a tensor without history; requiring leaves need disabled grad recording".into() });
+        }
+        self.check_inplace_storage(op)?;
+        raw_fill_value_(op, self, value)
     }
 
     /// self += other, in place (same shape, same device).
     pub fn add_(&self, other: &Tensor) -> Result<()> {
-        self.check_inplace_allowed("add_")?;
+        self.check_inplace_source("add_", other)?;
         raw_binary_("add_", BinaryKind::Add, self, other)
     }
 
     /// self -= other, in place.
     pub fn sub_(&self, other: &Tensor) -> Result<()> {
-        self.check_inplace_allowed("sub_")?;
+        self.check_inplace_source("sub_", other)?;
         raw_binary_("sub_", BinaryKind::Sub, self, other)
     }
 
     /// self *= other, in place.
     pub fn mul_(&self, other: &Tensor) -> Result<()> {
-        self.check_inplace_allowed("mul_")?;
+        self.check_inplace_source("mul_", other)?;
         raw_binary_("mul_", BinaryKind::Mul, self, other)
     }
 
     /// self /= other, in place.
     pub fn div_(&self, other: &Tensor) -> Result<()> {
-        self.check_inplace_allowed("div_")?;
+        self.check_inplace_source("div_", other)?;
         raw_binary_("div_", BinaryKind::Div, self, other)
     }
 
@@ -542,12 +669,15 @@ impl Tensor {
     }
 
     /// Copy values into an existing leaf only while grad recording is disabled.
-    /// Requires matching f32 shape/device, a whole contiguous destination, no
+    /// Requires matching dtype/shape/device, a whole contiguous destination, no
     /// history, and uniquely referenced device storage. Identity, grad slots and
     /// storage are retained; writes bump the shared version (self-copy is a no-op).
     /// Unlike copy_from, this is not a cross-device transfer escape.
     pub fn copy_leaf_from(&self, src: &Tensor) -> Result<()> {
         const OP: &str = "copy_leaf_from";
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op: OP, msg: "in-place mutation is not supported during inference capture".into() });
+        }
         if crate::autograd::is_grad_enabled() || self.0.op.is_some() {
             return Err(Error::Unsupported { op: OP, msg: "leaf copy requires disabled grad recording and a destination without history".into() });
         }
@@ -556,11 +686,12 @@ impl Tensor {
         raw_copy_(OP, self, src)
     }
 
-    /// Overwrite self's contents with src's values (same shape; src may be
-    /// any f32 tensor on any device - this is the explicit transfer escape,
-    /// e.g. weight surgery on a loaded model).
+    /// Overwrite self's contents with matching dtype/shape values. Typed CPU
+    /// copies are exact; f32 also permits explicit cross-device transfers.
+    /// Copying a differentiable source into a new typed destination requires
+    /// no-grad because mutation does not currently record a copy adjoint.
     pub fn copy_from(&self, src: &Tensor) -> Result<()> {
-        self.check_inplace_allowed("copy_from")?;
+        self.check_inplace_source("copy_from", src)?;
         raw_copy_("copy_from", self, src)
     }
 }

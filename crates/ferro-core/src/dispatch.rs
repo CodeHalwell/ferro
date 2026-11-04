@@ -23,13 +23,14 @@ pub enum UnaryKind {
     Tanh,
     Sqrt,
     Abs,
+    Sign,
     Log,
     Powf(f32),
     Clamp {
         min: f32,
         max: f32,
     },
-    /// Heaviside step (1.0 where x > 0, else 0.0); the relu gradient mask.
+    /// ReLU gradient mask: one for positive or NaN inputs, otherwise zero.
     Gtz,
     /// GELU, tanh approximation: 0.5*v*(1 + tanh(sqrt(2/pi)*(v + 0.044715 v^3))).
     Gelu,
@@ -69,6 +70,9 @@ pub enum BinaryKind {
     Sub,
     Mul,
     Div,
+    /// Select the incoming gradient x where activation input y is positive or
+    /// NaN. Suppressed entries are zero even for nonfinite incoming gradients.
+    ReluBackward,
 }
 
 /// The scalar math behind a `BinaryKind`, shared by every host loop here.
@@ -78,6 +82,7 @@ fn binary_scalar_fn(kind: BinaryKind) -> impl Fn(f32, f32) -> f32 {
         BinaryKind::Sub => x - y,
         BinaryKind::Mul => x * y,
         BinaryKind::Div => x / y,
+        BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
     }
 }
 
@@ -645,6 +650,9 @@ pub trait Backend: Send + Sync {
     /// row o copies w[idx[o]]. Requires the weight to be a single "outer"
     /// block (outer == 1, which covers embedding); callers needing an outer
     /// loop fall back to the host path.
+    /// The default returns GatherUnavailable without attempting work. Overrides
+    /// must propagate ownership, bounds, allocation and execution failures rather
+    /// than use that capability decline, which authorizes a host fallback.
     fn gather_rows_dev(
         &self,
         _w: &dyn DeviceBuffer,
@@ -652,7 +660,7 @@ pub trait Backend: Send + Sync {
         _dim_size: usize,
         _inner: usize,
     ) -> Result<Box<dyn DeviceBuffer>> {
-        not_resident("gather_rows_dev")
+        Err(Error::GatherUnavailable)
     }
 }
 
@@ -677,24 +685,25 @@ impl Backend for CpuBackend {
             UnaryKind::Sqrt => v.sqrt(),
             UnaryKind::Abs => v.abs(),
             UnaryKind::Log => v.ln(),
-            UnaryKind::Powf(p) => v.powf(p),
-            // max/min chain, not f32::clamp (which panics on min > max);
-            // matches torch: min > max yields max everywhere. NaN passes
-            // through explicitly since f32::max/min would drop it.
+            UnaryKind::Powf(p) => if p == 0.5 { v.sqrt() } else if p == -0.5 { v.sqrt().recip() } else if p == -1.0 { v.recip() } else if p == -2.0 { (v * v).recip() } else if p == 2.0 { v * v } else if p == 3.0 { (v * v) * v } else { v.powf(p) },
+            // Ordered comparisons retain input signed-zero ties. Reversed
+            // bounds select max, and NaN inputs or bounds propagate.
             UnaryKind::Clamp { min, max } => {
-                if v.is_nan() {
-                    v
-                } else {
-                    v.max(min).min(max)
+                if v.is_nan() { v }
+                else if min.is_nan() || max.is_nan() { f32::NAN }
+                else {
+                    let lower = if v < min { min } else { v };
+                    if lower > max { max } else { lower }
                 }
             }
             UnaryKind::Gtz => {
-                if v > 0.0 {
+                if !(v <= 0.0) {
                     1.0
                 } else {
                     0.0
                 }
             }
+            UnaryKind::Sign => if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 },
             UnaryKind::Gelu => {
                 let u = 0.797_884_6 * (v + 0.044715 * v * v * v);
                 0.5 * v * (1.0 + u.tanh())
@@ -774,16 +783,17 @@ pub fn set_matmul_kernel(kernel: MatmulKernel) {
     *MATMUL.write().unwrap() = kernel;
 }
 
-/// Reference implementation: ikj loop order with a zero-skip that helps the
-/// ReLU-sparse gradients common in backward passes.
+/// Reference implementation: ikj loop order with a zero-skip for finite RHS
+/// values. Nonfinite products must still evaluate 0 * Inf/NaN as NaN.
 pub fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
     // Zeroed, not uninit: the kernel accumulates (and zero-skips), so
     // untouched slots must already hold 0.
     let mut out = crate::pool::take_zeroed(m * n);
+    let finite_rhs = b.iter().all(|value| value.is_finite());
     for i in 0..m {
         for p in 0..k {
             let aip = a[i * k + p];
-            if aip == 0.0 {
+            if finite_rhs && aip == 0.0 {
                 continue;
             }
             let brow = p * n;

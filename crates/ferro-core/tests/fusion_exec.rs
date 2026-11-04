@@ -50,6 +50,7 @@ fn apply(kind: BinaryKind, x: f32, y: f32) -> f32 {
         BinaryKind::Sub => x - y,
         BinaryKind::Mul => x * y,
         BinaryKind::Div => x / y,
+        BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
     }
 }
 

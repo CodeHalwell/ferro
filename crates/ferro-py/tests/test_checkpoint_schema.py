@@ -30,6 +30,10 @@ class Nested(fr.nn.Module):
         self.register_buffer('running', fr.Tensor([1.0], [1]))
 
 
+class DerivedKan(fr.basis.KanLayer):
+    pass
+
+
 def snapshot(m, opts, rng):
     return fr.checkpoint.snapshot_training(m, optimizers=opts, generator=rng)
 
@@ -144,6 +148,49 @@ class CheckpointSchemaTests(unittest.TestCase):
         self.assertEqual(target.outer.item(), 7.0)
         self.assertEqual(target.buffers.b.item(), 7.0)
         self.assertEqual(source.outer.item(), 3.0)
+
+    def test_kan_basis_configuration_roundtrip_and_immutability(self):
+        knots = [-1.0, -1.0, 0.0, 1.0, 1.0]
+        for cls in (fr.basis.KanLayer, DerivedKan):
+            with self.subTest(cls=cls):
+                source = cls(fr.basis.BSplineBasis(knots, 1, outside='error'), fr.Tensor([0.2, 0.5, -0.3], [1, 1, 3]))
+                target = cls(fr.basis.BSplineBasis(knots, 1, outside='error'), fr.Tensor.zeros([1, 1, 3]))
+                basis = target.basis
+                self.assertEqual(target.knots, tuple(knots))
+                self.assertEqual(target.degree, 1)
+                self.assertEqual(target.outside, 'error')
+                self.assertEqual(target.basis.outside, 'error')
+                exposed = target.basis.knots
+                exposed[0] = -100.0
+                self.assertEqual(target.basis.knots, knots)
+                for name, value in [('basis', source.basis), ('knots', (0.0, 1.0)), ('degree', 0), ('outside', 'zero')]:
+                    with self.assertRaises(AttributeError):
+                        setattr(target, name, value)
+                with self.assertRaises(AttributeError):
+                    target.basis.outside = 'zero'
+                cp = snapshot(source, {}, fr.Generator(1))
+                with tempfile.TemporaryDirectory() as directory:
+                    cp.save(directory)
+                    fr.checkpoint.load(directory).restore(target, optimizers={}, generator=fr.Generator(9))
+                self.assertIs(target.basis, basis)
+                x = fr.Tensor([-0.75, 0.25], [2, 1])
+                self.assertEqual(target(x).tolist(), source(x).tolist())
+                with self.assertRaises(ValueError):
+                    target(fr.Tensor([2.0], [1, 1]))
+
+    def test_kan_basis_mismatch_rejects_atomically(self):
+        def layer(cls, knots, degree, outside):
+            basis = fr.basis.BSplineBasis(knots, degree, outside=outside)
+            return cls(basis, fr.Tensor([0.2, 0.5, -0.3], [1, 1, 3]))
+        for cls in (fr.basis.KanLayer, DerivedKan):
+            for knots, degree, outside in [
+                    ([-1.0, -1.0, 0.5, 1.0, 1.0], 1, 'zero'),
+                    ([-1.0, -0.25, 0.25, 1.0], 0, 'zero'),
+                    ([-1.0, -1.0, 0.0, 1.0, 1.0], 1, 'error')]:
+                with self.subTest(cls=cls, knots=knots, degree=degree, outside=outside):
+                    source = layer(cls, [-1.0, -1.0, 0.0, 1.0, 1.0], 1, 'zero')
+                    target = layer(cls, knots, degree, outside)
+                    self.assert_atomic_rejection(source, target)
 
 
 if __name__ == '__main__':

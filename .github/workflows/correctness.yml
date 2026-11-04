@@ -49,6 +49,22 @@ jobs:
       # Compile tests/examples too, but never count skipped GPU tests as proof.
       - run: cargo check -p ferro-cuda --all-targets
 
+  cuda-host:
+    name: CUDA host regressions (no GPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cuda-host
+      # Exercise native failure cleanup and required-CUDA enforcement on CPU.
+      # Mandatory residency tests require hardware; other GPU bodies may skip.
+      - run: cargo test -p ferro-cuda -- --skip required_cuda_
+
   python-cpu:
     name: Python CPU correctness (3.11)
     runs-on: ubuntu-24.04
@@ -76,14 +92,27 @@ jobs:
         run: |
           python -m pip install 'maturin>=1.7,<2.0' numpy==2.4.3 safetensors==0.8.0
           python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch-geometric==2.8.1
       - name: Build and install the actual extension
         run: |
+          python -m compileall -q crates/ferro-py/python
           maturin build --manifest-path crates/ferro-py/Cargo.toml --release --locked --out dist
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          wheels = list(Path('dist').glob('ferro-*.whl'))
+          if len(wheels) != 1:
+              raise SystemExit(f'Expected one wheel, found {len(wheels)}')
+          with ZipFile(wheels[0]) as wheel:
+              caches = [name for name in wheel.namelist() if '__pycache__' in name or name.endswith(('.pyc', '.pyo'))]
+          if caches:
+              raise SystemExit(f'Wheel contains local bytecode: {caches}')
+          PY
           python -m pip install --no-deps dist/*.whl
           python -c "import ferro, torch; print(ferro.__file__); assert torch.version.cuda is None"
       - name: Binding and DLPack regressions (including Linux leak check)
         run: python examples/py_regression.py
-      - name: Inference capture and full-model replay (CPU)
+      - name: Public API, capture and training/restart regressions (CPU)
         run: python -m unittest discover -s crates/ferro-py/tests -v
       - name: Compiled DAG and fuse regressions
         run: |

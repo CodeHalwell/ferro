@@ -38,6 +38,16 @@ fn raw_bmm_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Tensor {
 
 impl Tensor {
     pub fn bmm(&self, other: &Tensor) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 {
+            let out = crate::typed_math::matmul(self, other, true)?;
+            let (a, b) = (self.clone(), other.clone());
+            return Ok(out.record_fn(vec![self.clone(), other.clone()], move |g| {
+                vec![crate::typed_math::matmul(g, &b.transpose_view(1, 2).unwrap(), true).unwrap(),
+                     crate::typed_math::matmul(&a.transpose_view(1, 2).unwrap(), g, true).unwrap()]
+            }));
+        }
+        crate::tensor::check_f32("bmm", self)?;
+        crate::tensor::check_f32("bmm", other)?;
         if self.device() != other.device() {
             return Err(Error::DeviceMismatch {
                 op: "bmm",

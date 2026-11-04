@@ -12,6 +12,10 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 
+[project.optional-dependencies]
+test = ["numpy==2.4.3", "safetensors==0.8.0", "torch==2.13.0", "torch-geometric==2.8.1"]
+
 [tool.maturin]
 module-name = "ferro._native"
 python-source = "python"
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]

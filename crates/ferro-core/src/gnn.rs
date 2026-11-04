@@ -92,15 +92,34 @@ impl EdgeIndex {
     /// Disjoint union for mini-batching: node ids of graph k are offset by the
     /// node counts of graphs 0..k. Returns the union and the node -> graph
     /// vector, which `scatter` takes directly for global pooling.
+    /// Panics if node totals or allocation limits are exceeded; use `try_batch`
+    /// for caller-supplied topology sizes that require recoverable errors.
     pub fn batch(graphs: &[EdgeIndex]) -> (EdgeIndex, Vec<usize>) {
-        let (mut src, mut dst, mut owner) = (Vec::new(), Vec::new(), Vec::new());
+        Self::try_batch(graphs).expect("edge-index batch exceeds node or allocation limits; use try_batch")
+    }
+
+    /// Fallible batching for caller-supplied topology sizes. Checks aggregate
+    /// I64 node ids and vector capacities before allocating or offsetting edges.
+    pub fn try_batch(graphs: &[EdgeIndex]) -> Result<(EdgeIndex, Vec<usize>)> {
+        let (mut nodes, mut edges) = (0usize, 0usize);
+        for g in graphs {
+            nodes = nodes.checked_add(g.num_nodes).filter(|&n| i64::try_from(n).is_ok())
+                .ok_or_else(|| invalid("edge_index_batch", "total nodes exceed the I64 topology format".into()))?;
+            edges = edges.checked_add(g.num_edges())
+                .ok_or_else(|| invalid("edge_index_batch", "total edge count overflow".into()))?;
+        }
+        let (mut src, mut dst, mut owner) = (Vec::<usize>::new(), Vec::<usize>::new(), Vec::<usize>::new());
+        for (buffer, len) in [(&mut owner, nodes), (&mut src, edges), (&mut dst, edges)] {
+            buffer.try_reserve_exact(len)
+                .map_err(|e| invalid("edge_index_batch", format!("cannot allocate batch topology: {e}")))?;
+        }
         for (k, g) in graphs.iter().enumerate() {
             let off = owner.len();
             src.extend(g.src.iter().map(|&n| n + off));
             dst.extend(g.dst.iter().map(|&n| n + off));
             owner.extend(std::iter::repeat(k).take(g.num_nodes));
         }
-        (EdgeIndex { num_nodes: owner.len(), src, dst }, owner)
+        Ok((EdgeIndex { num_nodes: nodes, src, dst }, owner))
     }
 }
 
@@ -116,9 +135,11 @@ pub fn scatter(src: &Tensor, index: &[usize], dim_size: usize, reduce: Aggr) -> 
         Aggr::Sum => segment::sum(src, index, dim_size),
         Aggr::Mean => segment::mean(src, index, dim_size),
         Aggr::Max | Aggr::Min => {
+            segment::cpu_f32(src, "scatter")?;
             let flip = reduce == Aggr::Min;
             let y = segment::max(&if flip { src.neg() } else { src.clone() }, index, dim_size)?;
             let y = if flip { y.neg() } else { y };
+            if y.numel() == 0 { return Ok(y); }
             let mut hit = vec![0.; dim_size];
             for &i in index { hit[i] = 1.; }
             let mut mask_shape = vec![1; y.ndim()];
@@ -126,6 +147,41 @@ pub fn scatter(src: &Tensor, index: &[usize], dim_size: usize, reduce: Aggr) -> 
             Tensor::where_cond(&Tensor::from_vec(hit, &mask_shape)?, &y, &Tensor::zeros(&[1]))
         }
     }
+}
+
+/// CPU f32 single-head scaled dot-product attention restricted to directed edges.
+/// Queries/keys are [nodes, D] with D > 0, values [nodes, Dv], bias [edges].
+/// Destination queries attend source keys/values with score q[dst].k[src]/sqrt(D)
+/// plus optional edge bias. Duplicate edges remain separate softmax entries;
+/// isolated destinations produce zeros. Eager first-order autograd only.
+/// Intermediates are edge/node-sized; no dense node-by-node matrix is formed.
+pub fn edge_attention(q: &Tensor, k: &Tensor, v: &Tensor, edges: &EdgeIndex, edge_bias: Option<&Tensor>) -> Result<Tensor> {
+    const OP: &str = "edge_attention";
+    if crate::capture::is_recording() {
+        return Err(Error::Unsupported { op: OP, msg: "graph capture/replay is not supported".into() });
+    }
+    for t in [q, k, v].into_iter().chain(edge_bias) { segment::cpu_f32(t, OP)?; }
+    let (n, e) = (edges.num_nodes(), edges.num_edges());
+    if q.ndim() != 2 || k.ndim() != 2 || v.ndim() != 2 || q.shape() != k.shape()
+        || q.shape()[0] != n || v.shape()[0] != n || q.shape()[1] == 0 {
+        return Err(invalid(OP, format!("expected [{n}, D] queries/keys with D > 0 and [{n}, Dv] values; got {:?}, {:?}, {:?}",
+            q.shape(), k.shape(), v.shape())));
+    }
+    if edge_bias.is_some_and(|bias| bias.shape() != [e]) {
+        return Err(invalid(OP, format!("edge bias must have shape [{e}]")));
+    }
+    let (d, dv) = (q.shape()[1], v.shape()[1]);
+    for (rows, width) in [(n, d), (n, dv), (e, d), (e, dv)] {
+        rows.max(1).checked_mul(width.max(1)).filter(|&len| len <= isize::MAX as usize / std::mem::size_of::<f32>())
+            .ok_or_else(|| invalid(OP, "node or edge feature allocation exceeds addressable capacity".into()))?;
+    }
+    let query = q.index_select(0, edges.dst())?;
+    let key = k.index_select(0, edges.src())?;
+    let mut logits = query.mul(&key)?.sum_dim(1, false)?.mul(&Tensor::scalar(1.0 / (d as f32).sqrt()))?;
+    if let Some(bias) = edge_bias { logits = logits.add(bias)?; }
+    let weights = segment::softmax(&logits, edges.dst(), n)?.reshape(&[e, 1])?;
+    let messages = v.index_select(0, edges.src())?.mul(&weights)?;
+    segment::sum(&messages, edges.dst(), n)
 }
 
 /// The PyG message-passing template. `propagate` builds one message per edge
@@ -157,7 +213,7 @@ pub trait GraphModule: Module {
     fn forward_graph(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor>;
 }
 
-/// Kipf & Welling graph convolution, `D^-1/2 (A + I) D^-1/2 X W + b`, matching
+/// CPU f32 Kipf & Welling graph convolution, `D^-1/2 (A + I) D^-1/2 X W + b`, matching
 /// PyG `GCNConv` defaults (remaining self loops, symmetric norm, bias).
 /// Weights are Xavier-initialized `[in, out]`, so `X @ W` needs no transpose.
 pub struct GcnConv {
@@ -186,13 +242,20 @@ impl MessagePassing for GcnConv {
 
 impl GraphModule for GcnConv {
     fn forward_graph(&self, x: &Tensor, edges: &EdgeIndex) -> Result<Tensor> {
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op: "gcn_conv", msg: "graph capture/replay is not supported".into() });
+        }
         let w = self.weight.tensor();
-        if x.ndim() != 2 || x.shape()[1] != w.shape()[0] {
-            return Err(invalid("gcn_conv", format!("expected [nodes, {}] features, got {:?}", w.shape()[0], x.shape())));
+        let b = self.bias.tensor();
+        for t in [x, &w, &b] { segment::cpu_f32(t, "gcn_conv")?; }
+        if x.ndim() != 2 || w.ndim() != 2 || b.ndim() != 1 || x.shape()[0] != edges.num_nodes()
+            || x.shape()[1] != w.shape()[0] || b.shape()[0] != w.shape()[1] {
+            return Err(invalid("gcn_conv", format!("expected [{}, in] features, [in, out] weight and [out] bias; got {:?}, {:?}, {:?}",
+                edges.num_nodes(), x.shape(), w.shape(), b.shape())));
         }
         let h = x.matmul(&w)?;
         let out = if self.self_loops { self.propagate(&h, &edges.add_remaining_self_loops())? } else { self.propagate(&h, edges)? };
-        out.add(&self.bias.tensor())
+        out.add(&b)
     }
 }
 

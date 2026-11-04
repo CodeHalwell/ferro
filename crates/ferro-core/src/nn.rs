@@ -5,7 +5,7 @@
 //! `backward()`.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::device::Device;
 use crate::dtype::DType;
@@ -433,8 +433,8 @@ pub fn one_hot(ids: &Tensor, classes: usize) -> Result<Tensor> {
 
 /// Scaled dot-product attention over `[batch, seq, head_dim]` inputs (fold
 /// heads into batch before calling): softmax(q k^T / sqrt(d) + mask) v, with
-/// an optional causal mask (position i attends to j <= i; masked scores get
-/// -1e9 rather than -inf so softmax stays NaN-free). Composed from autograd
+/// an optional upper-left causal mask (position i attends to j <= i; masked
+/// scores get -inf). The feature width must be positive. Composed from autograd
 /// ops, so gradients flow to q, k, and v without a custom backward.
 pub fn scaled_dot_product_attention(
     q: &Tensor,
@@ -452,6 +452,12 @@ pub fn scaled_dot_product_attention(
                 ),
             });
         }
+        if t.dtype() != DType::F32 {
+            return Err(Error::DtypeMismatch { op: "scaled_dot_product_attention", expected: DType::F32, got: t.dtype() });
+        }
+        if t.device() != q.device() {
+            return Err(Error::DeviceMismatch { op: "scaled_dot_product_attention", lhs: q.device(), rhs: t.device() });
+        }
     }
     let (b, sq, d) = (q.shape()[0], q.shape()[1], q.shape()[2]);
     let sk = k.shape()[1];
@@ -466,39 +472,53 @@ pub fn scaled_dot_product_attention(
             ),
         });
     }
+    if d == 0 {
+        return Err(Error::InvalidShape { op: "scaled_dot_product_attention", msg: "query/key feature width must be positive".into() });
+    }
+    let scores_len = crate::shape::checked_numel("scaled_dot_product_attention", &[b, sq, sk])?;
+    let output_len = crate::shape::checked_numel("scaled_dot_product_attention", &[b, sq, v.shape()[2]])?;
+    let mask_len = if causal { crate::shape::checked_numel("scaled_dot_product_attention", &[sq, sk])? } else { 0 };
+    if [scores_len, output_len, mask_len].iter().any(|&n| n > isize::MAX as usize / std::mem::size_of::<f32>()) {
+        return Err(Error::InvalidShape { op: "scaled_dot_product_attention", msg: "attention buffer byte length overflow".into() });
+    }
     // The scale scalar must live on q's device for device-resident attention.
     let scale = Tensor::full_on(&[], 1.0 / (d as f32).sqrt(), q.device())?;
     let mut scores = q.bmm(&k.transpose(1, 2)?)?.mul(&scale)?;
-    if causal {
-        // The mask depends only on (device, sq, sk), so it is built, uploaded,
-        // and cached once per config instead of every call. Entries are
-        // immutable device buffers held for the process lifetime; memory is
+    if causal && scores_len != 0 {
+        // Reuse depends on (device, sq, sk) and the current backend owner, so
+        // a registry replacement cannot reuse the previous owner's buffer.
+        // Entries are immutable buffers retained until replacement; memory is
         // bounded by sq*sk f32s times the number of distinct attention shapes
         // a run uses.
-        static MASKS: OnceLock<Mutex<HashMap<(Device, usize, usize), Tensor>>> = OnceLock::new();
+        type CachedMask = (Weak<dyn crate::dispatch::Backend>, Tensor);
+        static MASKS: OnceLock<Mutex<HashMap<(Device, usize, usize), CachedMask>>> = OnceLock::new();
+        let backend = crate::dispatch::backend_for(scores.device())?;
         let key = (scores.device(), sq, sk);
         let mut cache = MASKS
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap();
-        let mask = match cache.get(&key) {
-            Some(m) => m.clone(),
-            None => {
-                let mut m = vec![0.0f32; sq * sk];
+        let cached_owner = cache.get(&key).and_then(|(owner, _)| owner.upgrade());
+        let (mask, displaced) = match cache.get(&key) {
+            Some((_, m)) if cached_owner.as_ref().is_some_and(|owner| Arc::ptr_eq(owner, &backend)) => (m.clone(), None),
+            _ => {
+                let mut m = vec![0.0f32; mask_len];
                 for i in 0..sq {
                     for j in 0..sk {
                         if j > i {
-                            m[i * sk + j] = -1e9;
+                            m[i * sk + j] = f32::NEG_INFINITY;
                         }
                     }
                 }
                 // The mask must live on the scores' device for device-resident q/k.
                 let mask = Tensor::from_vec(m, &[sq, sk])?.to_device(scores.device())?;
-                cache.insert(key, mask.clone());
-                mask
+                let displaced = cache.insert(key, (Arc::downgrade(&backend), mask.clone()));
+                (mask, displaced)
             }
         };
         drop(cache);
+        drop(cached_owner);
+        drop(displaced);
         scores = scores.add(&mask)?;
     }
     scores.softmax(2)?.bmm(v)
