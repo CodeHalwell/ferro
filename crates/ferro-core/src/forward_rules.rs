@@ -13,6 +13,12 @@ fn expanded(tangent: &Tensor, shape: &[usize]) -> Result<Tensor> {
 }
 
 impl Op {
+    pub(crate) fn jvp_many(&self, tangents: &[Option<Tensor>]) -> Result<Vec<Option<Tensor>>> {
+        match self.multi_forward {
+            Some(super::MultiForwardOp::PreluBackward) => crate::ops_ext::prelu_backward::jvp(self.inputs(), tangents),
+            None => Err(Error::Unsupported { op: "multi-output JVP", msg: "generic shared callbacks have no local forward rule".into() }),
+        }
+    }
     pub(crate) fn jvp(&self, output: &Tensor, tangents: &[Option<Tensor>]) -> Result<Tensor> {
         let inputs = self.inputs();
         let a = &inputs[0];
@@ -72,6 +78,7 @@ impl Op {
                 },
                 Some(ForwardOp::CumExtrema { dim, .. }) => g()?.indexed_gather(&inputs[1], crate::ops_ext::indexed::IndexMap::Axis(*dim), true),
                 Some(ForwardOp::Prelu) => crate::ops_ext::prelu::jvp(a, &inputs[1], tangents),
+                Some(ForwardOp::Alias) => g(),
                 Some(ForwardOp::WhereConditional) => crate::ops_ext::where_cond::jvp(inputs, output, tangents),
                 Some(ForwardOp::IndexedGather { map, kind, save_input }) => g()?.indexed_gather_kind(&inputs[1], *map, *kind, *save_input),
                 Some(ForwardOp::IndexedScatter { map, kind, shape, save_input, strides }) => Tensor::indexed_scatter_saved(&g()?, &inputs[1], shape, *map, *kind, *save_input, strides.as_deref()),
@@ -79,8 +86,11 @@ impl Op {
                 Some(ForwardOp::CumSum { dim, dtype, reverse }) => g()?.cumulative_sum(*dim, *dtype, *reverse),
                 Some(ForwardOp::Prod { dim, keepdim, .. }) => crate::ops_ext::prod::jvp(a, output, &g()?, *dim, *keepdim),
                 Some(ForwardOp::CumProd { dim, .. }) => crate::ops_ext::cumprod::jvp(a, output, &g()?, *dim),
-                Some(ForwardOp::Square) => g()?.mul(&a.mul(&constant(&[], 2., a.dtype())?)?),
-                Some(ForwardOp::ScalarPower(power)) => crate::ops_ext::powf::scalar_power_backward(&g()?, a, *power),
+                Some(ForwardOp::Square) => g()?.mul(&a.powf(1.).mul(&constant(&[], 2., a.dtype())?)?),
+                Some(ForwardOp::ScalarPower(power)) => {
+                    if *power == 0. { output.zeros_like_layout() }
+                    else { crate::ops_ext::powf::scalar_power_backward(&g()?, a, *power) }
+                },
                 Some(ForwardOp::RoundedDiv(_)) => crate::ops_ext::div_rounding::zero_like(output),
                 Some(ForwardOp::FloorDivide) => Err(Error::Unsupported { op: "floor_divide forward_ad", msg: "forward AD for floor_divide is not implemented".into() }),
                 Some(ForwardOp::Rounding(_)) => constant(output.shape(), 0.0, g()?.dtype()),
@@ -133,17 +143,16 @@ impl Op {
                     let g = g()?;
                     output.mul(&g.sub(&g.mul(output)?.sum_dim(*dim, true)?)?)
                 }
-                Some(ForwardOp::LayerNorm { weight, bias, eps }) => {
+                Some(ForwardOp::LayerNorm { weight, bias, .. }) => {
+                    let [mean, invstd] = self.saved_jvp.as_slice() else { return Err(Error::Unsupported { op: "layer norm JVP", msg: "original saved statistics are unavailable".into() }); };
                     let dim = a.ndim() - 1;
                     let width = constant(&[], a.shape()[dim] as f32, a.dtype())?;
-                    let mean = a.sum_dim(dim, true)?.div(&width)?;
-                    let centered = a.sub(&mean)?;
-                    let scale = centered.mul(&centered)?.sum_dim(dim, true)?.div(&width)?.add(&constant(&[], *eps, a.dtype())?)?.sqrt();
-                    let normalized = centered.div(&scale)?;
+                    let centered = a.sub(mean)?;
+                    let normalized = centered.mul(invstd)?;
                     let da = g()?;
-                    let dmean = da.sum_dim(dim, true)?.div(&width)?;
-                    let correction = centered.mul(&da)?.sum_dim(dim, true)?.div(&width)?.div(&scale.mul(&scale)?)?;
-                    let mut result = da.sub(&dmean)?.sub(&centered.mul(&correction)?)?.div(&scale)?;
+                    let centered_tangent = da.sub(&da.sum_dim(dim,true)?.div(&width)?)?;
+                    let invstd_tangent = invstd.powf(3.).neg().mul(&centered_tangent)?.mul(&centered)?.sum_dim(dim,true)?.div(&width)?;
+                    let mut result = centered_tangent.mul(invstd)?.add(&centered.mul(&invstd_tangent)?)?;
                     if *weight { result = result.mul(&inputs[1])?.add(&normalized.mul(&tangent(1)?)?)?; }
                     if *bias { if let Some(db) = &tangents[2] { result = result.add(db)?; } }
                     Ok(result)

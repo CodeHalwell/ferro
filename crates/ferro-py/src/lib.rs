@@ -542,6 +542,10 @@ fn fmt_data<T: std::fmt::Display>(data: &[T], shape: &[usize]) -> String {
 // --- basic indexing ---------------------------------------------------------
 
 enum Sel {
+    NewAxis,
+    Skip,
+    TupleSlice(Option<isize>, Option<isize>, Option<isize>),
+    Array(CoreTensor),
     Idx(isize),
     Slice(Option<isize>, Option<isize>, Option<isize>),
 }
@@ -549,6 +553,10 @@ enum Sel {
 impl Clone for Sel {
     fn clone(&self) -> Self {
         match self {
+            Sel::NewAxis => Sel::NewAxis,
+            Sel::Skip => Sel::Skip,
+            Sel::TupleSlice(a, b, c) => Sel::TupleSlice(*a, *b, *c),
+            Sel::Array(index) => Sel::Array(index.clone()),
             Sel::Idx(i) => Sel::Idx(*i),
             Sel::Slice(a, b, c) => Sel::Slice(*a, *b, *c),
         }
@@ -606,77 +614,83 @@ fn slice_indices(
 }
 
 fn parse_key(key: &Bound<'_, PyAny>, ndim: usize) -> PyResult<Vec<Sel>> {
-    fn one(obj: &Bound<'_, PyAny>) -> PyResult<Sel> {
+    fn one(obj: &Bound<'_, PyAny>, tuple: bool) -> PyResult<Sel> {
+        if obj.is_none() { return Ok(Sel::NewAxis); }
         if obj.is_instance_of::<pyo3::types::PyBool>() {
             return Err(PyTypeError::new_err("boolean tuple indices are unsupported; pass a single boolean mask"));
+        }
+        if let Ok(index) = obj.extract::<PyRef<'_, PyTensor>>() {
+            if index.inner.dtype() != ferro_core::DType::I64 { return Err(PyTypeError::new_err("array indices must be int64 tensors")); }
+            return if index.inner.ndim() == 0 {
+                Ok(Sel::Idx(isize::try_from(index.inner.to_vec_i64()[0]).map_err(|_| PyValueError::new_err("index exceeds platform range"))?))
+            } else { Ok(Sel::Array(index.inner.clone())) };
         }
         if let Ok(slice) = obj.downcast::<PySlice>() {
             let start = slice.getattr("start")?.extract::<Option<isize>>()?;
             let stop = slice.getattr("stop")?.extract::<Option<isize>>()?;
             let step = slice.getattr("step")?.extract::<Option<isize>>()?;
-            return Ok(Sel::Slice(start, stop, step));
+            return Ok(if tuple { Sel::TupleSlice(start, stop, step) } else { Sel::Slice(start, stop, step) });
         }
-        obj.extract::<isize>().map(Sel::Idx).map_err(|_| {
-            PyTypeError::new_err("tensor indices must be integers or slices")
-        })
+        obj.extract::<isize>().map(Sel::Idx).map_err(|_| PyTypeError::new_err("tensor indices must be integers, slices, None, ellipsis or an int64 Tensor"))
     }
-    if key.is_instance_of::<PyEllipsis>() {
-        return Ok(vec![Sel::Slice(None, None, None); ndim]);
-    }
-    if let Ok(tuple) = key.downcast::<PyTuple>() {
-        // One Ellipsis expands to fill the un-specified dims.
+    if key.is_instance_of::<PyEllipsis>() { return Ok(vec![Sel::Skip; ndim]); }
+    let picked = if let Ok(tuple) = key.downcast::<PyTuple>() {
         if tuple.iter().filter(|obj| obj.is_instance_of::<PyEllipsis>()).count() > 1 {
             return Err(PyValueError::new_err("an index can contain only one ellipsis"));
         }
-        let mut sels: Vec<Sel> = Vec::new();
+        let specified = tuple.iter().filter(|obj| !obj.is_none() && !obj.is_instance_of::<PyEllipsis>()).count();
+        let mut sels = Vec::new();
         for obj in tuple.iter() {
             if obj.is_instance_of::<PyEllipsis>() {
-                let specified = tuple.len().saturating_sub(1);
-                let fill = ndim.saturating_sub(specified);
-                sels.extend(std::iter::repeat(Sel::Slice(None, None, None)).take(fill));
-            } else {
-                sels.push(one(&obj)?);
-            }
+                sels.extend(std::iter::repeat(Sel::Skip).take(ndim.saturating_sub(specified)));
+            } else { sels.push(one(&obj, true)?); }
         }
-        if sels.len() > ndim {
-            return Err(PyValueError::new_err(format!(
-                "too many indices ({}) for rank-{ndim} tensor",
-                sels.len()
-            )));
-        }
-        return Ok(sels);
+        sels
+    } else { vec![one(key, false)?] };
+    if picked.iter().filter(|sel| !matches!(sel, Sel::NewAxis)).count() > ndim {
+        return Err(PyValueError::new_err("too many indices for tensor rank"));
     }
-    Ok(vec![one(key)?])
+    if picked.iter().filter(|sel| matches!(sel, Sel::Array(_))).count() > 1 {
+        return Err(pyo3::exceptions::PyNotImplementedError::new_err("multiple integer array indices are not supported"));
+    }
+    Ok(picked)
 }
 
 impl PyTensor {
-    fn index_view(&self, picked: &[Sel], shape: &[usize]) -> PyResult<PyTensor> {
+    fn index_view(&self, picked: &[Sel], _shape: &[usize]) -> PyResult<PyTensor> {
         let mut t = self.inner.clone();
         let mut drop = Vec::new();
+        let mut array = None;
         for (d, sel) in picked.iter().enumerate() {
             t = match sel {
+                Sel::NewAxis => t.unsqueeze(d).map_err(map_err)?,
+                Sel::Skip => t,
+                Sel::Array(index) => { array = Some((d, index)); t },
                 Sel::Idx(i) => {
                     drop.push(d);
-                    t.narrow(d, wrap_index(*i, shape[d])?, 1).map_err(map_err)?
+                    t.narrow(d, wrap_index(*i, t.shape()[d])?, 1).map_err(map_err)?
                 }
-                Sel::Slice(start, stop, step) => {
+                Sel::Slice(start, stop, step) | Sel::TupleSlice(start, stop, step) => {
                     let st = step.unwrap_or(1);
                     if st > 0 {
-                        let len = shape[d] as i128;
+                        let len = t.shape()[d] as i128;
                         let norm = |value: i128| (if value < 0 { value + len } else { value }).clamp(0, len) as usize;
                         let start = norm(start.map_or(0, |value| value as i128));
                         let stop = norm(stop.map_or(len, |value| value as i128));
-                        t.slice(d, start, stop, st as usize).map_err(map_err)?
+                        if matches!(sel, Sel::TupleSlice(..)) && start == 0 && stop == t.shape()[d] && st == 1 { t }
+                        else { t.slice(d, start, stop, st as usize).map_err(map_err)? }
                     } else {
-                        let idx = slice_indices(*start, *stop, st, shape[d])?;
+                        let idx = slice_indices(*start, *stop, st, t.shape()[d])?;
                         if idx.is_empty() { t.narrow(d, 0, 0).map_err(map_err)? } else { t.index_select(d, &idx).map_err(map_err)? }
                     }
                 }
             };
         }
-        for &d in drop.iter().rev() {
-            t = t.squeeze(d).map_err(map_err)?;
+        for &d in drop.iter().rev() { t = t.squeeze(d).map_err(map_err)?; }
+        if let Some((d, index)) = array {
+            t = t.index_tensor(d - drop.iter().filter(|&&axis| axis < d).count(), index).map_err(map_err)?;
         }
+        if t.id() == self.inner.id() { t = t.alias_view().map_err(map_err)?; }
         Ok(PyTensor::wrap(t))
     }
 }
@@ -1606,8 +1620,8 @@ impl PyTensor {
     #[pyo3(signature = (base=10000.0))]
     fn rope_cached(&self, base: f32) -> PyResult<PyTensor> { self.float_math()?; ok(self.inner.rope_cached(base)) }
 
-    /// Basic typed indexing and a single boolean mask or 1-D integer index.
-    /// Views and selected f32 values retain their native autograd path.
+    /// Basic views and one broadcast integer array or a single boolean mask.
+    /// Typed floating selections retain native reverse and forward AD.
     fn __getitem__(&self, key: &Bound<'_, PyAny>) -> PyResult<PyTensor> {
         if key.is_instance_of::<pyo3::types::PyBool>() {
             let mask = CoreTensor::from_vec_bool(vec![key.extract::<bool>()?], &[]).map_err(map_err)?;
@@ -1615,27 +1629,33 @@ impl PyTensor {
         }
         if let Ok(index) = key.extract::<PyRef<'_, PyTensor>>() {
             if index.inner.dtype() == ferro_core::DType::Bool { return ok(self.inner.mask_index(&index.inner)); }
-            if index.inner.dtype() != ferro_core::DType::I64 || index.inner.ndim() > 1 || self.inner.ndim() == 0 {
-                return Err(PyTypeError::new_err("tensor indexing requires a boolean mask or scalar/1-D int64 index"));
+            if index.inner.dtype() != ferro_core::DType::I64 || self.inner.ndim() == 0 {
+                return Err(PyTypeError::new_err("tensor indexing requires a boolean mask or int64 index on a nonscalar input"));
             }
             if index.inner.device() != self.inner.device() { return Err(PyValueError::new_err("index and input devices must match")); }
-            let indices = index.inner.to_vec_i64();
             if index.inner.ndim() == 0 {
-                let i = isize::try_from(indices[0]).map_err(|_| PyValueError::new_err("index exceeds platform range"))?;
+                let i = isize::try_from(index.inner.to_vec_i64()[0]).map_err(|_| PyValueError::new_err("index exceeds platform range"))?;
                 return self.index_view(&[Sel::Idx(i)], self.inner.shape());
             }
-            let indices: Vec<_> = indices.into_iter().map(|i| {
-                let i = isize::try_from(i).map_err(|_| PyValueError::new_err("index exceeds platform range"))?;
-                wrap_index(i, self.inner.shape()[0])
-            }).collect::<PyResult<_>>()?;
-            return ok(self.inner.index_select(0, &indices));
+            if self.inner.device() != Device::Cpu {
+                if index.inner.ndim() != 1 { return Err(pyo3::exceptions::PyNotImplementedError::new_err("multidimensional integer indices currently require CPU storage")); }
+                let indices = index.inner.to_vec_i64().into_iter().map(|i| {
+                    let i = isize::try_from(i).map_err(|_| PyValueError::new_err("index exceeds platform range"))?;
+                    wrap_index(i, self.inner.shape()[0])
+                }).collect::<PyResult<Vec<_>>>()?;
+                return ok(self.inner.index_select(0, &indices));
+            }
+            return ok(self.inner.index_tensor(0, &index.inner));
         }
         if let Ok(tuple) = key.downcast::<PyTuple>() {
-            if tuple.len() == 1 { return self.__getitem__(&tuple.get_item(0)?); }
+            if tuple.len() == 1 {
+                let item = tuple.get_item(0)?;
+                let direct = item.is_instance_of::<pyo3::types::PyBool>() || item.extract::<PyRef<'_, PyTensor>>().is_ok();
+                if direct { return self.__getitem__(&item); }
+            }
         }
         let shape = self.inner.shape().to_vec();
         let picked = parse_key(key, shape.len())?;
-        if picked.len() > shape.len() { return Err(PyValueError::new_err("too many indices for tensor rank")); }
         self.index_view(&picked, &shape)
     }
 
@@ -1892,6 +1912,10 @@ impl PyTensor {
 
     fn detach(&self) -> PyTensor {
         PyTensor::wrap(self.inner.detach())
+    }
+
+    fn _zeros_like_layout(&self) -> PyResult<PyTensor> {
+        ok(self.inner.zeros_like_layout())
     }
 
     #[pyo3(name = "clone", signature = (*, memory_format=None))]

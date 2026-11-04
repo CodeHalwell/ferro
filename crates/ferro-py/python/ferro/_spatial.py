@@ -1,4 +1,4 @@
-"""Differentiable CPU f32 spatial compositions; no external tensor runtime."""
+"""CPU spatial compositions; Conv1d/2d accept f32/f64, other paths require f32."""
 import math
 import sys
 import itertools
@@ -20,23 +20,23 @@ def _tuple(value, dimensions, name, minimum=0):
     return values
 
 
-def _capacity(shape):
+def _capacity(shape, dtype='float32'):
     # Even empty outputs need representable contiguous strides.
-    if math.prod(max(size, 1) for size in shape) > sys.maxsize or math.prod(shape) > sys.maxsize // 4:
-        raise ValueError('spatial tensor shape exceeds addressable float32 capacity')
+    if math.prod(max(size, 1) for size in shape) > sys.maxsize or math.prod(shape) > sys.maxsize // (8 if dtype == 'float64' else 4):
+        raise ValueError('spatial tensor shape exceeds addressable ' + dtype + ' capacity')
 
 
-def _tensor(value, name):
+def _tensor(value, name, allow_float64=False):
     if not isinstance(value, Tensor):
         raise TypeError(name + ' must be a Tensor')
     if value.device != 'cpu':
         raise NotImplementedError('spatial compositions currently support CPU tensors only')
-    if value.dtype != 'float32':
-        raise ValueError(name + ' must have float32 dtype')
+    if value.dtype not in (('float32', 'float64') if allow_float64 else ('float32',)):
+        raise ValueError(name + (' must have float32 or float64 dtype' if allow_float64 else ' must have float32 dtype'))
 
 
-def _input(value, dimensions):
-    _tensor(value, 'input')
+def _input(value, dimensions, allow_float64=False):
+    _tensor(value, 'input', allow_float64)
     if value.ndim not in (dimensions + 1, dimensions + 2):
         raise ValueError(f'input must have {dimensions + 1} or {dimensions + 2} dimensions')
     unbatched = value.ndim == dimensions + 1
@@ -126,8 +126,13 @@ def _conv_padding(input, kernel, padding, dilation, mode):
 
 
 def _convolution(input, weight, bias, stride, padding, dilation, groups, dimensions, transposed=False):
-    x, unbatched = _input(input, dimensions)
-    _tensor(weight, 'weight')
+    allow_float64 = dimensions in (1, 2) and not transposed
+    x, unbatched = _input(input, dimensions, allow_float64)
+    _tensor(weight, 'weight', allow_float64)
+    if x.dtype != weight.dtype:
+        raise ValueError(f'convolution input dtype {x.dtype} must match weight dtype {weight.dtype}')
+    if x.dtype == 'float64' and (_native._is_capturing() or _native._forward_ad_is_active()):
+        raise NotImplementedError('float64 convolution supports eager ordinary reverse gradients only')
     if weight.ndim != dimensions + 2 or any(size <= 0 for size in weight.shape):
         raise ValueError(f'weight must have {dimensions + 2} positive dimensions')
     if type(groups) is not int or groups <= 0:
@@ -138,7 +143,9 @@ def _convolution(input, weight, bias, stride, padding, dilation, groups, dimensi
     if channels != expected or channels % groups or outputs % groups:
         raise ValueError('input channels, weight shape and groups are incompatible')
     if bias is not None:
-        _tensor(bias, 'bias')
+        _tensor(bias, 'bias', allow_float64)
+        if bias.dtype != x.dtype:
+            raise ValueError('convolution bias must match input dtype')
         if bias.shape != [outputs]:
             raise ValueError(f'bias must have shape [{outputs}]')
     strides = _tuple(stride, dimensions, 'stride', 1)
@@ -147,6 +154,7 @@ def _convolution(input, weight, bias, stride, padding, dilation, groups, dimensi
     if isinstance(padding, str):
         if transposed or padding not in ('same', 'valid'):
             raise ValueError('padding must be numeric, or same/valid for ordinary convolution')
+        resolved_padding = (0,) * dimensions
         if padding == 'same':
             if any(step != 1 for step in strides):
                 raise ValueError("padding='same' requires stride=1")
@@ -156,9 +164,27 @@ def _convolution(input, weight, bias, stride, padding, dilation, groups, dimensi
                 pads.extend((total // 2, total - total // 2))
             padded = [x.shape[0], channels] + [size + spacing * (width - 1)
                       for size, width, spacing in zip(x.shape[2:], kernel, dilations)]
-            _capacity(padded)
-            x = x.pad_constant(pads, 0.)
-        padding = (0,) * dimensions
+            _capacity(padded, x.dtype)
+            if x.dtype == 'float64' and all(pads[2 * axis] == pads[2 * axis + 1] for axis in range(2, x.ndim)):
+                resolved_padding = tuple(pads[2 * axis] for axis in range(2, x.ndim))
+            elif x.dtype == 'float64':
+                from ._tensor_api import zeros
+                for axis in range(2, x.ndim):
+                    before, after = pads[2 * axis:2 * axis + 2]
+                    shape = list(x.shape)
+                    pieces = []
+                    if before:
+                        shape[axis] = before
+                        pieces.append(zeros(shape, dtype=x.dtype))
+                    pieces.append(x)
+                    if after:
+                        shape[axis] = after
+                        pieces.append(zeros(shape, dtype=x.dtype))
+                    if len(pieces) > 1:
+                        x = _native.cat(pieces, axis)
+            else:
+                x = x.pad_constant(pads, 0.)
+        padding = resolved_padding
     pads = _tuple(padding, dimensions, 'padding')
     return x, unbatched, strides, pads, dilations, kernel, outputs
 

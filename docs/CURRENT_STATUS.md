@@ -10,52 +10,17 @@ detailed B0-B7 acceptance criteria; [FUTURE.md](FUTURE.md) and
 
 ## 2026-11-04 active completeness continuation
 
-PyTorch/PyG work continues. The latest green matching checkpoint is
-[candidate31](../verification/completeness-2026-11-03/README.md): 1,092 selected
-source/fixture inputs, 123 matching installed Python files and one native library.
-Python discovers 1,787 cases: 1,757 pass and 30 GPU cases are unavailable
-(1,781 reported executions; 25 skip indicators including a class hiding six cases).
-The corrected fresh wheel passes all 16 focused methods and eight standalones.
+The latest verified checkpoint is [candidate32](../verification/completeness-2026-11-03/README.md),
+prepared for [PR #33](https://github.com/CodeHalwell/ferro/pull/33).
+Python: 1,807 passed and 30 GPU cases unavailable; native: 1,702 outer passes
+plus two doctests. CUDA compilation, DLPack and eight standalones pass.
 
-Candidate31 adds native CPU F64 RMSprop/Adagrad and affine GroupNorm. Actual-Torch
-trajectories/gradients, typed state and full-precision options, mixed F32/F64
-slots, lazy Adagrad groups, aliased parameters, atomic invalid-state handling and
-fresh-process optimizer/model/RNG continuation are covered. GroupNorm uses its
-existing functional operators; existing typed LRN receives module/training
-controls without a new operator.
-
-The first integration had eight failing Adaptive methods (15 error indicators)
-and all eight GroupNorm methods passed. The binding's step preflight still used
-F32-only validation. Production training_state.rs was repaired and a fresh wheel
-passed full discovery without changing fixtures. First failures remain recorded.
-All 557 workspace Rust/CUDA/build inputs excluding the binding crate match the
-first proof, so its workspace/CUDA evidence is reused explicitly. The changed
-binding was rebuilt; DLPack, full Python, focused tests and standalones ran anew.
-
-Rust records 1,433 core passes (2 ignored), 41 fastcpu (2 ignored), 142 CUDA and
-8 tokenizer harness passes, plus two E0502 CUDA doctests. Five mandatory GPU
-cases are filtered and 17 nested summaries excluded from 1,624 runtime passes.
-Fresh DLPack has 12 harness passes, one early-return GPU body and three filtered
-cases. Optional bodies can return early; no hardware execution follows from
-these counts. Frozen locks use cudarc 0.19.10. Main/frozen sources and ZIPs,
-wheel payloads and private/global installations are rehashed before publication.
-
-Previous [candidate30](../verification/completeness-2026-11-03/candidate30/README.md),
-[candidate29](../verification/completeness-2026-11-03/candidate29/README.md) and
-earlier green/failed checkpoints preserve their full evidence. New adaptive
-optimizers retain finite-option and 2^24 counter bounds, exact-dtype state loads,
-contiguous snapshots and checked manual-gradient mutation. RMSprop Double alpha
-above one is supported; F32 validation is unchanged. GroupNorm F64 is ordinary
-CPU support, not general higher/forward/capture/GPU coverage.
-
-New Adamax/Adadelta/ASGD, convolution/recurrent/pooling, power-zero direct-JVP and
-unused materialized-gradient layout repairs, generic empty accumulation/scheduling,
-physical-batch Jacobians and shared multi-output/nested rules remain isolated.
-Full framework parity and dtype/operator/catalog gaps stay open. Name presence
-does not prove semantics or performance. Changes are local and uncommitted.
-No NVIDIA or Apple GPU is available; Metal and complete GPU models remain open.
-See the [compatibility matrix](PYTORCH_PYG_COMPATIBILITY.md),
-[GPU portability](GPU_PORTABILITY.md) and [Rust CUDA research](RUST_CUDA.md).
+This adds physical-batch Jacobians, shared-output PReLU higher/JVP rules,
+ownership-aware accumulation and creation-priority backward scheduling,
+unused-gradient/power-zero layouts, and CPU F64 Conv1d/Conv2d. Earlier typed
+training, modules and graph coverage remains. Full framework parity is open;
+Metal and hardware GPU acceptance remain open. Unfinished follow-ups remain
+isolated outside the committed checkpoint. See [handoff](CONTINUATION_HANDOFF.md).
 
 ## 2026-11-03 portability and compatibility continuation (historical)
 

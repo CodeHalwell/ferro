@@ -159,7 +159,7 @@ class SpatialTests(unittest.TestCase):
             for options in ({'groups': 3}, {'groups': 0}, {'stride': 0}, {'dilation': 0}, {'padding': -1}, {'kernel_size': (2, 2, 2, 2)}):
                 with self.subTest(cls=cls.__name__, options=options), self.assertRaises(ValueError):
                     cls(2, 4, **{'kernel_size': 2, **options})
-            for options in ({'padding_mode': 'symmetric'}, {'dtype': 'float64'}, {'device': 'cuda'}):
+            for options in ({'padding_mode': 'symmetric'}, {'dtype': 'int64' if cls is Conv1d else 'float64'}, {'device': 'cuda'}):
                 with self.subTest(cls=cls.__name__, options=options), self.assertRaises(NotImplementedError):
                     cls(2, 3, 2, **options)
             with self.assertRaises(TypeError):

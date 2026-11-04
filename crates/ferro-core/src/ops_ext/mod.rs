@@ -26,6 +26,7 @@ pub mod ceil;
 pub mod celu;
 pub mod clamp;
 pub mod conv2d;
+mod conv2d_f64;
 pub mod copysign;
 pub mod cos;
 pub mod cosh;
@@ -157,3 +158,4 @@ pub(crate) mod activation_backward;
 pub mod prelu;
 
 pub(crate) mod dual_copy;
+pub(crate) mod prelu_backward;

@@ -1,4 +1,6 @@
-"""CPU f32 spatial modules with PyTorch parameter layouts and output conventions.
+"""CPU spatial modules with PyTorch parameter layouts and output conventions.
+
+Conv1d/2d also support float64 with zero padding; other spatial modules use f32.
 
 Convolutions support zero/reflect/replicate/circular padding; transposes use zeros.
 Adaptive pooling requires positive
@@ -26,8 +28,15 @@ class _Convolution(Module):
             raise NotImplementedError('convolutions support zeros/reflect/replicate/circular; transposes require zeros')
         if device not in (None, 'cpu'):
             raise NotImplementedError('spatial convolution modules currently support CPU only')
-        if dtype not in (None, 'float32'):
-            raise NotImplementedError('spatial convolution modules currently support float32 only')
+        from .. import _native
+        from .._tensor_api import _dtype, zeros
+        dtype = _dtype(dtype)
+        if dtype not in ('float32', 'float64'):
+            raise NotImplementedError('convolution parameters require float32 or float64')
+        if dtype == 'float64' and (dimensions not in (1, 2) or self._transposed or padding_mode != 'zeros'):
+            raise NotImplementedError('float64 currently supports Conv1d/2d with zero padding mode')
+        if _native._is_capturing() or _native._forward_ad_is_active():
+            raise NotImplementedError('convolution initialization during capture or forward AD is unsupported')
         kernel = _spatial._tuple(kernel_size, dimensions, 'kernel_size', 1)
         strides = _spatial._tuple(stride, dimensions, 'stride', 1)
         dilations = _spatial._tuple(dilation, dimensions, 'dilation', 1)
@@ -43,23 +52,30 @@ class _Convolution(Module):
         if self._transposed and any(pad >= step and pad >= spacing for pad, step, spacing in zip(extra, strides, dilations)):
             raise ValueError('output_padding must be smaller than stride or dilation on each axis')
         shape = [in_channels, out_channels // groups, *kernel] if self._transposed else [out_channels, in_channels // groups, *kernel]
-        _spatial._capacity(shape)
+        _spatial._capacity(shape, dtype)
         self._initialize()
         self.in_channels, self.out_channels = in_channels, out_channels
         self.kernel_size, self.stride, self.padding, self.dilation = kernel, strides, pads, dilations
         self.groups, self.padding_mode = groups, padding_mode
         self.transposed, self.output_padding = self._transposed, extra
-        self.weight = Parameter(Tensor.zeros(shape))
-        self.bias = Parameter(Tensor.zeros([out_channels])) if bias else None
+        self.weight = Parameter(Tensor.zeros(shape) if dtype == 'float32' else zeros(shape, dtype=dtype))
+        self.bias = Parameter(Tensor.zeros([out_channels]) if dtype == 'float32' else zeros([out_channels], dtype=dtype)) if bias else None
         self.reset_parameters()
 
     def reset_parameters(self, *, generator=None):
         """Torch's uniform initialization, optionally using an explicit Ferro Generator."""
+        from .. import _native
+        if _native._is_capturing() or _native._forward_ad_is_active():
+            raise NotImplementedError('convolution reset during capture or forward AD is unsupported')
+        values = [parameter.tensor() for parameter in self.parameters()]
+        for value in values:
+            if value.device != 'cpu' or value.dtype not in ('float32', 'float64'):
+                raise NotImplementedError('convolution reset requires CPU floating parameters')
+            _spatial._capacity(value.shape, value.dtype)
         bound = 1 / math.sqrt(self.weight.tensor().shape[1] * math.prod(self.kernel_size))
         with no_grad():
-            for parameter in self.parameters():
-                value = parameter.tensor()
-                value.copy_((Tensor.rand(list(value.shape), generator=generator) * 2 - 1) * bound)
+            for value in values:
+                value.copy_((Tensor.rand(list(value.shape), generator=generator, dtype=value.dtype) * 2 - 1) * bound)
 
     def _output_padding(self, input, output_size):
         if output_size is None:

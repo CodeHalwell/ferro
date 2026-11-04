@@ -3,7 +3,7 @@ use super::{ForwardOp, Op};
 use crate::dispatch::{BinaryKind, OpTag, UnaryKind};
 use crate::{Error, Result, Tensor};
 
-fn reduce_to(g: &Tensor, shape: &[usize]) -> Result<Tensor> {
+pub(super) fn reduce_to(g: &Tensor, shape: &[usize]) -> Result<Tensor> {
     if g.numel() == 0 { return crate::tensor::sum_empty_to_shape(g, shape); }
     let mut v = g.clone();
     while v.shape().len() > shape.len() { v = v.sum_dim(0, false)?; }
@@ -77,7 +77,7 @@ impl Op {
                     let output = saved_output.ok_or_else(|| Error::Unsupported { op: "cumprod backward", msg: "recorded output is unavailable".into() })?;
                     vec![crate::ops_ext::cumprod::graph_vjp(a, output, g, *dim)?]
                 },
-                Some(ForwardOp::Square) => vec![g.mul(&a.mul(&Tensor::full_on(&[], 2., a.device())?)?)?],
+                Some(ForwardOp::Square) => vec![g.mul(&a.powf(1.).mul(&Tensor::full_on(&[], 2., a.device())?)?)?],
                 Some(ForwardOp::ScalarPower(power)) => vec![crate::ops_ext::powf::scalar_power_backward(g, a, *power)?],
                 Some(ForwardOp::RoundedDiv(_) | ForwardOp::FloorDivide) => return Err(Error::Unsupported { op: "rounded division backward", msg: "rounded division uses its selected optional VJP".into() }),
                 Some(ForwardOp::Rounding(_)) => vec![Tensor::full_on(a.shape(), 0.0, a.device())?],
@@ -102,7 +102,7 @@ impl Op {
                 Some(ForwardOp::Squeeze(dim)) => vec![g.unsqueeze(*dim)?],
                 Some(ForwardOp::Unsqueeze(dim)) => vec![g.squeeze(*dim)?],
                 Some(ForwardOp::CopyDualLayout { .. }) => vec![g.to_dtype_autograd(a.dtype(),false)?],
-                Some(ForwardOp::Clone { .. }) => vec![g.clone()],
+                Some(ForwardOp::Alias | ForwardOp::Clone { .. }) => vec![g.clone()],
                 Some(ForwardOp::Transpose(d0, d1)) => vec![g.transpose(*d0, *d1)?],
                 Some(ForwardOp::Permute(dims)) => {
                     let mut inverse = vec![0; dims.len()];

@@ -69,7 +69,7 @@ fn validation_saved_versions_and_explicit_derivative_limits() {
     assert!(x.prelu(&Tensor::ones(&[1,1])).is_err());
     assert!(x.prelu(&Tensor::ones(&[1]).to_dtype(DType::F64)).is_err());
     let y = x.prelu(&a).unwrap();
-    assert!(y.sum().grad_wrt(&[&x], true).is_err());
+    assert_eq!(y.sum().grad_wrt(&[&x], true).unwrap()[0].to_vec(), [1., 0.2, 1.]);
     for change in 0..3 {
         let x = tensor(&[1.,-2.,3.], &[3]); let a = tensor(&[0.2], &[1]); let y = x.prelu(&a).unwrap();
         [&x,&a,&y][change]._bump_version_for_test();

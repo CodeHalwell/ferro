@@ -1,4 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_OP_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+fn next_op_sequence() -> usize {
+    NEXT_OP_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .expect("operation birth sequence exhausted")
+}
 use std::cell::Cell;
 
 thread_local! {
@@ -32,6 +40,12 @@ pub fn with_grad_enabled<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
 mod higher_order;
 #[path = "forward_rules.rs"]
 mod forward_rules;
+#[path = "physical_forward_rules.rs"]
+mod physical_forward_rules;
+
+#[cfg(test)]
+#[path = "ready_queue_tests.rs"]
+mod ready_queue_tests;
 
 use crate::dispatch::OpTag;
 use crate::dtype::DType;
@@ -42,7 +56,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Clone, Debug)]
 pub(crate) enum ForwardOp {
     CopyDualLayout { strides: Vec<usize>, offset: usize, storage_len: usize },
-    SigmoidBackward, TanhBackward,
+    SigmoidBackward, TanhBackward, Alias,
     WhereConditional,
     Prelu,
     CumExtrema { dim: usize, maximum: bool },
@@ -69,6 +83,7 @@ impl ForwardOp {
             Self::CopyDualLayout { strides, offset, storage_len } => inputs[0].copy_dual_layout(strides,*offset,*storage_len),
             Self::CumExtrema { dim, maximum } => inputs[0].cumulative_extrema(*dim, *maximum).map(|result| result.0),
             Self::Prelu => inputs[0].prelu(&inputs[1]),
+            Self::Alias => inputs[0].alias_view(),
             Self::WhereConditional => Tensor::where_cond(&inputs[0], &inputs[1], &inputs[2]),
             Self::IndexedGather { map, kind, save_input } => inputs[0].indexed_gather_kind(&inputs[1], *map, *kind, *save_input),
             Self::IndexedScatter { map, kind, shape, save_input, strides } => Tensor::indexed_scatter_saved(&inputs[0], &inputs[1], shape, *map, *kind, *save_input, strides.as_deref()),
@@ -123,7 +138,11 @@ impl ForwardOp {
 /// and the incoming gradient. Other recording seams save every input at record
 /// time; both backward engines check those versions before running the callback.
 /// Saved output and sibling dependencies remain independently guarded.
-pub(crate) struct Op {
+#[derive(Clone, Debug)]
+pub(crate) enum MultiForwardOp { PreluBackward }
+
+pub(crate) struct OpBody {
+    birth_sequence: usize,
     pub(crate) forward: Option<ForwardOp>,
     inputs: Vec<Tensor>,
     // Old edges cannot be created by later flag changes. Public flag-only
@@ -132,11 +151,45 @@ pub(crate) struct Op {
     input_flags: Vec<bool>,
     saved_versions: Vec<Option<u64>>,
     saved_values: Mutex<Vec<(Arc<StorageCell>, u64)>>,
+    saved_jvp: Vec<Tensor>,
     /// Which named kernel this op ran (kind-routed ops only); None for
     /// composite ops. Read by the graph compiler to plan fused execution.
     pub(crate) tag: Option<OpTag>,
     backward: Option<Arc<dyn Fn(&Tensor) -> Vec<Option<Tensor>> + Send + Sync>>,
     optional: bool,
+    multi_backward: Option<Arc<dyn Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync>>,
+    outputs: Vec<OutputSpec>,
+    pub(crate) multi_forward: Option<MultiForwardOp>,
+}
+
+pub(crate) struct Op { body: OpStorage, output_index: usize }
+enum OpStorage { Single(OpBody), Shared(Arc<OpBody>) }
+
+#[derive(Clone)]
+struct OutputSpec { shape: Vec<usize>, dtype: DType, device: crate::Device, differentiable: bool }
+
+impl Drop for OpBody {
+    fn drop(&mut self) {
+        let mut pending = std::mem::take(&mut self.inputs);
+        // Captured ancestors remain held by pending while callbacks are released.
+        self.backward.take();
+        self.multi_backward.take();
+        while let Some(tensor) = pending.pop() {
+            if let Ok(mut inner) = Arc::try_unwrap(tensor.0) {
+                if let Some(op) = inner.op.take() { pending.extend(op.into_inputs()); }
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for Op {
+    type Target = OpBody;
+    fn deref(&self) -> &OpBody { match &self.body { OpStorage::Single(body) => body, OpStorage::Shared(body) => body } }
+}
+impl std::ops::DerefMut for Op {
+    fn deref_mut(&mut self) -> &mut OpBody {
+        match &mut self.body { OpStorage::Single(body) => body, OpStorage::Shared(body) => Arc::get_mut(body).expect("shared operation is immutable") }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -169,6 +222,51 @@ impl FrozenForward<'_> {
 }
 
 impl Op {
+    fn single(body: OpBody) -> Self { Self { body: OpStorage::Single(body), output_index: 0 } }
+
+    pub(crate) fn is_shared(&self) -> bool { matches!(self.body, OpStorage::Shared(_)) }
+    fn has_backward(&self) -> bool { self.backward.is_some() || self.multi_backward.is_some() }
+    pub(crate) fn logical_id(&self) -> usize { (&**self as *const OpBody) as usize }
+
+    pub(crate) fn new_many(inputs: Vec<Tensor>, outputs: &[Tensor], differentiable: &[bool], multi_forward: Option<MultiForwardOp>, backward: Box<dyn Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync>) -> Vec<Op> {
+        let saved_versions = inputs.iter().map(|input| Some(input.version())).collect();
+        let input_edges = inputs.iter().map(|input| input.has_gradient_edge() && crate::forward_ad::records_grad(input)).collect();
+        let input_flags = inputs.iter().map(crate::forward_ad::records_grad).collect();
+        let outputs = outputs.iter().zip(differentiable).map(|(output, flag)| OutputSpec {
+            shape: output.shape().to_vec(), dtype: output.dtype(), device: output.device(), differentiable: *flag,
+        }).collect::<Vec<_>>();
+        let count = outputs.len();
+        let body = Arc::new(OpBody { birth_sequence: next_op_sequence(), inputs, input_edges, input_flags, saved_versions,
+            saved_values: Mutex::new(Vec::new()), saved_jvp: Vec::new(), forward: None, tag: None, backward: None, optional: true,
+            multi_backward: Some(Arc::from(backward)), outputs, multi_forward });
+        (0..count).map(|output_index| Op { body: OpStorage::Shared(body.clone()), output_index }).collect()
+    }
+
+    fn vjp_outputs(&self, gradients: &[Option<Tensor>], create_graph: bool, preserve_passthrough: bool, frozen: Option<FrozenForward<'_>>, required: &[bool], output: &Tensor) -> crate::Result<Vec<Option<Tensor>>> {
+        if let Some(backward) = &self.multi_backward {
+            if gradients.len() != self.outputs.len() { return Err(crate::Error::Unsupported { op: "multi-output vjp", msg: "cotangent arity does not match output slots".into() }); }
+            for (gradient, spec) in gradients.iter().zip(&self.outputs) {
+                let Some(gradient) = gradient else { continue };
+                if !spec.differentiable || gradient.shape() != spec.shape || gradient.dtype() != spec.dtype || gradient.device() != spec.device {
+                    return Err(crate::Error::Unsupported { op: "multi-output vjp", msg: "cotangent does not match its differentiable output slot".into() });
+                }
+            }
+            if create_graph {
+                let frozen_inputs;
+                let inputs = if let Some(state) = frozen {
+                    frozen_inputs = self.inputs.iter().map(|input| state.operand(input)).collect::<Vec<_>>();
+                    &frozen_inputs
+                } else { &self.inputs };
+                return match self.multi_forward {
+                    Some(MultiForwardOp::PreluBackward) => with_grad_enabled(true, || crate::ops_ext::prelu_backward::graph_vjp(inputs, gradients)),
+                    None => Err(crate::Error::Unsupported { op: "multi-output vjp", msg: "generic shared callbacks support first-order reverse queries only".into() }),
+                };
+            }
+            return Ok(with_grad_enabled(false, || backward(gradients)));
+        }
+        self.vjp(gradients[0].as_ref().expect("scheduled output has a cotangent"), create_graph, preserve_passthrough, frozen, Some(required), Some(output))
+    }
+
     pub(crate) fn new(
         inputs: Vec<Tensor>,
         backward: Box<dyn Fn(&Tensor) -> Vec<Tensor> + Send + Sync>,
@@ -176,17 +274,18 @@ impl Op {
         let saved_versions = inputs.iter().map(|t| Some(t.version())).collect();
         let input_edges = inputs.iter().map(|input| input.has_gradient_edge() && crate::forward_ad::records_grad(input)).collect();
         let input_flags = inputs.iter().map(crate::forward_ad::records_grad).collect();
-        Op {
+        Self::single(OpBody {
+            birth_sequence: next_op_sequence(),
             inputs,
             input_edges,
             input_flags,
             saved_versions,
-            saved_values: Mutex::new(Vec::new()),
+            saved_values: Mutex::new(Vec::new()), saved_jvp: Vec::new(),
             forward: None,
             tag: None,
             backward: Some(Arc::new(move |g| backward(g).into_iter().map(Some).collect())),
-            optional: false,
-        }
+            optional: false, multi_backward: None, outputs: Vec::new(), multi_forward: None,
+        })
     }
 
     pub(crate) fn new_optional(
@@ -196,7 +295,7 @@ impl Op {
         let saved_versions = inputs.iter().map(|t| Some(t.version())).collect();
         let input_edges = inputs.iter().map(|input| input.has_gradient_edge() && crate::forward_ad::records_grad(input)).collect();
         let input_flags = inputs.iter().map(crate::forward_ad::records_grad).collect();
-        Op { inputs, input_edges, input_flags, saved_versions, saved_values: Mutex::new(Vec::new()), forward: None, tag: None, backward: Some(Arc::from(backward)), optional: true }
+        Self::single(OpBody { birth_sequence: next_op_sequence(), inputs, input_edges, input_flags, saved_versions, saved_values: Mutex::new(Vec::new()), saved_jvp: Vec::new(), forward: None, tag: None, backward: Some(Arc::from(backward)), optional: true, multi_backward: None, outputs: Vec::new(), multi_forward: None })
     }
 
     /// Like `new` but carrying the kernel tag for fusion planning.
@@ -208,23 +307,29 @@ impl Op {
         let saved_versions = inputs.iter().map(|t| Some(t.version())).collect();
         let input_edges = inputs.iter().map(|input| input.has_gradient_edge() && crate::forward_ad::records_grad(input)).collect();
         let input_flags = inputs.iter().map(crate::forward_ad::records_grad).collect();
-        Op {
+        Self::single(OpBody {
+            birth_sequence: next_op_sequence(),
             inputs,
             input_edges,
             input_flags,
             saved_versions,
-            saved_values: Mutex::new(Vec::new()),
+            saved_values: Mutex::new(Vec::new()), saved_jvp: Vec::new(),
             forward: None,
             tag: Some(tag),
             backward: Some(Arc::new(move |g| backward(g).into_iter().map(Some).collect())),
-            optional: false,
-        }
+            optional: false, multi_backward: None, outputs: Vec::new(), multi_forward: None,
+        })
     }
 
     pub(crate) fn inference(inputs: Vec<Tensor>, tag: Option<OpTag>) -> Op {
         let input_edges = vec![false; inputs.len()];
         let input_flags = inputs.iter().map(crate::forward_ad::records_grad).collect();
-        Op { inputs, input_edges, input_flags, saved_versions: Vec::new(), saved_values: Mutex::new(Vec::new()), tag, forward: None, backward: None, optional: false }
+        Self::single(OpBody { birth_sequence: next_op_sequence(), inputs, input_edges, input_flags, saved_versions: Vec::new(), saved_values: Mutex::new(Vec::new()), saved_jvp: Vec::new(), tag, forward: None, backward: None, optional: false, multi_backward: None, outputs: Vec::new(), multi_forward: None })
+    }
+
+    pub(crate) fn set_saved_jvp(&mut self, values: Vec<Tensor>) {
+        debug_assert!(values.iter().all(|value| !value.requires_grad() && value.0.op.is_none()));
+        self.saved_jvp = values;
     }
 
     pub(crate) fn inputs(&self) -> &[Tensor] {
@@ -239,10 +344,20 @@ impl Op {
         debug_assert_eq!(actual_flags.len(), inputs.len());
         let input_edges = self.input_edges.iter().zip(actual_edges).map(|(old, actual)| *old && *actual).collect();
         let input_flags = self.input_flags.iter().zip(actual_flags).map(|(old, actual)| *old && *actual).collect();
-        Op { inputs, input_edges, input_flags, saved_versions: self.saved_versions.clone(),
-            saved_values: Mutex::new(self.saved_values.lock().unwrap_or_else(|e| e.into_inner()).clone()),
-            forward: self.forward.clone(), tag: self.tag, backward: self.backward.clone(), optional: self.optional }
+        let body = OpBody { birth_sequence: self.birth_sequence, inputs, input_edges, input_flags, saved_versions: self.saved_versions.clone(),
+            saved_values: Mutex::new(self.saved_values.lock().unwrap_or_else(|e| e.into_inner()).clone()), saved_jvp: self.saved_jvp.clone(),
+            forward: self.forward.clone(), tag: self.tag, backward: self.backward.clone(), optional: self.optional,
+            multi_backward: self.multi_backward.clone(), outputs: self.outputs.clone(), multi_forward: self.multi_forward.clone() };
+        if self.is_shared() { Op { body: OpStorage::Shared(Arc::new(body)), output_index: self.output_index } } else { Self::single(body) }
     }
+
+    pub(crate) fn sibling_edge(&self, original: &Op) -> Op {
+        let OpStorage::Shared(body) = &self.body else { panic!("sibling edges require a shared body") };
+        assert!(original.output_index < body.outputs.len());
+        Op { body: OpStorage::Shared(body.clone()), output_index: original.output_index }
+    }
+
+    pub(crate) fn differentiable_outputs(&self) -> Vec<bool> { self.outputs.iter().map(|output| output.differentiable).collect() }
 
     /// Forward-time edge eligibility is independent of later leaf flag edits.
     pub(crate) fn input_edges(&self) -> &[bool] { &self.input_edges }
@@ -252,7 +367,7 @@ impl Op {
     }
 
     pub(crate) fn save_storage(&self, storage: Arc<StorageCell>, version: u64) {
-        if self.backward.is_some() { self.saved_values.lock().unwrap_or_else(|e| e.into_inner()).push((storage, version)); }
+        if self.has_backward() { self.saved_values.lock().unwrap_or_else(|e| e.into_inner()).push((storage, version)); }
     }
 
     fn validate_saved_values(&self) -> crate::Result<()> {
@@ -266,10 +381,6 @@ impl Op {
 
     pub(crate) fn omit_saved_input_values(&mut self) {
         self.saved_versions.fill(None);
-    }
-
-    pub(crate) fn backward(&self, g: &Tensor, required: &[bool]) -> Vec<Option<Tensor>> {
-        self.vjp(g, false, false, None, Some(required), None).expect("inference-only node has no backward")
     }
 
     fn vjp(&self, g: &Tensor, create_graph: bool, preserve_passthrough: bool, frozen_forward: Option<FrozenForward<'_>>, required: Option<&[bool]>, output: Option<&Tensor>) -> crate::Result<Vec<Option<Tensor>>> {
@@ -294,13 +405,26 @@ impl Op {
             }
             if create_graph { return with_grad_enabled(true, || crate::ops_ext::indexed::gather_vjp(&self.inputs, g, crate::ops_ext::indexed::IndexMap::Axis(dim), crate::ops_ext::indexed::IndexKind::Gather)); }
         }
+        if create_graph && matches!(self.forward, Some(ForwardOp::Prelu)) {
+            let inputs = self.inputs.iter().map(|input| frozen_forward.map_or_else(|| input.clone(), |state| state.operand(input))).collect::<Vec<_>>();
+            return with_grad_enabled(true, || {
+                let input = &inputs[0]; let weight = &inputs[1];
+                let mut shape = vec![1; input.ndim()];
+                if input.ndim() >= 2 { shape[1] = weight.numel(); }
+                let expanded = weight.view(&shape)?.expand(input.shape())?;
+                let pair = crate::ops_ext::prelu_backward::backward(g, input, &expanded)?;
+                let input_gradient = required.is_none_or(|mask| mask[0]).then(|| pair[0].clone());
+                let weight_gradient = if required.is_none_or(|mask| mask[1]) { Some(higher_order::reduce_to(&pair[1], &shape)?.view(weight.shape())?) } else { None };
+                Ok(vec![input_gradient, weight_gradient])
+            });
+        }
         if create_graph && matches!(self.forward, Some(ForwardOp::WhereConditional)) {
             return with_grad_enabled(true, || crate::ops_ext::where_cond::graph_vjp(&self.inputs, g));
         }
         if create_graph {
             match &self.forward {
                 Some(ForwardOp::IndexedGather { map, kind, .. }) => return with_grad_enabled(true, || crate::ops_ext::indexed::gather_vjp(&self.inputs, g, *map, *kind)),
-                Some(ForwardOp::IndexedScatter { map, kind, .. }) => return with_grad_enabled(true, || Ok(vec![Some(g.indexed_gather_kind(&self.inputs[1], *map, *kind, true)?), None])),
+                Some(ForwardOp::IndexedScatter { map, kind, .. }) => return with_grad_enabled(true, || Ok(vec![Some(g.indexed_gather_kind(&self.inputs[1], *map, *kind, *kind != crate::ops_ext::indexed::IndexKind::Index)?), None])),
                 _ => {},
             }
         }
@@ -351,14 +475,15 @@ impl Op {
     /// Consume the op, yielding its input tensors. Used by TensorInner's
     /// iterative Drop to unlink deep graphs without recursing.
     pub(crate) fn into_inputs(self) -> Vec<Tensor> {
-        self.inputs
+        match self.body {
+            OpStorage::Single(mut body) => std::mem::take(&mut body.inputs),
+            OpStorage::Shared(body) => Arc::try_unwrap(body).map(|mut body| std::mem::take(&mut body.inputs)).unwrap_or_default(),
+        }
     }
 }
 
 /// Post-order topological sort via an explicit stack of (node, next child
 /// index), so graphs deeper than the native stack cannot overflow it.
-fn build_topo(root: &Tensor) -> Vec<Tensor> { build_topo_roots(&[root]) }
-
 fn build_topo_roots(roots: &[&Tensor]) -> Vec<Tensor> {
     let mut seen = HashSet::new();
     let mut topo = Vec::new();
@@ -379,6 +504,88 @@ fn build_topo_roots(roots: &[&Tensor]) -> Vec<Tensor> {
         }
     }
     topo
+}
+
+struct PlannedOp { representative: usize, outputs: Vec<Vec<usize>> }
+struct QueryPlan { tensors: Vec<Tensor>, operations: Vec<PlannedOp> }
+impl QueryPlan {
+    fn new(roots: &[&Tensor]) -> Self {
+        let tensors = build_topo_roots(roots);
+        let mut indices = HashMap::new();
+        let mut operations: Vec<PlannedOp> = Vec::new();
+        for (tensor_index, tensor) in tensors.iter().enumerate() {
+            let Some(op) = &tensor.0.op else { continue };
+            let next = operations.len();
+            let operation_index = *indices.entry(op.logical_id()).or_insert_with(|| {
+                operations.push(PlannedOp { representative: tensor_index, outputs: vec![Vec::new(); if op.is_shared() { op.outputs.len() } else { 1 }] });
+                next
+            });
+            operations[operation_index].outputs[op.output_index].push(tensor_index);
+        }
+        Self { tensors, operations }
+    }
+
+    /// Schedule the existing logical operations once all eligible consumers
+    /// have contributed. Among ready nodes, later-created operations execute
+    /// first, matching the CPU autograd ready queue. Tensor inventory order is
+    /// retained separately for dependency analysis and final slot publication.
+    fn execution_order(&self, needed: Option<&HashSet<usize>>) -> crate::Result<Vec<usize>> {
+        let indices = self.operations.iter().enumerate().map(|(index, event)| {
+            (self.tensors[event.representative].0.op.as_ref().unwrap().logical_id(), index)
+        }).collect::<HashMap<_,_>>();
+        let mut consumers = vec![0usize; self.operations.len()];
+        let mut producers = vec![Vec::new(); self.operations.len()];
+        for (index, event) in self.operations.iter().enumerate() {
+            let op = self.tensors[event.representative].0.op.as_ref().unwrap();
+            let mut unique = HashSet::new();
+            for (input, edge) in op.inputs.iter().zip(&op.input_edges) {
+                // Readiness follows possible captured edges, not mutable
+                // public flags. Existing runtime masks still decide whether
+                // a contribution is eligible when the callback executes.
+                if !edge || needed.is_some_and(|set| !set.contains(&input.id())) { continue; }
+                let Some(parent) = &input.0.op else { continue };
+                let parent_index = indices[&parent.logical_id()];
+                if unique.insert(parent_index) {
+                    consumers[parent_index] += 1;
+                    producers[index].push(parent_index);
+                }
+            }
+        }
+        let priority = |index: usize| {
+            let op = self.tensors[self.operations[index].representative].0.op.as_ref().unwrap();
+            // Rebased descriptors may share an original sequence. Resolve
+            // ties with a stable plan ordinal, never alias/Tensor birth IDs.
+            (op.birth_sequence, Reverse(index))
+        };
+        let mut ready = BinaryHeap::new();
+        for (index, count) in consumers.iter().enumerate() {
+            if *count == 0 { ready.push(priority(index)); }
+        }
+        let mut order = Vec::with_capacity(self.operations.len());
+        while let Some((_, Reverse(index))) = ready.pop() {
+            order.push(index);
+            for &parent in &producers[index] {
+                consumers[parent] -= 1;
+                if consumers[parent] == 0 { ready.push(priority(parent)); }
+            }
+        }
+        if order.len() != self.operations.len() {
+            return Err(crate::Error::Unsupported { op: "autograd scheduling", msg: "logical operation dependencies contain a cycle".into() });
+        }
+        Ok(order)
+    }
+
+    fn cotangents(&self, operation: &PlannedOp, pending: &HashMap<usize, Tensor>) -> crate::Result<Vec<Option<Tensor>>> {
+        operation.outputs.iter().map(|aliases| {
+            let mut result: Option<Tensor> = None;
+            for &index in aliases {
+                if let Some(gradient) = pending.get(&self.tensors[index].id()) {
+                    result = Some(if let Some(previous) = result { previous.add(gradient)? } else { gradient.clone() });
+                }
+            }
+            Ok(result)
+        }).collect()
+    }
 }
 
 fn validate_vjp_operands(output: &Tensor, inputs: &[&Tensor], seed: Option<&Tensor>, create_graph: bool) -> crate::Result<()> {
@@ -615,7 +822,8 @@ impl Tensor {
             "backward_with() cotangent must match the output floating dtype {}, got {}",
             self.dtype(), cotangent.dtype()
         );
-        let topo = build_topo(self);
+        let plan = QueryPlan::new(&[self]);
+        let topo = &plan.tensors;
         // Stage every contribution before publishing slots. A rejected closure
         // or saved-version check must not partially update earlier leaves.
         let mut pending = HashMap::new();
@@ -623,10 +831,13 @@ impl Tensor {
             cotangent.to_device(self.device()).expect("grad transfer to the tensor's device")
         };
         pending.insert(self.id(), seed);
-        for t in topo.iter().rev() {
-            let Some(op) = &t.0.op else { continue };
-            if op.backward.is_none() { continue; }
-            let Some(g) = pending.get(&t.id()) else { continue };
+        for operation_index in plan.execution_order(None).expect("backward scheduling failed") {
+            let operation = &plan.operations[operation_index];
+            let t = &topo[operation.representative];
+            let op = t.0.op.as_ref().unwrap();
+            if !op.has_backward() { continue; }
+            let cotangents = plan.cotangents(operation, &pending).expect("cotangent accumulation failed");
+            if cotangents.iter().all(Option::is_none) { continue; }
             let inputs = op.inputs();
             op.validate_saved_values().expect("saved output version check failed");
             for (i, (inp, &saved)) in inputs.iter().zip(op.saved_versions()).enumerate() {
@@ -641,7 +852,7 @@ impl Tensor {
                 );
             }
             let required = inputs.iter().zip(op.input_edges()).map(|(input, edge)| *edge && input.requires_grad()).collect::<Vec<_>>();
-            let grads = op.backward(g, &required);
+            let grads = op.vjp_outputs(&cotangents, false, false, None, &required, t).expect("backward callback failed");
             assert!(
                 grads.len() == inputs.len(),
                 "op backward returned {} gradients for {} inputs; record_fn closures \
@@ -692,12 +903,13 @@ fn vjp_roots_optional_impl(outputs: &[&Tensor], inputs: &[&Tensor], seeds: &[&Te
                 return Err(Error::DtypeMismatch { op: "vjp_wrt", expected: DType::F32, got: input.dtype() });
             }
         }
-        let topo = build_topo_roots(outputs);
+        let plan = QueryPlan::new(outputs);
+        let topo = &plan.tensors;
         let primals = freeze_created_after.map(|_| inputs.iter().map(|input| input.id()).collect::<HashSet<_>>());
         let excluded = freeze_created_after.map(|(_, excluded)| excluded.iter().map(|input| input.id()).collect::<HashSet<_>>());
         let selected: HashSet<_> = inputs.iter().filter(|t| t.requires_grad()).map(|t| t.id()).collect();
         let mut needed = selected;
-        for t in &topo {
+        for t in topo {
             if let Some(op) = &t.0.op {
                 if op.inputs.iter().zip(&op.input_edges).any(|(i, edge)| *edge && needed.contains(&i.id())) { needed.insert(t.id()); }
             }
@@ -710,10 +922,13 @@ fn vjp_roots_optional_impl(outputs: &[&Tensor], inputs: &[&Tensor], seeds: &[&Te
                 grads.insert(output.id(), value);
             }
         }
-        for t in topo.iter().rev() {
-            let Some(op) = &t.0.op else { continue };
+        for operation_index in plan.execution_order(Some(&needed))? {
+            let operation = &plan.operations[operation_index];
+            let t = &topo[operation.representative];
+            let op = t.0.op.as_ref().unwrap();
             if !op.inputs.iter().zip(&op.input_edges).any(|(i, edge)| *edge && needed.contains(&i.id()) && i.requires_grad()) { continue; }
-            let Some(g) = grads.get(&t.id()) else { continue };
+            let cotangents = plan.cotangents(operation, &grads)?;
+            if cotangents.iter().all(Option::is_none) { continue; }
             for (inp, saved) in op.inputs.iter().zip(&op.saved_versions) {
                 let Some(saved) = saved else { continue };
                 if inp.version() != *saved {
@@ -723,11 +938,11 @@ fn vjp_roots_optional_impl(outputs: &[&Tensor], inputs: &[&Tensor], seeds: &[&Te
             op.validate_saved_values()?;
             let frozen = freeze_created_after.zip(primals.as_ref()).zip(excluded.as_ref()).map(|(((cutoff, _), primals), excluded)| FrozenForward { output: t, cutoff, primals, excluded });
             let required = op.inputs.iter().zip(&op.input_edges).map(|(input, edge)| *edge && input.requires_grad() && needed.contains(&input.id())).collect::<Vec<_>>();
-            let contributions = op.vjp(g, create_graph, preserve_passthrough, frozen, Some(&required), Some(t))?;
+            let contributions = op.vjp_outputs(&cotangents, create_graph, preserve_passthrough, frozen, &required, t)?;
             if contributions.len() != op.inputs.len() {
                 return Err(Error::Unsupported { op: "vjp_wrt", msg: "backward gradient arity does not match inputs".into() });
             }
-            for ((inp, edge), contribution) in op.inputs.iter().zip(&op.input_edges).zip(contributions) {
+            for (inp, contribution) in op.inputs.iter().zip(&contributions) {
                 let Some(contribution) = contribution else { continue };
                 if contribution.shape() != inp.shape() {
                     return Err(Error::ShapeMismatch { op: "vjp_wrt backward", lhs: inp.shape().to_vec(), rhs: contribution.shape().to_vec() });
@@ -735,16 +950,69 @@ fn vjp_roots_optional_impl(outputs: &[&Tensor], inputs: &[&Tensor], seeds: &[&Te
                 if contribution.dtype() != inp.dtype() {
                     return Err(Error::DtypeMismatch { op: "vjp_wrt backward", expected: inp.dtype(), got: contribution.dtype() });
                 }
+                if create_graph && contribution.device() != inp.device() {
+                    return Err(Error::DeviceMismatch { op: "create_graph backward", lhs: inp.device(), rhs: contribution.device() });
+                }
+            }
+            for ((inp, edge), contribution) in op.inputs.iter().zip(&op.input_edges).zip(contributions) {
+                let Some(contribution) = contribution else { continue };
                 if !edge || !inp.requires_grad() || !needed.contains(&inp.id()) { continue; }
                 let contribution = if contribution.device() != inp.device() {
                     if create_graph { return Err(Error::DeviceMismatch { op: "create_graph backward", lhs: inp.device(), rhs: contribution.device() }); }
                     contribution.to_device(inp.device())?
                 } else { contribution };
-                let value = if let Some(previous) = grads.remove(&inp.id()) { previous.add(&contribution)? } else { contribution };
+                let value = if let Some(previous) = grads.remove(&inp.id()) { Tensor::accumulate_vjp(previous, contribution)? } else { contribution };
                 grads.insert(inp.id(), if create_graph || preserve_passthrough { value } else { value.detach_copy() });
             }
         }
         Ok(inputs.iter().map(|input| grads.get(&input.id()).map(|g| {
             if create_graph || preserve_passthrough { g.clone() } else { g.detach_copy() }
         })).collect())
+}
+
+#[cfg(test)]
+mod multi_output_lifetime {
+    use super::*;
+
+    fn chain(length: usize) -> (Tensor, std::sync::Weak<crate::tensor::TensorInner>) {
+        let mut value = Tensor::scalar(1.0).requires_grad_(true).unwrap();
+        let weak = Arc::downgrade(&value.0);
+        for index in 0..length {
+            let parent = value.clone();
+            let mut outputs = Tensor::record_many_optional(vec![Tensor::scalar(1.0), Tensor::scalar(2.0)], vec![value], &[true, true], move |seeds| {
+                let _held_parent = &parent;
+                vec![seeds[0].clone().or_else(|| seeds[1].clone())]
+            }).unwrap();
+            value = outputs.swap_remove(index % 2);
+        }
+        (value, weak)
+    }
+
+    #[test]
+    fn multi_output_last_tensor_and_last_plan_owner_drop_iteratively() {
+        std::thread::Builder::new().stack_size(256 * 1024).spawn(|| {
+            let (value, weak) = chain(12_000);
+            drop(value);
+            assert!(weak.upgrade().is_none());
+            let (value, weak) = chain(12_000);
+            let plan = QueryPlan::new(&[&value]);
+            assert_eq!(plan.operations.len(), 12_000);
+            drop(value);
+            assert!(weak.upgrade().is_some());
+            drop(plan);
+            assert!(weak.upgrade().is_none());
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn multi_output_last_body_owner_outside_tensor_drop_is_iterative() {
+        std::thread::Builder::new().stack_size(256 * 1024).spawn(|| {
+            let (value, weak) = chain(12_000);
+            let body = match &value.0.op.as_ref().unwrap().body { OpStorage::Shared(body) => body.clone(), _ => unreachable!() };
+            drop(value);
+            assert!(weak.upgrade().is_some());
+            drop(body);
+            assert!(weak.upgrade().is_none());
+        }).unwrap().join().unwrap();
+    }
 }

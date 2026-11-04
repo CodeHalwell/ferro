@@ -7,34 +7,25 @@ The Rust core still has zero external dependencies.
 
 ## Active completeness work
 
-The latest green matching checkpoint is [candidate31](../verification/completeness-2026-11-03/README.md):
-1,757 Python cases pass and 30 GPU cases are unavailable out of 1,787 discovered.
-Its 1,092 selected source/fixture inputs, 123 installed Python files and native
-library are hash-identified. Corrected proof2 wheel/full Python/16 focused methods,
-eight standalones and DLPack ran anew. Workspace/CUDA evidence is reused from
-proof1 under exact557-input equality excluding the changed binding crate:
-1,624 outer runtime passes plus two doctests. Optional/filtered GPU bodies and
-nested summaries are not hardware evidence. Full parity remains open.
+Latest matching checkpoint: [candidate32](../verification/completeness-2026-11-03/README.md),
+prepared for [PR #33](https://github.com/CodeHalwell/ferro/pull/33).
+1,807 Python cases pass; 30 GPU cases are unavailable. Native checks record
+1,702 outer passes and two doctests. The report identifies exact source/wheel
+hashes and the test-only artifact reuse. Full framework parity remains open.
+Physical-batch Jacobians, shared PReLU higher/JVP, backward priority/ownership
+and unused-gradient layout repairs, and CPU F64 Conv1d/Conv2d are now included.
+Public batched gradients and later dtype/kernel expansions remain isolated.
+No NVIDIA/Metal hardware execution is claimed; Metal is not implemented.
 
-Previous [candidate30](../verification/completeness-2026-11-03/candidate30/README.md),
-[candidate29](../verification/completeness-2026-11-03/candidate29/README.md) and
-earlier checkpoints remain archived. Candidate31 adds CPU F64 RMSprop/Adagrad
-and affine GroupNorm, with actual-Torch state/gradient/training and fresh-process
-continuation controls. The first proof's eight Adaptive failures (15 indicators)
-were fixed in production step validation; only training_state.rs changed before
-the corrected proof. Its failures and all passing GroupNorm controls remain
-recorded. The following rows describe candidate31; new adaptive/AD/spatial
-experiments and known layout gaps remain outside it.
-
-| Area | Installed candidate31 coverage |
+| Area | Installed candidate32 coverage |
 |---|---|
 | Typed compute | CPU float32/float64 arithmetic, nonlinear math, softmax, reductions and broadcast matrix products; fused alpha arithmetic and exact scalar conversions; typed rounding/frac/rsqrt and rounded division; equal/isclose/allclose; checked NumPy scalar interoperability; promotion/casts; exact int64/Bool selection/copies and DLPack. CPU F64 Parameter/Linear, Bilinear, LayerNorm/RMSNorm/BatchNorm/InstanceNorm/GroupNorm affine factories, Embedding/Bag and SGD/Adam/AdamW/RMSprop/Adagrad are supported; other factories and optimizers retain documented dtype limits. |
 | Views/ordering | Tested CPU binary/copy physical layout planning; real detach/clone, typed T/mT/t/H/mH, shared requires_grad metadata, shape-only view/view_as and variadic permute/expand; CPU typed stable sort/argsort and take with tested saved-index/input versions, negative/repeated indices and supported live adjoints. Cast/Cat adjoints need no input values; saved nonlinear outputs and sort indices remain guarded. |
 | Linear algebra | Solves/inverse/triangular/Cholesky/determinants/norms, QR/eigh/SVD, spectral/nuclear norms, rank/pinv, minimum-norm lstsq, tensorinv/tensorsolve, solve_ex/inv_ex, LU factor/ex/solve/decomposition, matrix_power, multi_dot, cond, Cholesky-factor solve/inverse and cross/vecdot. Ex info is I64 versus Torch int32; singular ex values/adjoints are unspecified. |
 | Differentiation | Native multicolumn jacfwd with one primal evaluation; joint functional VJP traversal; genuine optional Where adjoints; direct JVP on the existing Op recorder, supported JVP/grad/jacrev composition and activation backward graphs. Single-direction entry makes real metadata/dtype copies when required and preserves compatible direction identity. Ordinary gradient publication preserves held/manual slot identity and history while detaching fresh slots. Forward transforms accept F64 outputs/directions from F32 primals. Current public Hessian and reverse transforms retain their earlier limits; nested private frames and batched higher-zero semantics, F64 primals, general reverse queries during JVP and vmap remain open. |
 | Normalization/losses | CPU F32/F64 affine BatchNorm/InstanceNorm and multi-axis LayerNorm/RMSNorm with typed resets/running state and fresh-process continuation; CPU F64 affine GroupNorm and existing LRN training controls, general p/tuple-axis/F64 normalize, expanded loss options, channel Dropout1d/2d/3d and AlphaDropout/FeatureAlphaDropout. Typed Softplus beta/threshold, Softsign and LogSigmoid have staged adjoint controls. Unsupported activation in-place mutation rejects. GroupNorm F64 retains first-order CPU scope; norm higher-order boundaries and reference rounding differences remain explicit. |
-| Additional neural-network catalog | PReLU with native branch-wise first reverse and direct JVP, Bilinear CPU F32/F64 factories, matching-batch ordinary gradients, typed SGD and fresh-process state; supported F32 higher/JVP compositions, and GaussianNLLLoss with cloned clamped variance and genuine reverse paths. PReLU JVP logical-axis ordering preserves tested structural-zero reverse layouts. PReLU higher reverse/capture and GaussianNLL active JVP remain explicit unsupported boundaries; Bilinear F64 higher/forward/capture and batch broadcasting remain unsupported; module parameter defaults stay F32. |
-| Unary/angle repairs | Original scalar exponent precision and special square/cube/reciprocal staging; ordered Clamp NaN/signed-zero and genuine Where adjoints/layouts. Empty reductions preserve layouts up to 2^20 output elements; larger virtual zeros can differ in strides. A known power(x, 0) direct-JVP zero-tangent stride mismatch on transposed inputs remains; its fix is isolated. Tested raw physical layouts and typed F64 staged adjoints; saved-output rules for expm1/exp2/reciprocal/tan; named neg/negative aliases; typed atan2/acos. Portable F32 coefficients widened to F64 retain F32 working precision, with exact per-side staging controls. |
+| Additional neural-network catalog | PReLU with native branch-wise first reverse and direct JVP, Bilinear CPU F32/F64 factories, matching-batch ordinary gradients, typed SGD and fresh-process state; supported F32 higher/JVP compositions, and GaussianNLLLoss with cloned clamped variance and genuine reverse paths. PReLU JVP logical-axis ordering preserves tested structural-zero reverse layouts. PReLU shared-output higher/JVP rules are included; PReLU capture and GaussianNLL active JVP remain explicit unsupported boundaries; Bilinear F64 higher/forward/capture and batch broadcasting remain unsupported; module parameter defaults stay F32. |
+| Unary/angle repairs | Original scalar exponent precision and special square/cube/reciprocal staging; ordered Clamp NaN/signed-zero and genuine Where adjoints/layouts. Empty reductions preserve layouts up to 2^20 output elements; larger virtual zeros can differ in strides. Power-zero direct-JVP output layouts now match the tested reference controls. Tested raw physical layouts and typed F64 staged adjoints; saved-output rules for expm1/exp2/reciprocal/tan; named neg/negative aliases; typed atan2/acos. Portable F32 coefficients widened to F64 retain F32 working precision, with exact per-side staging controls. |
 | Embedding | CPU F32/F64 functional lookup/bags, padding/frequency/renorm, sum/mean/max bags and live sum-mode per-sample weights. Embedding/EmbeddingBag factories accept CPU F32/F64 parameters, with typed resets, explicit pretrained sharing and fresh-process state; F64 support is ordinary eager differentiation, not higher/forward/capture/GPU coverage. Explicit pretrained whole storage sharing preserves independent leaf flags; sparse gradients reject. |
 | Modules/state | Canonical custom constructors, Parameter as a native Tensor subtype, gradient assignment, Parameter containers, tensor state_dict/load_state_dict, typed optional buffers, metadata and stable tested slots. CPU F32/F64 Parameter construction still owns data; explicit shared storage is separate. Linear accepts CPU F64 and retains F32 defaults (constructor zero bias, explicit reset uniform bias). Explicit parameter/child/buffer registration, optional slot kinds, traversal/apply and local forward hooks are included; callbacks are caller-owned across checkpoints. |
 | Recurrence/spatial | Packed/projected RNN/GRU/LSTM, persistent dropout, convolution/transposed convolution, pooling/padding/rearrangements. Values, input/all-parameter gradients and exact restart controls have documented dtype/layout scopes. |
@@ -67,7 +58,7 @@ Truncated pinv/lstsq adjoints follow actual Torch behavior and may disagree with
 finite differences across a nonzero spectral cutoff. See the matching report.
 
 Physical-batch Jacobians, shared multi-output/nested rules, other F64 optimizers,
-power-zero direct-JVP layout and generic empty accumulation/scheduling repairs
+later default-Hessian and general batching work
 remain outside this checkpoint. Unused noncanonical empty materialized gradients
 can differ in layout. The supported F64 modules/optimizers do not imply general
 F64 module, higher-order optimizer or GPU training support.

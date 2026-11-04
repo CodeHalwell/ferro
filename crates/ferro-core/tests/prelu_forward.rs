@@ -26,7 +26,7 @@ fn direct_prelu_jvp_matches_torch_zero_boundaries_and_missing_tangent_reverse_gr
         assert_eq!(grads[1].as_ref().unwrap().requires_grad(),mode!=1);
         if mode!=1 {equal(&grads[2].as_ref().unwrap().to_vec(),&[0.3,0.3,1.,1.,1.,1.,0.3]);assert!(grads[2].as_ref().unwrap().requires_grad());}else{assert!(grads[2].is_none());}
         if mode!=0 {assert!(grads[3].as_ref().unwrap().to_vec()[0].is_nan());assert!(grads[3].as_ref().unwrap().requires_grad());}else{assert!(grads[3].is_none());}
-        assert!(out.vjp_wrt(&[&x],&seed,true).is_err());
+        assert_eq!(out.vjp_wrt(&[&x],&seed,true).unwrap()[0].shape(),x.shape());
     }
 }
 

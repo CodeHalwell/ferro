@@ -6,6 +6,32 @@ struct PyForwardAD { level: Option<ferro_core::forward_ad::DualLevel> }
 #[pyclass(name = "_ForwardColumns", unsendable)]
 struct PyForwardColumns { level: Option<ferro_core::forward_ad::DualLevel> }
 
+#[pyclass(name = "_ForwardBatched", unsendable)]
+struct PyForwardBatched { level: Option<ferro_core::forward_ad::DualLevel> }
+
+#[pymethods]
+impl PyForwardBatched {
+    #[new]
+    #[pyo3(signature = (primals, tangents, batch, randomness_same=false))]
+    fn new(primals: Vec<PyRef<'_, PyTensor>>, tangents: Vec<PyRef<'_, PyTensor>>, batch: usize, randomness_same: bool) -> PyResult<Self> {
+        let primals = primals.iter().map(|value| &value.inner).collect::<Vec<_>>();
+        let tangents = tangents.iter().map(|value| &value.inner).collect::<Vec<_>>();
+        let level = ferro_core::forward_ad::DualLevel::functional_batched(&primals, &tangents, batch).map_err(map_err)?;
+        level.set_randomness_same(randomness_same).map_err(map_err)?;
+        Ok(Self { level: Some(level) })
+    }
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> { slf }
+    fn __exit__(&mut self, _kind: &Bound<'_, PyAny>, _value: &Bound<'_, PyAny>, _traceback: &Bound<'_, PyAny>) -> bool { self.level.take(); false }
+    fn tangents(&self, outputs: Vec<PyRef<'_, PyTensor>>) -> PyResult<Vec<Option<PyTensor>>> {
+        let level = self.level.as_ref().ok_or_else(|| PyValueError::new_err("forward AD level is closed"))?;
+        outputs.iter().map(|value| level.batched_tangent(&value.inner).map(|value| value.map(PyTensor::wrap)).map_err(map_err)).collect()
+    }
+    fn primals(&self, outputs: Vec<PyRef<'_, PyTensor>>, auxiliary: bool) -> PyResult<Vec<PyTensor>> {
+        let level = self.level.as_ref().ok_or_else(|| PyValueError::new_err("forward AD level is closed"))?;
+        outputs.iter().map(|value| level.primal(&value.inner, auxiliary).map(PyTensor::wrap).map_err(map_err)).collect()
+    }
+}
+
 #[pyclass(name = "_ForwardReverse", unsendable)]
 struct PyForwardReverse { frame: Option<ferro_core::forward_ad::ReverseFrameGuard> }
 
@@ -130,6 +156,7 @@ fn _forward_ad_vjp_many(outputs: Vec<PyRef<'_, PyTensor>>, inputs: Vec<PyRef<'_,
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyForwardAD>()?;
     m.add_class::<PyForwardColumns>()?;
+    m.add_class::<PyForwardBatched>()?;
     m.add_function(wrap_pyfunction!(_forward_ad_check_random, m)?)?;
     m.add_function(wrap_pyfunction!(_forward_ad_tangents, m)?)?;
     m.add_function(wrap_pyfunction!(_forward_ad_post_columns, m)?)?;

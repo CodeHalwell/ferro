@@ -11,6 +11,20 @@ pub(crate) fn normalize(primal: &Tensor, tangent: &Tensor) -> Result<Tensor> {
     tangent.copy_dual_layout(primal.strides(),primal.storage_offset(),primal.storage_len())
 }
 
+pub(crate) fn normalize_physical(primal: &Tensor, tangent: &Tensor, batch: usize) -> Result<Tensor> {
+    let same = primal.numel() == 0 || (primal.storage_offset() == tangent.storage_offset()
+        && primal.shape().iter().zip(primal.strides().iter().zip(&tangent.strides()[1..]))
+            .all(|(&size,(&left,&right))| size <= 1 || left == right));
+    if same { return Ok(tangent.clone()); }
+    let length = batch.checked_mul(primal.storage_len()).ok_or_else(|| Error::InvalidShape {
+        op: "physical forward AD seed copy", msg: "batch storage length overflows".into() })?;
+    let mut strides = Vec::new();
+    strides.try_reserve_exact(primal.ndim() + 1).map_err(|_| Error::InvalidShape {
+        op: "physical forward AD seed copy", msg: "layout rank exceeds metadata capacity".into() })?;
+    strides.push(primal.storage_len()); strides.extend_from_slice(primal.strides());
+    tangent.copy_dual_layout(&strides,primal.storage_offset(),length)
+}
+
 impl Tensor {
     pub(crate) fn copy_dual_layout(&self, strides: &[usize], offset: usize, storage_len: usize) -> Result<Tensor> {
         const OP: &str = "forward AD seed copy";
@@ -165,6 +179,64 @@ mod tests {
         assert!(DualLevel::new(&[&x,&overlap],&[&v,&v]).is_err());assert!(!is_active());
         let captured=crate::capture(|| {assert!(DualLevel::new(&[&x],&[&v]).is_err());x.clone()});
         assert_eq!(captured.id(),x.id());assert!(is_grad_enabled()&&!is_active());
+    }
+
+    struct PhysicalGolden { shape:&'static[usize],xs:&'static[usize],xo:usize,xn:usize,vs:&'static[usize],vo:usize,vn:usize,batch:usize,wide:bool,enabled:bool,error:bool,alias:bool,os:&'static[usize],oo:usize,on:usize,out_wide:bool,flag:bool,values:&'static[f64] }
+    include!("../../tests/fixtures/physical_seed_goldens.rs");
+    fn sequence(shape:&[usize],strides:&[usize],offset:usize,len:usize,wide:bool)->Tensor {
+        let storage=if wide{Tensor::from_vec_f64((0..len).map(|i|i as f64).collect(),&[len]).unwrap()}
+            else{Tensor::from_vec((0..len).map(|i|i as f32).collect(),&[len]).unwrap()};
+        Tensor::from_parts(storage.0.storage.clone(),shape.to_vec(),strides.to_vec(),offset,Device::Cpu,true,None)
+    }
+    #[test]
+    fn physical_seed_metadata_matches_torch_batched_contract_and_preserves_normal_policy(){
+        for (i,c) in PHYSICAL_GOLDENS.iter().enumerate(){
+            let x=sequence(c.shape,c.xs,c.xo,c.xn,false);
+            let mut shape=vec![c.batch];shape.extend_from_slice(c.shape);
+            let v=sequence(&shape,c.vs,c.vo,c.vn,c.wide);
+            let result=with_grad_enabled(c.enabled,||->Result<Tensor>{
+                let level=DualLevel::functional_batched(&[&x],&[&v],c.batch)?;
+                Ok(level.batched_tangent(&x)?.unwrap())
+            });
+            if c.error{assert!(result.is_err(),"case{i} should reject");assert!(!is_active());continue;}
+            let out=result.unwrap();
+            assert_eq!(out.id()==v.id(),c.alias,"case{i} identity");
+            assert_eq!(out.dtype()==DType::F64,c.out_wide,"case{i} dtype");
+            assert_eq!(out.strides(),c.os,"case{i} strides");
+            assert_eq!(out.storage_offset(),c.oo,"case{i} offset");
+            assert_eq!(out.storage_len(),c.on,"case{i} storage");
+            assert_eq!(out.requires_grad(),c.flag,"case{i} flag");
+            assert_eq!(out.to_vec_f64(),c.values,"case{i} copied values");
+            if c.flag{
+                let gradient=out.sum().grad_wrt(&[&v],false).unwrap().remove(0);
+                assert_eq!(gradient.dtype(),v.dtype());
+                assert_eq!(gradient.to_vec_f64(),vec![1.;v.numel()],"case{i} seed adjoint");
+            }
+            assert!(x.grad().is_none()&&v.grad().is_none()&&is_grad_enabled()&&!is_active());
+        }
+        println!("{} exact Torch physical metadata controls passed",PHYSICAL_GOLDENS.len());
+    }
+
+    #[test]
+    fn physical_capacity_and_late_copy_failure_do_not_publish_a_partial_level(){
+        let x=sequence(&[],&[],1,2,false);
+        for (batch,wide) in [(usize::MAX,false),(1usize<<60,true)]{
+            let scalar=if wide{Tensor::from_vec_f64(vec![1.],&[]).unwrap()}else{Tensor::scalar(1.)};
+            let direction=scalar.expand(&[batch]).unwrap();
+            assert!(DualLevel::functional_batched(&[&x],&[&direction],batch).is_err());
+            assert!(!is_active()&&is_grad_enabled());
+        }
+        let a=sequence(&[3,2],&[1,3],0,6,false);
+        let b=sequence(&[3,2],&[0,0],0,1,false);
+        let direction=sequence(&[2,3,2],&[6,2,1],0,12,false);
+        assert!(DualLevel::functional_batched(&[&a,&b],&[&direction,&direction],2).is_err());
+        assert!(!is_active());assert!(a.grad().is_none()&&b.grad().is_none()&&direction.grad().is_none());
+        let output={let level=DualLevel::functional_batched(&[&a],&[&direction],2).unwrap();level.batched_tangent(&a).unwrap().unwrap()};
+        assert_eq!(output.strides(),[6,1,3]);
+        let empty=Tensor::zeros(&[0]);let directions=Tensor::zeros(&[1,0]).expand(&[usize::MAX,0]).unwrap();
+        let level=DualLevel::functional_batched(&[&empty],&[&directions],usize::MAX).unwrap();
+        assert_eq!(level.batched_tangent(&empty).unwrap().unwrap().id(),directions.id());drop(level);
+        assert!(!is_active()&&is_grad_enabled());
     }
 
 }

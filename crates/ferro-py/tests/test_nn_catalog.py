@@ -226,7 +226,7 @@ class PReLUTests(Oracle):
             if changed == 'output': self.assertIsNotNone(fr.autograd.grad(y, xx, fr.ones_like(y))[0])
             else:
                 with self.assertRaisesRegex(ValueError, 'modified'): fr.autograd.grad(y, xx, fr.ones_like(y))
-        with self.assertRaises(ValueError): fr.autograd.grad(F.prelu(x, a), x, fr.ones_like(x), create_graph=True)
+        self.assertEqual(fr.autograd.grad(F.prelu(x, a), x, fr.ones_like(x), create_graph=True)[0].shape, x.shape)
         self.assertEqual(fr.func.jvp(lambda z:F.prelu(z,a), (x,), (fr.ones_like(x),))[1].shape, x.shape)
         with self.assertRaises((ValueError, NotImplementedError)): fr.capture(lambda:F.prelu(x,a))
         with self.assertRaises(NotImplementedError): fr.nn.PReLU(dtype='float64')

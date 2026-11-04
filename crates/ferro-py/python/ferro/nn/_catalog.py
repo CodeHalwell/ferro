@@ -36,11 +36,12 @@ def _parameter_factory(device, dtype):
 
 
 def prelu(input, weight):
-    """CPU typed PReLU with native branch-wise first-order adjoints and direct JVP.
+    """CPU typed PReLU with native branch-wise adjoints and direct JVP.
 
-    Inference capture and higher reverse gradients remain unsupported. Direct
-    JVP follows the measured >= zero boundary and typed missing-tangent rules;
-    reverse differentiation of that tangent uses ordinary native operations.
+    Float32 higher derivatives use a shared two-output backward operation.
+    Float64 higher reverse gradients and inference capture remain unsupported.
+    Direct JVP preserves absent sibling tangents and the measured >= zero
+    boundary; ordinary first-order backward selects the > zero branch.
     """
     return _floating(input, 'input').prelu(_floating(weight, 'weight'))
 

@@ -31,6 +31,13 @@ fn view_strides(input: &Tensor, shape: &[usize]) -> Result<Vec<usize>> {
 }
 
 impl Tensor {
+    /// A fresh storage alias with an identity pullback, including live seeds.
+    pub fn alias_view(&self) -> Result<Tensor> {
+        let output = Tensor::from_parts(self.0.storage.clone(), self.shape().to_vec(), self.strides().to_vec(), self.storage_offset(), self.device(), false, None);
+        let output = self.capture_layout(output)?;
+        Ok(output.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Alias, |g| vec![g.clone()]))
+    }
+
     /// Change shape without materializing layout. Incompatible stride chunks reject.
     /// Eager views and CPU capture alias storage. Inference recording snapshots
     /// device leaves through the existing capture isolation seam; replay aliases.

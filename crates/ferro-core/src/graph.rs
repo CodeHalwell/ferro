@@ -565,7 +565,7 @@ impl CompiledChain {
                     if a.len()!=3 || b.len()!=3 || a[0]!=b[0] || a[2]!=b[1] { return Err(unsupported("invalid static bmm shape")); }
                     crate::dispatch::StaticOp::Bmm { batch:a[0],m:a[1],k:a[2],n:b[2] }
                 },
-                Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Clone { .. } | crate::autograd::ForwardOp::View(_)) => return Err(unsupported("static owning copy and shape-only view are not supported")),
+                Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Alias | crate::autograd::ForwardOp::Clone { .. } | crate::autograd::ForwardOp::View(_)) => return Err(unsupported("static owning copy and shape-only view are not supported")),
                 Some(crate::autograd::ForwardOp::Permute(_) | crate::autograd::ForwardOp::Expand(_) | crate::autograd::ForwardOp::Cast(_)) => return Err(unsupported("static permutation, expansion and casts are not supported")),
                 Some(crate::autograd::ForwardOp::Sin | crate::autograd::ForwardOp::Cos) => return Err(unsupported("static trigonometric operations are not supported")),
                 Some(crate::autograd::ForwardOp::Cat(_) | crate::autograd::ForwardOp::Slice { .. } | crate::autograd::ForwardOp::SliceAdjoint { .. }) => return Err(unsupported("static concatenation and slicing are not supported")),

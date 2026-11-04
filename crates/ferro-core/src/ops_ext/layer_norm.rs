@@ -179,6 +179,8 @@ impl Tensor {
 
         let mut yhat = vec![0.0f32; x.len()];
         let mut stds = vec![0.0f32; rows];
+        let save_stats = crate::forward_ad::is_active();
+        let mut means = if save_stats { vec![0.0f32; rows] } else { Vec::new() };
         for r in 0..rows {
             let base = r * d;
             let m = pairwise_sum_strided(&x, base, d, 1) / d as f32;
@@ -189,6 +191,7 @@ impl Tensor {
             }
             let s = (v / d as f32 + eps).sqrt();
             stds[r] = s;
+            if save_stats { means[r] = m; }
             for i in 0..d {
                 yhat[base + i] = (x[base + i] - m) / s;
             }
@@ -209,13 +212,19 @@ impl Tensor {
         }
 
         let none = Tensor::zeros(&[0]);
-        Ok(out.record_fn_forward(
+        let saved = if save_stats {
+            let mut statistics = shape.clone();
+            statistics[ndim - 1] = 1;
+            vec![Tensor::from_vec(means, &statistics)?, Tensor::from_vec(stds.iter().map(|value| 1. / value).collect(), &statistics)?]
+        } else { Vec::new() };
+        Ok(out.record_fn_forward_saved_jvp(
             vec![
                 self.clone(),
                 weight.cloned().unwrap_or_else(|| none.clone()),
                 bias.cloned().unwrap_or(none),
             ],
             crate::autograd::ForwardOp::LayerNorm { weight: weight.is_some(), bias: bias.is_some(), eps },
+            saved,
             move |g| host_backward(g, &yhat, &stds, w.as_deref(), b.is_some(), &shape, d),
         ))
     }

@@ -233,9 +233,11 @@ def jacrev(func, argnums=0, *, has_aux=False, chunk_size=None, _preallocate_and_
 def jacfwd(func, argnums=0, has_aux=False, *, randomness='error'):
     """Eager CPU forward Jacobian for float32 inputs and float32/float64 outputs.
 
-    This is a native multicolumn dual level, not vmap. `same` shares a primal
+    This is a native physical-batch dual level, not vmap. `same` shares a primal
     random draw across columns; `different` and nested forward levels reject.
     Dense basis and result capacities are checked before materialization.
+    Opaque local fallback retains numerical coverage with its existing
+    higher-order limits; its layout is not a native batched-rule guarantee.
     Stateful module mutations (including active nn.Dropout counter updates)
     remain unsupported; use seeded functional dropout or random factories.
     """
@@ -260,43 +262,38 @@ def jacfwd(func, argnums=0, has_aux=False, *, randomness='error'):
         af._check(originals, 'float32')
         sizes = [value.numel() for value in originals]
         count = sum(sizes)
-        # Empty input spaces use one real zero direction to retain the empty
-        # derivative's provenance, then remove its sole column after assembly.
-        columns_count = max(count, 1)
-        _shape([columns_count, count])
-        _shape([columns_count, len(originals)], 'int64')
+        _shape([count, count])
+        _shape([max(count, 1), len(originals)], 'int64')
         with enable_grad():
             values = [value.reshape(value.shape) for value in originals]
-        columns = []
-        for column in range(columns_count):
-            entries, offset = [], 0
-            for value, size in zip(values, sizes):
-                data = [0.] * size
-                if offset <= column < offset + size:
-                    data[column - offset] = 1.
-                entries.append(Tensor(data, value.shape))
-                offset += size
-            columns.append(entries)
+        directions, offset = [], 0
+        for value, size in zip(values, sizes):
+            data = [0.] * (count * size)
+            for index in range(size):
+                data[(offset + index) * size + index] = 1.
+            directions.append(Tensor(data, [count, size]).view([count, *value.shape]))
+            offset += size
         arguments, offset = list(args), 0
         for position, spec, length in zip(positions, specs, counts):
             arguments[position] = _unflatten(values[offset:offset + length], spec)
             offset += length
-        with _native._ForwardColumns(values, columns, randomness == 'same') as level:
+        with _native._ForwardBatched(values, directions, count, randomness == 'same') as level:
             _, outputs, output_spec, auxiliary = _evaluate(func, arguments, kwargs, has_aux, output_dtype=None)
-            _shape([columns_count, sum(output.numel() * (8 if output.dtype == 'float64' else 4) for output in outputs)], 'bool')
+            _shape([max(count, 1), sum(output.numel() * (8 if output.dtype == 'float64' else 4) for output in outputs)], 'bool')
             directions = level.tangents(outputs)
             if has_aux:
                 aux_leaves, aux_spec = _flatten(auxiliary)
                 auxiliary = _unflatten(level.primals(aux_leaves, False), aux_spec)
         rows = []
-        for output, directions in zip(outputs, directions):
-            _shape([*output.shape, columns_count], output.dtype)
-            if directions is None:
-                directions = [full(output.shape, 0., dtype=output.dtype) for _ in range(columns_count)]
-            combined = stack(directions, -1)
+        for output, direction in zip(outputs, directions):
+            _shape([count, *output.shape], output.dtype)
+            if direction is None:
+                direction = output._zeros_like_layout().expand([count, *output.shape])
+            combined = direction.permute([*range(1, direction.ndim), 0])
             offset, blocks = 0, []
             for value, size in zip(values, sizes):
-                blocks.append(combined.narrow(combined.ndim - 1, offset, size).reshape([*output.shape, *value.shape]))
+                block = combined.narrow(combined.ndim - 1, offset, size)
+                blocks.append(block.squeeze(block.ndim - 1) if value.ndim == 0 else block.view([*output.shape, *value.shape]))
                 offset += size
             rows.append(_pack(blocks, specs, counts, single))
         result = _unflatten(rows, output_spec)
@@ -392,7 +389,7 @@ def jvp(func, primals, tangents, *, strict=False, has_aux=False):
     if strict and any(direction is None for direction in directions):
         raise RuntimeError('an output is independent of all primals in strict JVP mode')
     vector_aliases = {value._id(): value for value in vector_values}
-    directions = [full(output.shape, 0., dtype=output.dtype) if direction is None else vector_aliases.get(direction._id(), direction)
+    directions = [output._zeros_like_layout() if direction is None else vector_aliases.get(direction._id(), direction)
                   for output, direction in zip(outputs, directions)]
     pair = (_unflatten(output_values, output_spec), _unflatten(directions, output_spec))
     return (*pair, auxiliary) if has_aux else pair

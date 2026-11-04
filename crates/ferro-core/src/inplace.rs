@@ -160,6 +160,29 @@ fn check_src(op: &'static str, dst: &Tensor, src: &Tensor) -> Result<()> {
     Ok(())
 }
 
+/// The zero-element case of CPU floating addition in place. No values need
+/// reading or writing, but a successful mutation still advances the shared
+/// version. The autograd input buffer calls this only for an exclusively owned
+/// ordinary cotangent; this is not a public arbitrary-view mutation API.
+pub(crate) fn raw_empty_add_(dst: &Tensor, src: &Tensor) -> Result<()> {
+    let op = "empty cotangent accumulation";
+    check_src(op, dst, src)?;
+    if crate::autograd::is_grad_enabled() || crate::forward_ad::is_active()
+        || crate::capture::is_recording() || dst.device() != Device::Cpu
+        || !matches!(dst.dtype(), DType::F32 | DType::F64)
+        || dst.numel() != 0 || dst.is_structural_zero()
+    {
+        return Err(Error::Unsupported { op, msg: "requires an ordinary empty CPU floating destination outside gradient recording".into() });
+    }
+    // Empty strided tensors have no addressed elements, including an empty
+    // view with a nonzero offset. Do not materialize either underlying storage.
+    let guard = dst.0.storage.write();
+    debug_assert!(matches!(&*guard, Storage::F32(_) | Storage::F64(_)));
+    dst.bump_version();
+    drop(guard);
+    Ok(())
+}
+
 /// Run `host` / `dev` against dst's buffer and src's data, handling the
 /// three src cases: aliased with dst (pre-materialize, then single write
 /// guard), direct (whole/contiguous, guards in address order), or a strided

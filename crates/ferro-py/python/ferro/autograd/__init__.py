@@ -108,8 +108,10 @@ def grad(outputs, inputs, grad_outputs=None, retain_graph=None,
     values = []
     for value, original in zip(result, input_values):
         if value is None and materialize_grads:
-            value = full(original.shape, 0., dtype=original.dtype, device=original.device,
-                         requires_grad=create_graph)
+            value = (original._zeros_like_layout().requires_grad_(create_graph)
+                     if original.device == 'cpu' else
+                     full(original.shape, 0., dtype=original.dtype, device=original.device,
+                          requires_grad=create_graph))
         elif value is not None:
             value = identities.setdefault(value._id(), value)
         values.append(value)

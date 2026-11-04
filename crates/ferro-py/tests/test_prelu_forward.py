@@ -100,7 +100,7 @@ class PReLUForwardTests(unittest.TestCase):
                 gb=torch.autograd.grad(direction,(x,w,dx,dw),torch.ones_like(direction))
                 for a,b in zip(ga,gb):self.same(a,b)
         x=fr.tensor([-.2,.3],requires_grad=True);w=fr.tensor([.4],requires_grad=True)
-        with self.assertRaises(ValueError):fr.autograd.grad(fr.nn.functional.prelu(x,w),x,fr.ones_like(x),create_graph=True)
+        self.assertEqual(fr.autograd.grad(fr.nn.functional.prelu(x,w),x,fr.ones_like(x),create_graph=True)[0].shape,x.shape)
         with self.assertRaises((ValueError,NotImplementedError)):fr.capture(lambda:fr.nn.functional.prelu(x,w))
         self.assertEqual(fr.nn.functional.prelu(x,w).shape,x.shape)
 

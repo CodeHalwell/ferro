@@ -12,6 +12,10 @@ use crate::shape::{broadcast_shapes, checked_numel, default_strides, numel};
 #[path = "grad_publication.rs"]
 mod grad_publication;
 
+#[cfg(test)]
+#[path = "empty_cotangent_tests.rs"]
+mod empty_cotangent_tests;
+
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 fn fresh_id() -> usize {
@@ -988,6 +992,29 @@ impl Tensor {
         Tensor::from_parts(owned.0.storage.clone(), self.0.shape.clone(), stride, 0, Device::Cpu, false, None)
     }
 
+    /// Functional traversal input-buffer accumulation. Graph recording and
+    /// active forward levels keep the genuine Add operation. With recording
+    /// disabled, a uniquely owned empty ordinary cotangent can be reused by a
+    /// real zero-element add-in-place, retaining its layout, flags and version.
+    pub(crate) fn accumulate_vjp(existing: Tensor, contribution: Tensor) -> Result<Tensor> {
+        if !crate::autograd::is_grad_enabled() && !crate::forward_ad::is_active()
+            && existing.numel() == 0 && existing.device() == Device::Cpu
+            && matches!(existing.dtype(), DType::F32 | DType::F64)
+            && !existing.is_structural_zero()
+            // Torch's views retain a base Tensor/storage owner. Our views
+            // retain only its flag owner, so exclude that alias explicitly
+            // instead of treating the smaller Arc count as sole ownership.
+            && existing.0.view_base.is_none()
+            && Arc::strong_count(&existing.0) == 1
+            && Arc::strong_count(&existing.0.storage) == 1
+        {
+            crate::inplace::raw_empty_add_(&existing, &contribution)?;
+            Ok(existing)
+        } else {
+            existing.add(&contribution)
+        }
+    }
+
     pub(crate) fn merge_grad(existing: Option<Tensor>, g: Tensor) -> Tensor {
         match existing {
             None => g,
@@ -1206,6 +1233,22 @@ impl Tensor {
     /// Public detached alias. Internal backward snapshots continue using
     /// detach_copy or owned_detach_copy so they cannot be overwritten by users.
     pub fn detach(&self) -> Tensor { self.detached_view() }
+
+    /// Ordinary CPU zeros for an absent transform tangent, without value reads.
+    #[doc(hidden)]
+    pub fn zeros_like_layout(&self) -> Result<Tensor> {
+        const OP: &str = "absent tangent zeros";
+        if self.device() != Device::Cpu {
+            return Err(Error::Unsupported { op: OP, msg: "only CPU transform outputs are supported".into() });
+        }
+        let raw = match self.dtype() {
+            DType::F32 => Tensor::from_vec(crate::typed_math::filled(OP, self.shape(), 0.0f32)?, self.shape())?,
+            DType::F64 => Tensor::from_vec_f64(crate::typed_math::filled(OP, self.shape(), 0.0f64)?, self.shape())?,
+            _ => return Err(Error::Unsupported { op: OP, msg: "transform outputs require float32 or float64".into() }),
+        };
+        let stride = crate::typed_math::copy_pointwise_layout(self);
+        Ok(Tensor::from_parts(raw.0.storage.clone(), self.shape().to_vec(), stride, 0, Device::Cpu, false, None))
+    }
 
     /// Differentiable owning copy. Preserve dense nonoverlapping strides when
     /// requested; gapped and broadcast views materialize in logical order.
@@ -1427,9 +1470,66 @@ impl Tensor {
         self.record_operation(inputs, None, Some(forward), move |inputs| Op::new(inputs, Box::new(backward)))
     }
 
+    pub(crate) fn record_fn_forward_saved_jvp<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, saved: Vec<Tensor>, backward: F) -> Tensor
+    where F: Fn(&Tensor) -> Vec<Tensor> + Send + Sync + 'static {
+        self.record_operation(inputs, None, Some(forward), move |inputs| {
+            let mut op = Op::new(inputs, Box::new(backward));
+            op.set_saved_jvp(saved);
+            op
+        })
+    }
+
     pub(crate) fn record_fn_forward_optional<F>(self, inputs: Vec<Tensor>, forward: crate::autograd::ForwardOp, backward: F) -> Tensor
     where F: Fn(&Tensor) -> Vec<Option<Tensor>> + Send + Sync + 'static {
         self.record_operation(inputs, None, Some(forward), move |inputs| Op::new_optional(inputs, Box::new(backward)))
+    }
+
+    /// Record one shared first-order operation with distinct optional cotangent slots.
+    #[doc(hidden)]
+    pub fn record_many_optional<F>(outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        Self::record_many_operation(outputs, inputs, differentiable, None, backward)
+    }
+
+    pub(crate) fn record_many_forward_optional<F>(outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], forward: crate::autograd::MultiForwardOp, backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        Self::record_many_operation(outputs, inputs, differentiable, Some(forward), backward)
+    }
+
+    fn record_many_operation<F>(mut outputs: Vec<Tensor>, inputs: Vec<Tensor>, differentiable: &[bool], forward: Option<crate::autograd::MultiForwardOp>, backward: F) -> Result<Vec<Tensor>>
+    where F: Fn(&[Option<Tensor>]) -> Vec<Option<Tensor>> + Send + Sync + 'static {
+        let invalid = |message: &str| Error::Unsupported { op: "record_many_optional", msg: message.into() };
+        if crate::capture::is_recording() || (forward.is_none() && crate::forward_ad::is_active()) {
+            return Err(invalid("generic multi-output recording requires eager reverse mode"));
+        }
+        if outputs.is_empty() || outputs.len() != differentiable.len() { return Err(invalid("nonempty output and differentiability lists must agree")); }
+        let mut identities = std::collections::HashSet::new();
+        for (output, differentiable) in outputs.iter().zip(differentiable) {
+            if !identities.insert(output.id()) || Arc::strong_count(&output.0) != 1 || Arc::weak_count(&output.0) != 0 || output.0.op.is_some() || output.requires_grad() || output.grad().is_some() {
+                return Err(invalid("outputs must have distinct fresh Tensor identities"));
+            }
+            if *differentiable && !matches!(output.dtype(), DType::F32 | DType::F64) { return Err(invalid("differentiable output slots must have floating dtype")); }
+        }
+        let inputs = crate::forward_ad::recording_inputs(inputs);
+        let reverse = crate::autograd::is_grad_enabled() && inputs.iter().any(crate::forward_ad::records_grad);
+        let dual = crate::forward_ad::needs(&inputs);
+        if !reverse && !dual {
+            for output in &outputs { crate::forward_ad::record_actual_flags(output, &inputs); }
+            return Ok(outputs);
+        }
+        let mut operations = Op::new_many(inputs, &outputs, differentiable, forward, Box::new(backward)).into_iter().map(Some).collect::<Vec<_>>();
+        for (index, (output, differentiable)) in outputs.iter_mut().zip(differentiable).enumerate() {
+            if reverse && *differentiable {
+                let inner = Arc::get_mut(&mut output.0).expect("validated fresh output");
+                inner.requires_grad.store(true, Ordering::Relaxed);
+                inner.op = operations[index].take();
+            }
+        }
+        let operation = outputs.iter().find_map(|output| output.0.op.as_ref()).or_else(|| operations.iter().find_map(Option::as_ref)).expect("recorded shared operation");
+        // Capture every sibling's actual owner before dispatch can create local derivatives.
+        for output in &outputs { crate::forward_ad::record_actual_flags(output, operation.inputs()); }
+        if dual { crate::forward_ad::record_many(&outputs, operation); }
+        Ok(outputs)
     }
 
     fn record_operation(mut self, inputs: Vec<Tensor>, tag: Option<crate::dispatch::OpTag>, forward: Option<crate::autograd::ForwardOp>, make: impl FnOnce(Vec<Tensor>) -> Op) -> Tensor {
@@ -1459,7 +1559,7 @@ impl Tensor {
         if matches!(op.forward, Some(crate::autograd::ForwardOp::FloorDivide)) { op.omit_saved_input_values(); }
         if matches!(op.forward, Some(crate::autograd::ForwardOp::CumProd { .. } | crate::autograd::ForwardOp::Prod { .. })) { op.save_storage(self.0.storage.clone(), self.version()); }
 
-        if matches!(op.forward, Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Clone { .. }
+        if matches!(op.forward, Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Alias | crate::autograd::ForwardOp::Clone { .. }
             | crate::autograd::ForwardOp::AddAlpha { .. } | crate::autograd::ForwardOp::Cast(_) | crate::autograd::ForwardOp::CumSum { .. }
             | crate::autograd::ForwardOp::Rounding(_) | crate::autograd::ForwardOp::Frac | crate::autograd::ForwardOp::Rsqrt
             | crate::autograd::ForwardOp::Reshape(_) | crate::autograd::ForwardOp::View(_) | crate::autograd::ForwardOp::Squeeze(_) | crate::autograd::ForwardOp::Unsqueeze(_)
