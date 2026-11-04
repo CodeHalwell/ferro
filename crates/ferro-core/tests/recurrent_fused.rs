@@ -148,3 +148,21 @@ fn lstm_cell_state_only_loss_skips_the_disconnected_output_gate() {
     assert!(reference.iter().all(|v| v.is_finite()), "{reference:?}");
     for (p, q) in fused.iter().zip(&reference) { assert!((p - q).abs() < 2e-5, "{p} != {q}"); }
 }
+
+#[test]
+fn unreached_inputs_and_weights_keep_absent_gradients() {
+    for (kind, gates) in [(CellKind::Rnn, 1), (CellKind::Gru, 3), (CellKind::Lstm, 4)] {
+        let x = leaf(2 * 1 * 2, 1, &[2, 1, 2]);
+        let w = [leaf(gates * 2, 2, &[gates, 2]), leaf(gates, 3, &[gates, 1])];
+        let bias = [leaf(gates, 4, &[gates]), leaf(gates, 5, &[gates])];
+        let h0 = leaf(1, 6, &[1, 1]);
+        let init = RecurrentState { h: h0.clone(), c: (kind == CellKind::Lstm).then(|| t(&[0.1], &[1, 1])) };
+        let presence = |fused: bool| {
+            let out = if fused { unroll_cell(kind, &x, &init, &w[0], &w[1], Some(&bias[0]), Some(&bias[1]), &[0], None, None).unwrap() } else { composed(kind, &x, &init, &w, [Some(&bias[0]), Some(&bias[1])], &[0], None) };
+            out.state.h.sum().backward();
+            let p = [&x, &w[0], &w[1], &bias[0], &bias[1], &h0].iter().map(|p| { let g = p.grad().is_some(); p.zero_grad(); g }).collect::<Vec<_>>();
+            p
+        };
+        assert_eq!(presence(true), presence(false), "{kind:?}");
+    }
+}
