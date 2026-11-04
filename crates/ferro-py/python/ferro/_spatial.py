@@ -1,7 +1,6 @@
 """CPU spatial compositions; Conv1d/2d accept f32/f64, other paths require f32."""
 import math
 import sys
-import itertools
 
 from . import _native
 from ._native import Tensor
@@ -341,12 +340,7 @@ def _pool_geometry(x, kernel, steps, pads, spacing, ceil_mode):
     return spatial, shape
 
 
-def _offsets(axes, spatial):
-    strides = [math.prod(spatial[axis + 1:]) for axis in range(len(spatial))]
-    return [sum(position * step for position, step in zip(point, strides)) for point in itertools.product(*axes)]
-
-
-def _max_windows(x, spatial, windows, return_indices, unbatched):
+def _max_windows(x, spatial, axes, return_indices, unbatched):
     shape = [*x.shape[:2], *spatial]
     _capacity(shape)
     if math.prod(shape) > sys.maxsize // 8:
@@ -355,25 +349,11 @@ def _max_windows(x, spatial, windows, return_indices, unbatched):
         result = Tensor.zeros(shape) + x.sum()
         indices = Tensor.from_i64([], shape)
     else:
-        planes, volume, count = math.prod(x.shape[:2]), math.prod(x.shape[2:]), math.prod(spatial)
-        values = x.reshape([planes * volume]).tolist()
-        selected, positions = [0] * (planes * count), [0] * (planes * count)
-        for output, axes in enumerate(windows):
-            offsets = _offsets(axes, x.shape[2:])
-            if not offsets:
-                raise ValueError('dilated max pooling windows must contain an input element')
-            for plane in range(planes):
-                best = offsets[0]
-                maximum = values[plane * volume + best]
-                for offset in offsets[1:]:
-                    value = values[plane * volume + offset]
-                    if math.isnan(value) or value > maximum:
-                        best, maximum = offset, value
-                positions[plane * count + output] = best
-                selected[plane * count + output] = plane * volume + best
+        if any(len(range(*bounds)) == 0 for ranges in axes for bounds in ranges):
+            raise ValueError('dilated max pooling windows must contain an input element')
         # Selection is discrete; native gather owns the differentiable value path.
-        result = x.reshape([planes * volume]).gather(0, Tensor.from_i64(selected, [len(selected)])).reshape(shape)
-        indices = Tensor.from_i64(positions, shape)
+        selected, indices = _native.max_pool_windows(x, axes)
+        result = x.reshape([x.numel()]).gather(0, selected.reshape([selected.numel()])).reshape(shape)
     if unbatched:
         result, indices = result.squeeze(0), indices.squeeze(0)
     return (result, indices) if return_indices else result
@@ -385,16 +365,17 @@ def _max_pool(input, kernel_size, stride, padding, dilation, ceil_mode, return_i
     x, unbatched = _input(input, dimensions)
     kernel, steps, pads, spacing = _pool_options(kernel_size, stride, padding, dimensions, dilation, ceil_mode)
     spatial, _ = _pool_geometry(x, kernel, steps, pads, spacing, ceil_mode)
-    def windows():
-        for point in itertools.product(*(range(size) for size in spatial)):
-            axes = []
-            for index, length, width, step, pad, dilation in zip(point, x.shape[2:], kernel, steps, pads, spacing):
-                start = index * step - pad
-                end = min(start + dilation * (width - 1) + 1, length)
-                start += max(0, -start + dilation - 1) // dilation * dilation
-                axes.append(range(start, end, dilation))
-            yield axes
-    return _max_windows(x, spatial, windows(), return_indices, unbatched)
+    _capacity([*x.shape[:2], *spatial])
+    axes = []
+    for size, length, width, step, pad, dilation in zip(spatial, x.shape[2:], kernel, steps, pads, spacing):
+        ranges = []
+        for index in range(size):
+            start = index * step - pad
+            end = min(start + dilation * (width - 1) + 1, length)
+            start += max(0, -start + dilation - 1) // dilation * dilation
+            ranges.append((start, end, dilation))
+        axes.append(ranges)
+    return _max_windows(x, spatial, axes, return_indices, unbatched)
 
 
 def max_pool1d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False):
@@ -425,19 +406,27 @@ def _avg_pool(input, kernel_size, stride, padding, ceil_mode, count_include_pad,
     if x.shape[0] == 0:
         result = Tensor.zeros(shape) + x.sum()
     else:
-        flattened = x.reshape([math.prod(x.shape[:2]), math.prod(x.shape[2:])])
-        outputs = []
-        for point in itertools.product(*(range(size) for size in spatial)):
-            axes, padded_count = [], 1
-            for index, length, width, step, pad in zip(point, x.shape[2:], kernel, steps, pads):
+        # Box sums and both divisor rules factor over axes, so each axis is one
+        # gather of padded windows (index `length` is an appended zero) and a sum.
+        result, divisor = x, divisor_override
+        for axis, (size, length, width, step, pad) in enumerate(zip(spatial, x.shape[2:], kernel, steps, pads), 2):
+            bounds, counts = [], []
+            for index in range(size):
                 start = index * step - pad
                 end = min(start + width, length + pad)
-                padded_count *= end - start
-                axes.append(range(max(start, 0), min(end, length)))
-            offsets = _offsets(axes, x.shape[2:])
-            divisor = divisor_override if divisor_override is not None else padded_count if count_include_pad else len(offsets)
-            outputs.append(flattened.index_select(1, offsets).sum_dim(1) / divisor)
-        result = _native.stack(outputs, 1).reshape(shape)
+                bounds.append((max(start, 0), min(end, length)))
+                counts.append(float(end - start if count_include_pad else max(min(end, length) - max(start, 0), 0)))
+            widest = max(max(high - low for low, high in bounds), 1)
+            positions = [low + offset if low + offset < high else length for low, high in bounds for offset in range(widest)]
+            edge = list(result.shape)
+            edge[axis] = 1
+            padded = _native.cat([result, Tensor.zeros(edge)], axis)
+            gathered = padded.index_select(axis, positions)
+            result = gathered.reshape([*result.shape[:axis], size, widest, *result.shape[axis + 1:]]).sum_dim(axis + 1)
+            if divisor_override is None:
+                factor = Tensor(counts, [size] + [1] * (x.ndim - 1 - axis))
+                divisor = factor if divisor is None else divisor * factor
+        result = result / divisor
     return result.squeeze(0) if unbatched else result
 
 
@@ -460,11 +449,10 @@ def _adaptive_max_pool(input, output_size, return_indices, dimensions):
     x, unbatched = _input(input, dimensions)
     requested = _pool_size(output_size, dimensions)
     spatial = tuple(current if wanted is None else wanted for current, wanted in zip(x.shape[2:], requested))
-    def windows():
-        for point in itertools.product(*(range(size) for size in spatial)):
-            yield [range(index * length // size, ((index + 1) * length + size - 1) // size)
-                   for index, length, size in zip(point, x.shape[2:], spatial)]
-    return _max_windows(x, spatial, windows(), return_indices, unbatched)
+    _capacity([*x.shape[:2], *spatial])
+    axes = [[(index * length // size, ((index + 1) * length + size - 1) // size, 1) for index in range(size)]
+            for length, size in zip(x.shape[2:], spatial)]
+    return _max_windows(x, spatial, axes, return_indices, unbatched)
 
 
 def adaptive_max_pool1d(input, output_size, return_indices=False):

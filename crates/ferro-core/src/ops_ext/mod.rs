@@ -85,6 +85,7 @@ pub mod margin_ranking_loss;
 pub mod masked_fill;
 pub mod max;
 pub mod max_pool2d;
+pub mod max_pool_windows;
 pub mod maximum;
 pub mod mean_dim;
 pub mod minimum;

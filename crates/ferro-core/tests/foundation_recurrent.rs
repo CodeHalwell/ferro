@@ -116,3 +116,44 @@ fn rnn_explicit_affines_and_gradients() {
     close(&rnn_cell(&x,&h,&wi,&wh,Some(&bi),Some(&bh)).unwrap(), &[0.03f32.tanh()]);
     ferro_core::testkit::grad_check(&[x,h,wi,wh,bi,bh], |a| rnn_cell(&a[0],&a[1],&a[2],&a[3],Some(&a[4]),Some(&a[5])).unwrap());
 }
+
+#[test]
+fn batched_unroll_matches_per_row_reference_and_steps_once_per_time() {
+    let (time,batch,width)=(5,3,2);
+    let data=(0..time*batch*2).map(|i| ((i*7%11) as f32-5.0)*0.1).collect::<Vec<_>>();
+    let lengths=[5,3,1];
+    let mut reset=vec![false;time*batch]; reset[2*batch]=true; reset[3*batch+1]=true;
+    let w=t(&[0.3,-0.2,0.1,0.4,-0.5,0.2,0.6,-0.1,0.2,0.3,-0.4,0.1,0.5,-0.3,0.2,0.1], &[8,2]);
+    let u=t(&[0.2,0.1,-0.3,0.4,0.1,-0.2,0.3,0.5,-0.1,0.2,0.4,-0.3,0.2,0.1,-0.2,0.3], &[8,2]);
+    for trunc in [None,Some(2)] {
+        let x=t(&data,&[time,batch,2]).requires_grad_(true).unwrap();
+        let h0=t(&[0.1,-0.2,0.3,0.4,-0.1,0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let c0=t(&[0.2,0.1,-0.3,0.1,0.4,-0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let mut calls=0;
+        let out=unroll(&x,&RecurrentState { h:h0.clone(), c:Some(c0.clone()) },&lengths,Some(&reset),trunc,|x,s| {
+            calls+=1; let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().unwrap(),&w,&u,None,None)?; Ok(RecurrentState { h,c:Some(c) })
+        }).unwrap();
+        assert_eq!(calls,time);
+        out.outputs.sum().add(&out.state.c.as_ref().unwrap().sum()).unwrap().backward();
+        let (gx,gh,gc)=(x.grad().unwrap().to_vec(),h0.grad().unwrap().to_vec(),c0.grad().unwrap().to_vec());
+        x.zero_grad(); h0.zero_grad(); c0.zero_grad();
+        let mut loss=Tensor::zeros(&[]); let mut outs=vec![0.0;time*batch*width];
+        for b in 0..batch {
+            let (h0b,c0b)=(h0.index_select(0,&[b]).unwrap(),c0.index_select(0,&[b]).unwrap());
+            let (mut h,mut c)=(h0b.clone(),c0b.clone());
+            for i in 0..lengths[b] {
+                if reset[i*batch+b] { h=h0b.clone(); c=c0b.clone(); }
+                if trunc.is_some_and(|k| i>0 && i%k==0) { h=h.detach_copy(); c=c.detach_copy(); }
+                let xi=x.index_select(0,&[i]).unwrap().reshape(&[batch,2]).unwrap().index_select(0,&[b]).unwrap();
+                (h,c)=lstm_cell(&xi,&h,&c,&w,&u,None,None).unwrap();
+                for (j,v) in h.to_vec().into_iter().enumerate() { outs[(i*batch+b)*width+j]=v; }
+                loss=loss.add(&h.sum()).unwrap();
+            }
+            loss=loss.add(&c.sum()).unwrap();
+        }
+        close(&out.outputs,&outs);
+        loss.backward();
+        close(&x.grad().unwrap(),&gx); close(&h0.grad().unwrap(),&gh); close(&c0.grad().unwrap(),&gc);
+        x.zero_grad(); h0.zero_grad(); c0.zero_grad();
+    }
+}

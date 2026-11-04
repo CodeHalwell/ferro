@@ -18,13 +18,17 @@ impl RecurrentState {
         if let Some(c)=&self.c { check(c)?; if c.shape()!=self.h.shape() { return Err(invalid("cell and hidden shapes differ")); } }
         Ok(())
     }
-    fn row(&self, b: usize) -> Result<Self> {
-        Ok(Self { h:self.h.index_select(0,&[b])?, c:self.c.as_ref().map(|c| c.index_select(0,&[b])).transpose()? })
+    fn rows(&self, rows: &[usize]) -> Result<Self> {
+        Ok(Self { h:self.h.index_select(0,rows)?, c:self.c.as_ref().map(|c| c.index_select(0,rows)).transpose()? })
+    }
+    fn zip(&self, other: &Self, f: impl Fn(&Tensor,&Tensor) -> Result<Tensor>) -> Result<Self> {
+        Ok(Self { h:f(&self.h,&other.h)?, c:match (&self.c,&other.c) { (Some(a),Some(b)) => Some(f(a,b)?), _ => None } })
     }
 }
 pub struct UnrollOutput { pub outputs: Tensor, pub state: RecurrentState }
-/// Sequential, row-wise reference unroll of time-major [T,B,I]. The closure
-/// receives [1,I] and [1,H] states and must preserve state shape/kind.
+/// Sequential unroll of time-major [T,B,I], batched over the rows active at
+/// each step. The closure receives [A,I] inputs and [A,H] states for the A
+/// active rows (all B when none has ended) and must preserve state shape/kind.
 /// lengths has exactly B entries in 0..=T. Padding is never evaluated (even
 /// NaN/Inf padding is harmless), outputs there are zero, final state is retained.
 /// reset is an optional time-major T*B boolean array: before an ACTIVE step,
@@ -46,22 +50,35 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
     if elements>isize::MAX as usize/std::mem::size_of::<f32>() { return Err(invalid("output buffer byte length overflow")); }
     if time==0 || batch==0 { return Ok(UnrollOutput { outputs:Tensor::zeros(&[time,batch,width]), state:initial.clone() }); }
     let mut outputs=Vec::new();
-    outputs.try_reserve_exact(count).map_err(|e| invalid(&format!("cannot reserve timestep outputs: {e}")))?;
-    let mut rows=(0..batch).map(|b| initial.row(b)).collect::<Result<Vec<_>>>()?;
+    outputs.try_reserve_exact(time).map_err(|e| invalid(&format!("cannot reserve timestep outputs: {e}")))?;
+    let mut state=initial.clone();
     for time_index in 0..time {
-        for b in 0..batch {
-            if time_index>=lengths[b] { outputs.push(Tensor::zeros(&[1,width])); continue; }
-            if reset.is_some_and(|r| r[time_index*batch+b]) { rows[b]=initial.row(b)?; }
-            if truncate.is_some_and(|k| time_index>0 && time_index%k==0) { rows[b]=rows[b].detach(); }
-            let x=input.index_select(0,&[time_index])?.reshape(&[batch,input.shape()[2]])?.index_select(0,&[b])?;
-            let next=cell(&x,&rows[b])?; next.validate()?;
-            if next.h.shape()!=[1,width] || next.c.is_some()!=initial.c.is_some() { return Err(invalid("cell changed state shape or kind")); }
-            outputs.push(next.h.clone()); rows[b]=next;
-        }
+        let active=(0..batch).filter(|&b| time_index<lengths[b]).collect::<Vec<_>>();
+        if active.is_empty() { outputs.push(Tensor::zeros(&[batch,width])); continue; }
+        let resets=active.iter().copied().filter(|&b| reset.is_some_and(|r| r[time_index*batch+b])).collect::<Vec<_>>();
+        if !resets.is_empty() { state=merge(&state,initial,&resets)?; }
+        let full=active.len()==batch;
+        if truncate.is_some_and(|k| time_index>0 && time_index%k==0) { state=if full { state.detach() } else { merge(&state,&state.detach(),&active)? }; }
+        let x=input.index_select(0,&[time_index])?.reshape(&[batch,input.shape()[2]])?;
+        let (x,prev)=if full { (x,state.clone()) } else { (x.index_select(0,&active)?,state.rows(&active)?) };
+        let next=cell(&x,&prev)?; next.validate()?;
+        if next.h.shape()!=[active.len(),width] || next.c.is_some()!=initial.c.is_some() { return Err(invalid("cell changed state shape or kind")); }
+        if full { outputs.push(next.h.clone()); state=next; continue; }
+        let mut slot=vec![active.len();batch];
+        for (p,&b) in active.iter().enumerate() { slot[b]=p; }
+        outputs.push(Tensor::cat(&[next.h.clone(),Tensor::zeros(&[1,width])],0)?.index_select(0,&slot)?);
+        let pick=(0..batch).map(|b| if slot[b]<active.len() { batch+slot[b] } else { b }).collect::<Vec<_>>();
+        state=state.zip(&next,|a,b| Tensor::cat(&[a.clone(),b.clone()],0)?.index_select(0,&pick))?;
     }
-    let h=Tensor::cat(&rows.iter().map(|s| s.h.clone()).collect::<Vec<_>>(),0)?;
-    let c=if initial.c.is_some() { Some(Tensor::cat(&rows.iter().map(|s| s.c.as_ref().unwrap().clone()).collect::<Vec<_>>(),0)?) } else { None };
-    Ok(UnrollOutput { outputs:Tensor::cat(&outputs,0)?.reshape(&[time,batch,width])?, state:RecurrentState { h,c } })
+    Ok(UnrollOutput { outputs:Tensor::cat(&outputs,0)?.reshape(&[time,batch,width])?, state })
+}
+
+/// Rows listed in `rows` come from `other`, the rest from `base`; both are [B,H].
+fn merge(base: &RecurrentState, other: &RecurrentState, rows: &[usize]) -> Result<RecurrentState> {
+    let batch=base.h.shape()[0];
+    let mut pick=(0..batch).collect::<Vec<_>>();
+    for &b in rows { pick[b]=batch+b; }
+    base.zip(other,|a,b| Tensor::cat(&[a.clone(),b.clone()],0)?.index_select(0,&pick))
 }
 
 fn gate(t: &Tensor, g: usize, h: usize) -> Result<Tensor> { t.index_select(1, &(g*h..(g+1)*h).collect::<Vec<_>>()) }
