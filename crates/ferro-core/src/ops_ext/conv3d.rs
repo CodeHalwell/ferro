@@ -27,17 +27,17 @@ struct Geometry { win: Window2d, depth: Depth, channels: usize }
 impl Geometry {
     fn plane(&self) -> usize { self.win.image_len(1).expect("validated plane") }
     fn pos(&self) -> usize { self.win.positions() }
-    fn ld(&self) -> usize { self.depth.output * self.pos() }
-    fn taps(&self) -> usize { self.channels * self.depth.kernel * self.win.kernel_area() }
 
-    /// `image` holds this group's channels; `col` is [taps, OD*OH*OW].
-    fn unfold(&self, image: &[f32], col: &mut [f32]) {
-        let (plane, pos, ld, area) = (self.plane(), self.pos(), self.ld(), self.win.kernel_area());
+    /// `image` holds this group's channels; `col` is [taps, (od1-od0)*OH*OW]
+    /// for output depths od0..od1.
+    fn unfold(&self, image: &[f32], depths: std::ops::Range<usize>, col: &mut [f32]) {
+        let (plane, pos, area) = (self.plane(), self.pos(), self.win.kernel_area());
+        let ld = depths.len() * pos;
         for ci in 0..self.channels {
             for kd in 0..self.depth.kernel {
                 let block = (ci * self.depth.kernel + kd) * area * ld;
-                for od in 0..self.depth.output {
-                    let at = &mut col[block + od * pos..];
+                for (j, od) in depths.clone().enumerate() {
+                    let at = &mut col[block + j * pos..];
                     match self.depth.source(kd, od) {
                         Some(d) => self.win.unfold_channel(&image[(ci * self.depth.input + d) * plane..][..plane], 0, at, ld),
                         None => (0..area).for_each(|t| at[t * ld..][..pos].fill(0.0)),
@@ -47,20 +47,24 @@ impl Geometry {
         }
     }
 
-    fn fold_add(&self, col: &[f32], image: &mut [f32]) {
-        let (plane, pos, ld, area) = (self.plane(), self.pos(), self.ld(), self.win.kernel_area());
+    fn fold_add(&self, col: &[f32], depths: std::ops::Range<usize>, image: &mut [f32]) {
+        let (plane, pos, area) = (self.plane(), self.pos(), self.win.kernel_area());
+        let ld = depths.len() * pos;
         for ci in 0..self.channels {
             for kd in 0..self.depth.kernel {
                 let block = (ci * self.depth.kernel + kd) * area * ld;
-                for od in 0..self.depth.output {
+                for (j, od) in depths.clone().enumerate() {
                     if let Some(d) = self.depth.source(kd, od) {
-                        self.win.fold_channel_add(&col[block + od * pos..], ld, 0, &mut image[(ci * self.depth.input + d) * plane..][..plane]);
+                        self.win.fold_channel_add(&col[block + j * pos..], ld, 0, &mut image[(ci * self.depth.input + d) * plane..][..plane]);
                     }
                 }
             }
         }
     }
 }
+
+/// Column-matrix floats per output-depth chunk (16 MiB), as in conv2d.
+const CHUNK: usize = 1 << 22;
 
 fn transpose(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     let mut dst = vec![0.; src.len()];
@@ -97,38 +101,50 @@ impl Tensor {
         let image = checked_len("conv3d", &[ic, depth.input, xs[3], xs[4]])?;
         let (weight_group, output_group) = (checked_len("conv3d", &[oc, taps])?, checked_len("conv3d", &[oc, ld])?);
         let out_len = checked_len("conv3d", &[n, groups, output_group])?;
-        checked_len("conv3d", &[taps, ld])?;
         checked_len("conv3d", &[n, groups, image])?;
         let (x, wt) = (self.to_vec(), weight.to_vec());
         let backend = backend_for(Device::Cpu)?;
         let mut out = vec![0.; out_len];
-        let mut col = vec![0.; taps * ld];
+        let pos = win.positions();
+        let step = (CHUNK / (taps * pos).max(1)).clamp(1, depth.output);
+        let chunks: Vec<std::ops::Range<usize>> = (0..depth.output).step_by(step).map(|o| o..(o + step).min(depth.output)).collect();
+        let mut col = vec![0.; taps * step * pos];
         for i in 0..n {
             for g in 0..groups {
-                geo.unfold(&x[(i * groups + g) * image..][..image], &mut col);
-                let y = backend.matmul(&wt[g * weight_group..][..weight_group], &col, oc, taps, ld);
-                out[(i * groups + g) * output_group..][..output_group].copy_from_slice(&y);
-                pool::give(y);
+                for depths in &chunks {
+                    let len = depths.len() * pos;
+                    geo.unfold(&x[(i * groups + g) * image..][..image], depths.clone(), &mut col[..taps * len]);
+                    let y = backend.matmul(&wt[g * weight_group..][..weight_group], &col[..taps * len], oc, taps, len);
+                    let base = (i * groups + g) * output_group + depths.start * pos;
+                    for o in 0..oc { out[base + o * ld..][..len].copy_from_slice(&y[o * len..][..len]); }
+                    pool::give(y);
+                }
             }
         }
         Ok(Tensor::from_vec(out, &[n, cout, depth.output, oh, ow])?.record_fn(vec![self.clone(), weight.clone()], move |grad| {
             let gd = grad.to_vec();
             let backend = backend_for(Device::Cpu).expect("cpu backend is always registered");
             let (mut dx, mut dw) = (vec![0.; x.len()], vec![0.; wt.len()]);
-            let mut col = vec![0.; taps * ld];
+            let mut col = vec![0.; taps * step * pos];
+            let mut gy = vec![0.; oc * step * pos];
             let wtt: Vec<Vec<f32>> = (0..groups).map(|g| transpose(&wt[g * weight_group..][..weight_group], oc, taps)).collect();
             for i in 0..n {
                 for g in 0..groups {
-                    let gy = &gd[(i * groups + g) * output_group..][..output_group];
-                    geo.unfold(&x[(i * groups + g) * image..][..image], &mut col);
-                    // dW^T = col @ gy^T, accumulated over images.
-                    let dwt = backend.matmul(&col, &transpose(gy, oc, ld), taps, ld, oc);
-                    let dwg = &mut dw[g * weight_group..][..weight_group];
-                    for o in 0..oc { for t in 0..taps { dwg[o * taps + t] += dwt[t * oc + o]; } }
-                    pool::give(dwt);
-                    let dc = backend.matmul(&wtt[g], gy, taps, oc, ld);
-                    geo.fold_add(&dc, &mut dx[(i * groups + g) * image..][..image]);
-                    pool::give(dc);
+                    for depths in &chunks {
+                        let len = depths.len() * pos;
+                        let base = (i * groups + g) * output_group + depths.start * pos;
+                        for o in 0..oc { gy[o * len..][..len].copy_from_slice(&gd[base + o * ld..][..len]); }
+                        let gy = &gy[..oc * len];
+                        geo.unfold(&x[(i * groups + g) * image..][..image], depths.clone(), &mut col[..taps * len]);
+                        // dW^T = col @ gy^T, accumulated over images and chunks.
+                        let dwt = backend.matmul(&col[..taps * len], &transpose(gy, oc, len), taps, len, oc);
+                        let dwg = &mut dw[g * weight_group..][..weight_group];
+                        for o in 0..oc { for t in 0..taps { dwg[o * taps + t] += dwt[t * oc + o]; } }
+                        pool::give(dwt);
+                        let dc = backend.matmul(&wtt[g], gy, taps, oc, len);
+                        geo.fold_add(&dc, depths.clone(), &mut dx[(i * groups + g) * image..][..image]);
+                        pool::give(dc);
+                    }
                 }
             }
             vec![Tensor::from_vec(dx, &xs).unwrap(), Tensor::from_vec(dw, &ws).unwrap()]

@@ -52,3 +52,33 @@ fn rejects_bad_geometry_and_dtypes() {
     assert!(x.conv3d_with_options(&Tensor::zeros(&[2, 2, 1, 1]), [1; 3], [0; 3], [1; 3], 1).is_err());
     assert!(Tensor::from_vec_i64(vec![0; 27], &[1, 1, 3, 3, 3]).unwrap().conv3d_with_options(&Tensor::zeros(&[1, 1, 1, 1, 1]), [1; 3], [0; 3], [1; 3], 1).is_err());
 }
+
+#[test]
+fn multi_chunk_depth_volumes_match_reference_values_and_gradients() {
+    // 108 taps x 64*64 positions per output depth splits the 12 output depths into chunks.
+    let (s, p, d) = ([1, 1, 1], [1, 1, 1], [1, 1, 1]);
+    let x = r(4 * 12 * 64 * 64, &[1, 4, 12, 64, 64], 6).requires_grad_(true).unwrap();
+    let w = r(3 * 4 * 27, &[3, 4, 3, 3, 3], 7).requires_grad_(true).unwrap();
+    let y = x.conv3d_with_options(&w, s, p, d, 1).unwrap();
+    let expected = reference(&x, &w, s, p, d, 1);
+    for (a, b) in y.to_vec().iter().zip(&expected) { assert!((a - b).abs() < 1e-3, "{a} vs {b}"); }
+    let probe = r(y.numel(), y.shape(), 8);
+    y.mul(&probe).unwrap().sum().backward();
+    let (gx, gw) = (x.grad().unwrap().to_vec(), w.grad().unwrap().to_vec());
+    x.zero_grad(); w.zero_grad();
+    let mut planes = Vec::new();
+    for o in 0..12 {
+        let mut plane: Option<Tensor> = None;
+        for k in 0..3 {
+            let src = o as isize + k as isize - 1;
+            if !(0..12).contains(&src) { continue; }
+            let term = x.narrow(2, src as usize, 1).unwrap().squeeze(2).unwrap()
+                .conv2d_with_options(&w.narrow(2, k, 1).unwrap().squeeze(2).unwrap(), [1, 1], [1, 1], [1, 1], 1).unwrap();
+            plane = Some(match plane { Some(acc) => acc.add(&term).unwrap(), None => term });
+        }
+        planes.push(plane.unwrap().unsqueeze(2).unwrap());
+    }
+    Tensor::cat(&planes, 2).unwrap().mul(&probe).unwrap().sum().backward();
+    for (a, b) in gx.iter().zip(x.grad().unwrap().to_vec()) { assert!((a - b).abs() < 1e-3, "{a} vs {b}"); }
+    for (a, b) in gw.iter().zip(w.grad().unwrap().to_vec()) { assert!((a - b).abs() < 1e-2 * b.abs().max(1.0), "{a} vs {b}"); }
+}
