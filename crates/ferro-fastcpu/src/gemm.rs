@@ -86,7 +86,7 @@ const MAX_TILE: usize = 14 * 32;
 
 /// Below this many multiply-adds per pool task, waking a worker costs more
 /// than it saves.
-const GRAIN: usize = 1 << 20;
+const GRAIN: usize = 1 << 19;
 
 /// Task count for `work` multiply-adds: 1 for small problems.
 pub fn auto_threads(work: usize) -> usize {

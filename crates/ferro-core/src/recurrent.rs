@@ -3,6 +3,9 @@
 //! rather than silently downloading tensors. No implicit train/eval state changes.
 use crate::{Tensor, Error, Result, Device, DType};
 
+#[path = "recurrent_fused.rs"]
+mod fused;
+
 
 
 /// Caller-owned state; use c=Some for LSTM and c=None for RNN/GRU.
@@ -167,6 +170,9 @@ pub fn unroll_cell(kind: CellKind, input: &Tensor, initial: &RecurrentState, wi:
         let keep=(0..time).flat_map(|t| lengths.iter().map(move |&n| t<n)).collect();
         Tensor::where_cond(&Tensor::from_vec_bool(keep,&[time,batch,1])?,input,&Tensor::zeros(&[1]))?
     };
+    if time>0 && batch>0 && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
+        return fused::sequence(kind,&x,initial,wi,wh,bi,bh,lengths,truncate);
+    }
     let mut projected=x.reshape(&[time*batch,features])?.matmul(&wi.transpose(0,1)?.contiguous()?)?;
     if let Some(b)=bi { projected=projected.add(b)?; }
     let projected=projected.reshape(&[time,batch,gates])?;

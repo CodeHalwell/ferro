@@ -25,6 +25,9 @@ struct Job {
     next: AtomicUsize,
     done: AtomicUsize,
     panicked: AtomicBool,
+    // Set (under `Pool::done`) only once the caller gives up spinning, so the
+    // finishing worker skips the lock and futex wake while the caller spins.
+    waiting: AtomicBool,
 }
 
 // SAFETY: `f` points at a Sync closure kept alive by the blocked caller.
@@ -43,7 +46,8 @@ impl Job {
             if catch_unwind(AssertUnwindSafe(|| f(i))).is_err() {
                 self.panicked.store(true, Ordering::Relaxed);
             }
-            if self.done.fetch_add(1, Ordering::AcqRel) + 1 == self.tasks {
+            // SeqCst pairs with the caller's `waiting` store/`done` load: one side always sees the other.
+            if self.done.fetch_add(1, Ordering::SeqCst) + 1 == self.tasks && self.waiting.load(Ordering::SeqCst) {
                 let _g = p.done.lock().unwrap_or_else(|e| e.into_inner());
                 p.done_cv.notify_all();
             }
@@ -56,14 +60,17 @@ struct Pool {
     epoch: AtomicU64,
     slot: Mutex<Option<Arc<Job>>>,
     wake: Condvar,
+    // Workers parked on `wake`; only changed and read under `slot`, so a
+    // publish that sees zero can skip the futex wake.
+    sleepers: AtomicUsize,
     done: Mutex<()>,
     done_cv: Condvar,
     gate: Mutex<()>,
 }
 
-/// Idle spin before parking (~0.1-0.3 ms): back-to-back ops skip the futex
+/// Idle spin before parking (~1-2 ms): back-to-back ops skip the futex
 /// wake without burning a core for long between bursts.
-const SPIN: usize = 1 << 11;
+const SPIN: usize = 1 << 14;
 
 fn pool() -> &'static Pool {
     static POOL: OnceLock<&'static Pool> = OnceLock::new();
@@ -74,6 +81,7 @@ fn pool() -> &'static Pool {
             epoch: AtomicU64::new(0),
             slot: Mutex::new(None),
             wake: Condvar::new(),
+            sleepers: AtomicUsize::new(0),
             done: Mutex::new(()),
             done_cv: Condvar::new(),
             gate: Mutex::new(()),
@@ -96,7 +104,9 @@ fn worker(p: &'static Pool) {
         let job = {
             let mut g = p.slot.lock().unwrap_or_else(|e| e.into_inner());
             while p.epoch.load(Ordering::Acquire) == seen {
+                p.sleepers.fetch_add(1, Ordering::Relaxed);
                 g = p.wake.wait(g).unwrap_or_else(|e| e.into_inner());
+                p.sleepers.fetch_sub(1, Ordering::Relaxed);
             }
             seen = p.epoch.load(Ordering::Acquire);
             g.clone()
@@ -127,19 +137,26 @@ pub fn run(tasks: usize, f: &(dyn Fn(usize) + Sync)) {
     }
     // SAFETY: erases the borrow's lifetime only; see `Job::f`.
     let f: &'static (dyn Fn(usize) + Sync) = unsafe { std::mem::transmute(f) };
-    let job = Arc::new(Job { f, tasks, next: AtomicUsize::new(0), done: AtomicUsize::new(0), panicked: AtomicBool::new(false) });
+    let job = Arc::new(Job { f, tasks, next: AtomicUsize::new(0), done: AtomicUsize::new(0), panicked: AtomicBool::new(false), waiting: AtomicBool::new(false) });
     {
         let mut g = p.slot.lock().unwrap_or_else(|e| e.into_inner());
         *g = Some(job.clone());
         p.epoch.fetch_add(1, Ordering::Release);
-        p.wake.notify_all();
+        if p.sleepers.load(Ordering::Relaxed) > 0 { p.wake.notify_all(); }
     }
     job.work(p);
-    let mut g = p.done.lock().unwrap_or_else(|e| e.into_inner());
-    while job.done.load(Ordering::Acquire) != tasks {
-        g = p.done_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    let mut spins = 0;
+    while job.done.load(Ordering::Acquire) != tasks && spins < SPIN {
+        std::hint::spin_loop();
+        spins += 1;
     }
-    drop(g);
+    if job.done.load(Ordering::Acquire) != tasks {
+        let mut g = p.done.lock().unwrap_or_else(|e| e.into_inner());
+        job.waiting.store(true, Ordering::SeqCst);
+        while job.done.load(Ordering::SeqCst) != tasks {
+            g = p.done_cv.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+    }
     drop(gate);
     assert!(!job.panicked.load(Ordering::Relaxed), "a fastcpu worker task panicked");
 }

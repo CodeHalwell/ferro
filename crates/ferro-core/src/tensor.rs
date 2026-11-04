@@ -474,8 +474,8 @@ impl Tensor {
             return vec![data[inner.offset]];
         }
         let mut out = Vec::with_capacity(n);
-        if let Some(row) = self.unit_stride_row() {
-            self.for_each_row_offset(row, |off| out.extend_from_slice(&data[off..off + row]));
+        if let Some((row, broadcast)) = self.inner_row() {
+            self.for_each_row_offset(row, |off| if broadcast { out.extend(std::iter::repeat_n(data[off], row)) } else { out.extend_from_slice(&data[off..off + row]) });
             return out;
         }
         let mut idx = vec![0usize; ndim];
@@ -496,12 +496,13 @@ impl Tensor {
         out
     }
 
-    /// Innermost run length when the last axis is unit-stride, so strided
-    /// views copy whole rows instead of single elements.
-    fn unit_stride_row(&self) -> Option<usize> {
+    /// Innermost run length when the last axis is unit-stride (or a stride-0
+    /// broadcast, flagged true), so strided views copy or fill whole rows
+    /// instead of single elements.
+    fn inner_row(&self) -> Option<(usize, bool)> {
         let inner = &self.0;
         let last = inner.shape.len().checked_sub(1)?;
-        (inner.stride[last] == 1 && inner.shape[last] > 1).then_some(inner.shape[last])
+        (inner.stride[last] <= 1 && inner.shape[last] > 1).then_some((inner.shape[last], inner.stride[last] == 0))
     }
 
     fn for_each_row_offset(&self, row: usize, mut f: impl FnMut(usize)) {
@@ -533,9 +534,12 @@ impl Tensor {
             out[0] = data[inner.offset];
             return;
         }
-        if let Some(row) = self.unit_stride_row() {
+        if let Some((row, broadcast)) = self.inner_row() {
             let mut start = 0;
-            self.for_each_row_offset(row, |off| { out[start..start + row].copy_from_slice(&data[off..off + row]); start += row; });
+            self.for_each_row_offset(row, |off| {
+                if broadcast { out[start..start + row].fill(data[off]) } else { out[start..start + row].copy_from_slice(&data[off..off + row]) }
+                start += row;
+            });
             return;
         }
         let mut idx = vec![0usize; ndim];
