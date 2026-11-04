@@ -57,11 +57,11 @@ be deflated below matrix precision; exact underflow rank is not guaranteed.
 Truncated pinv/lstsq adjoints follow actual Torch behavior and may disagree with
 finite differences across a nonzero spectral cutoff. See the matching report.
 
-Physical-batch Jacobians, shared multi-output/nested rules, other F64 optimizers,
-later default-Hessian and general batching work
-remain outside this checkpoint. Unused noncanonical empty materialized gradients
-can differ in layout. The supported F64 modules/optimizers do not imply general
-F64 module, higher-order optimizer or GPU training support.
+Public batched gradients, nested-frame/default-Hessian work, and additional F64
+optimizers, recurrent cells and pooling remain outside this checkpoint.
+Physical-batch Jacobians, shared PReLU higher/JVP and tested preserve-format
+unused materialization are included. Supported F64 modules/optimizers do not
+imply general F64 module, higher-order optimizer or GPU training support.
 
 ## Earlier portability snapshot
 
