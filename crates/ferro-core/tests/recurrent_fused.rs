@@ -166,3 +166,18 @@ fn unreached_inputs_and_weights_keep_absent_gradients() {
         assert_eq!(presence(true), presence(false), "{kind:?}");
     }
 }
+
+#[test]
+fn lstm_initial_state_gradients_follow_separate_h_and_c_reachability() {
+    let x = leaf(2 * 1 * 2, 1, &[2, 1, 2]);
+    let w = [leaf(8, 2, &[4, 2]), leaf(4, 3, &[4, 1])];
+    let (h0, c0) = (leaf(1, 6, &[1, 1]), leaf(1, 7, &[1, 1]));
+    let init = RecurrentState { h: h0.clone(), c: Some(c0.clone()) };
+    let presence = |fused: bool| {
+        let out = if fused { unroll_cell(CellKind::Lstm, &x, &init, &w[0], &w[1], None, None, &[0], None, None).unwrap() } else { composed(CellKind::Lstm, &x, &init, &w, [None, None], &[0], None) };
+        out.state.c.unwrap().sum().backward();
+        [&h0, &c0].map(|p| { let g = p.grad().is_some(); p.zero_grad(); g })
+    };
+    assert_eq!(presence(false), [false, true]);
+    assert_eq!(presence(true), presence(false));
+}

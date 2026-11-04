@@ -131,11 +131,11 @@ pub(super) fn sequence(kind: CellKind, x: &Tensor, initial: &RecurrentState, wi:
     let saved = Arc::new(saved);
     let differentiable = vec![true; outputs.len()];
     let mut outputs = Tensor::record_many_optional(outputs, inputs, &differentiable, move |seeds| {
-        let (grads, initial, any) = backward(&saved, seeds, &x_saved, &wi_saved, &wh_saved).expect("fused recurrent backward on validated shapes");
+        let (grads, (init_h, init_c), any) = backward(&saved, seeds, &x_saved, &wi_saved, &wh_saved).expect("fused recurrent backward on validated shapes");
         let [dx, dh0, dc0, dwi, dwh, dbi, dbh] = grads;
         // With no cell reached (e.g. every length 0), inputs and weights stay absent, as in the composed graph.
-        let mut result = vec![any.then_some(dx), initial.then_some(dh0)];
-        if lstm { result.push(initial.then_some(dc0)); }
+        let mut result = vec![any.then_some(dx), init_h.then_some(dh0)];
+        if lstm { result.push(init_c.then_some(dc0)); }
         result.extend([any.then_some(dwi), any.then_some(dwh)]);
         if has_bi { result.push(any.then_some(dbi)); }
         if has_bh { result.push(any.then_some(dbh)); }
@@ -146,8 +146,8 @@ pub(super) fn sequence(kind: CellKind, x: &Tensor, initial: &RecurrentState, wi:
     Ok(UnrollOutput { outputs: outputs_seq, state: RecurrentState { h, c: outputs.next() } })
 }
 
-/// Returns the input gradients, whether any cotangent reaches the initial state, and whether any cell was reached.
-fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &Tensor) -> Result<([Tensor; 7], bool, bool)> {
+/// Returns the input gradients, whether any cotangent reaches the initial h and c, and whether any cell was reached.
+fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &Tensor) -> Result<([Tensor; 7], (bool, bool), bool)> {
     let [time, batch, features, width, gates] = s.dims;
     let (bh_len, hw) = (batch * width, batch * gates);
     let seed = |k: usize| seeds.get(k).and_then(Option::as_ref).map(Tensor::to_vec);
@@ -241,6 +241,6 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
         for (cell, _) in reached.iter().enumerate().filter(|(_, r)| !**r) { dx[cell * features..][..features].fill(0.); }
         let dx = Tensor::from_vec(dx, &[time, batch, features])?;
         let dc0 = if s.kind == CellKind::Lstm { Tensor::from_vec(dc, &[batch, width])? } else { Tensor::zeros(&[batch, width]) };
-        Ok(([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh], live_h.contains(&true) || live_c.contains(&true), reached.contains(&true)))
+        Ok(([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh], (live_h.contains(&true), live_c.contains(&true)), reached.contains(&true)))
     })
 }
