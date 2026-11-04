@@ -100,6 +100,7 @@ class OptimizerGradientRetentionTests(unittest.TestCase):
         optimizer.zero_grad();self.assertIsNone(parameter.tensor().grad)
 
     def test_lbfgs_fixed_and_search_leave_last_closure_gradients_like_torch(self):
+        # A well-conditioned objective: on Rosenbrock a few-ulp change in Torch's float32 kernels (which vary by host ISA) moves the strong-Wolfe path past tolerance.
         for search,max_eval in ((None,8),('strong_wolfe',8),('strong_wolfe',1)):
             with self.subTest(search=search,max_eval=max_eval):
                 parameter=fr.nn.Parameter(fr.tensor([-1.2,1.]));target=torch.nn.Parameter(torch.tensor([-1.2,1.]))
@@ -109,10 +110,10 @@ class OptimizerGradientRetentionTests(unittest.TestCase):
                     identities=[]
                     def closure():
                         optimizer.zero_grad();p=parameter.tensor()
-                        loss=(p[1]-p[0].square()).square()*10.+(1.-p[0]).square()
+                        loss=(p[0]-1.).square()+(p[1]+.5).square()*2.+(p[0]*p[1]).square()*.5
                         loss.backward();identities.append(parameter.grad._id());return loss
                     def reference_closure():
-                        oracle.zero_grad();loss=(target[1]-target[0].square()).square()*10.+(1.-target[0]).square()
+                        oracle.zero_grad();loss=(target[0]-1.).square()+(target[1]+.5).square()*2.+(target[0]*target[1]).square()*.5
                         loss.backward();return loss
                     with fr.no_grad(),torch.no_grad():
                         actual=optimizer.step(closure);expected=oracle.step(reference_closure)

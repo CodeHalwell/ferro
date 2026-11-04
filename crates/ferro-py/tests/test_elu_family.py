@@ -58,7 +58,11 @@ class EluFamilyTests(unittest.TestCase):
                             output, reference = getattr(F, name)(a, **opts), getattr(torch.nn.functional, name)(x, **opts)
                             self.same(output, reference)
                             seed = torch.full_like(x, seed_value)
-                            self.same(fr.autograd.grad(output,a,native(seed))[0],torch.autograd.grad(reference,x,seed)[0])
+                            expected = torch.autograd.grad(reference,x,seed)[0].detach().clone()
+                            # Torch's AVX2 float64 backward returns NaN for a NaN input where its scalar, float32 and AVX-512 paths return grad*scale; pin the NaN lane to the one-element result.
+                            lane = x[7:].detach().requires_grad_()
+                            expected[7] = torch.autograd.grad(getattr(torch.nn.functional, name)(lane, **opts), lane, seed[7:])[0][0]
+                            self.same(fr.autograd.grad(output,a,native(seed))[0],expected)
 
     def test_celu_double_forward_and_float_backward_scalar_stages(self):
         for alpha in (.7, 3.7, 1e-40, 1e-100, 1e38):
