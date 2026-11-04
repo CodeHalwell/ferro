@@ -160,15 +160,18 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
     // composed graph: unreached cells (ended rows, segments cut off by
     // truncation) must stay out of every batched product, where 0 times a
     // nonfinite saved value would otherwise be NaN.
-    let mut live = vec![seeds.get(1).is_some_and(Option::is_some) || seeds.get(2).is_some_and(Option::is_some); batch];
+    // Hidden and cell state are tracked apart: with only c_T seeded, the output gate is disconnected from the loss.
+    let mut live_h = vec![seeds.get(1).is_some_and(Option::is_some); batch];
+    let mut live_c = vec![seeds.get(2).is_some_and(Option::is_some); batch];
     let mut reached = vec![false; time * batch];
     for t in (0..time).rev() {
         let mut dh_prev = dh.clone();
         let mut dc_prev = dc.clone();
         for b in (0..batch).filter(|&b| t < s.lengths[b]) {
-            if !(live[b] || gout.is_some()) { continue; }
+            let through_h = live_h[b] || gout.is_some();
+            if !(through_h || live_c[b]) { continue; }
             reached[t * batch + b] = true;
-            live[b] = true;
+            (live_h[b], live_c[b]) = (true, true);
             let row = b * width;
             let dhb = &mut dh[row..][..width];
             if let Some(g) = &gout { for (d, v) in dhb.iter_mut().zip(&g[t * bh_len + row..][..width]) { *d += v; } }
@@ -195,11 +198,11 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
                     let cp = &s.c_in[t * bh_len + row..][..width];
                     for j in 0..width {
                         let (i, f, g, o, tc) = (act[j], act[width + j], act[2 * width + j], act[3 * width + j], extra[j]);
-                        let dct = dc[row + j] + dhb[j] * o * (1. - tc * tc);
+                        let dct = if through_h { dc[row + j] + dhb[j] * o * (1. - tc * tc) } else { dc[row + j] };
                         dab[j] = dct * g * i * (1. - i);
                         dab[width + j] = dct * cp[j] * f * (1. - f);
                         dab[2 * width + j] = dct * i * (1. - g * g);
-                        dab[3 * width + j] = dhb[j] * tc * o * (1. - o);
+                        dab[3 * width + j] = if through_h { dhb[j] * tc * o * (1. - o) } else { 0. };
                         dc_prev[row + j] = dct * f;
                     }
                 }
@@ -216,7 +219,7 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
         if s.truncate.is_some_and(|k| t > 0 && t % k == 0) {
             dh_prev.iter_mut().for_each(|v| *v = 0.);
             dc_prev.iter_mut().for_each(|v| *v = 0.);
-            live.iter_mut().for_each(|l| *l = false);
+            live_h.iter_mut().chain(&mut live_c).for_each(|l| *l = false);
         }
         dh = dh_prev;
         dc = dc_prev;
@@ -237,6 +240,6 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
         for (cell, _) in reached.iter().enumerate().filter(|(_, r)| !**r) { dx[cell * features..][..features].fill(0.); }
         let dx = Tensor::from_vec(dx, &[time, batch, features])?;
         let dc0 = if s.kind == CellKind::Lstm { Tensor::from_vec(dc, &[batch, width])? } else { Tensor::zeros(&[batch, width]) };
-        Ok(([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh], live.contains(&true)))
+        Ok(([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh], live_h.contains(&true) || live_c.contains(&true)))
     })
 }

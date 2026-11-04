@@ -132,3 +132,19 @@ fn truncated_segments_cut_off_from_the_loss_stay_out_of_weight_gradients() {
         }
     }
 }
+
+#[test]
+fn lstm_cell_state_only_loss_skips_the_disconnected_output_gate() {
+    let x = t(&[1.], &[1, 1, 1]).requires_grad_(true).unwrap();
+    let w = [t(&[1.; 4], &[4, 1]).requires_grad_(true).unwrap(), t(&[1.; 4], &[4, 1]).requires_grad_(true).unwrap()];
+    let bi = t(&[0., 0., 0., f32::NAN], &[4]);
+    let init = RecurrentState { h: t(&[0.], &[1, 1]), c: Some(t(&[0.], &[1, 1])) };
+    let grads = |fused: bool| {
+        let out = if fused { unroll_cell(CellKind::Lstm, &x, &init, &w[0], &w[1], Some(&bi), None, &[1], None, None).unwrap() } else { composed(CellKind::Lstm, &x, &init, &w, [Some(&bi), None], &[1], None) };
+        out.state.c.unwrap().sum().backward();
+        let g = w[0].grad().unwrap().to_vec(); w.iter().chain([&x]).for_each(|p| p.zero_grad()); g
+    };
+    let (fused, reference) = (grads(true), grads(false));
+    assert!(reference.iter().all(|v| v.is_finite()), "{reference:?}");
+    for (p, q) in fused.iter().zip(&reference) { assert!((p - q).abs() < 2e-5, "{p} != {q}"); }
+}
