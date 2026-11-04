@@ -32,26 +32,25 @@ impl Tensor {
         let steps: Vec<Vec<Vec<usize>>> = axes.iter().zip(&strides).map(|(ranges, &stride)| {
             ranges.iter().map(|&(s, e, k)| (s..e).step_by(k).map(|p| p * stride).collect()).collect()
         }).collect();
-        let mut point = vec![0usize; axes.len()];
-        let mut windows = Vec::with_capacity(count);
-        for _ in 0..count {
-            let mut offsets = vec![0usize];
-            for (axis, &p) in steps.iter().zip(&point) {
-                offsets = offsets.iter().flat_map(|&o| axis[p].iter().map(move |&s| o + s)).collect();
-            }
-            windows.push(offsets);
-            for d in (0..point.len()).rev() { point[d] += 1; if point[d] < axes[d].len() { break; } point[d] = 0; }
-        }
         let data = self.to_vec();
-        let (mut flat, mut local) = (Vec::with_capacity(planes * count), Vec::with_capacity(planes * count));
-        for plane in 0..planes {
-            let values = &data[plane * volume..(plane + 1) * volume];
-            for window in &windows {
-                let mut best = window[0];
-                for &o in &window[1..] { if values[o].is_nan() || values[o] > values[best] { best = o; } }
-                flat.push((plane * volume + best) as i64);
-                local.push(best as i64);
+        let (mut flat, mut local) = (vec![0i64; planes * count], vec![0i64; planes * count]);
+        // One window's offsets live at a time, so memory stays O(window), not O(output * window).
+        let (mut point, mut offsets) = (vec![0usize; axes.len()], Vec::new());
+        for window in 0..count {
+            offsets.clear();
+            offsets.push(0usize);
+            for (axis, &p) in steps.iter().zip(&point) {
+                let prior = std::mem::take(&mut offsets);
+                offsets.extend(prior.iter().flat_map(|&o| axis[p].iter().map(move |&s| o + s)));
             }
+            for plane in 0..planes {
+                let values = &data[plane * volume..(plane + 1) * volume];
+                let mut best = offsets[0];
+                for &o in &offsets[1..] { if values[o].is_nan() || values[o] > values[best] { best = o; } }
+                flat[plane * count + window] = (plane * volume + best) as i64;
+                local[plane * count + window] = best as i64;
+            }
+            for d in (0..point.len()).rev() { point[d] += 1; if point[d] < axes[d].len() { break; } point[d] = 0; }
         }
         Ok((Tensor::from_vec_i64(flat, &out_shape)?, Tensor::from_vec_i64(local, &out_shape)?))
     }
