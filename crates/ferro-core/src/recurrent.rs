@@ -59,7 +59,7 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
         if !resets.is_empty() { state=merge(&state,initial,&resets)?; }
         let full=active.len()==batch;
         if truncate.is_some_and(|k| time_index>0 && time_index%k==0) { state=if full { state.detach() } else { merge(&state,&state.detach(),&active)? }; }
-        let x=input.index_select(0,&[time_index])?.reshape(&[batch,input.shape()[2]])?;
+        let x=input.narrow(0,time_index,1)?.reshape(&[batch,input.shape()[2]])?;
         let (x,prev)=if full { (x,state.clone()) } else { (x.index_select(0,&active)?,state.rows(&active)?) };
         let next=cell(&x,&prev)?; next.validate()?;
         if next.h.shape()!=[active.len(),width] || next.c.is_some()!=initial.c.is_some() { return Err(invalid("cell changed state shape or kind")); }
@@ -81,15 +81,18 @@ fn merge(base: &RecurrentState, other: &RecurrentState, rows: &[usize]) -> Resul
     base.zip(other,|a,b| Tensor::cat(&[a.clone(),b.clone()],0)?.index_select(0,&pick))
 }
 
-fn gate(t: &Tensor, g: usize, h: usize) -> Result<Tensor> { t.index_select(1, &(g*h..(g+1)*h).collect::<Vec<_>>()) }
+fn gate(t: &Tensor, g: usize, h: usize) -> Result<Tensor> { t.narrow(1,g*h,h)?.contiguous() }
 /// Gate order [reset, update, new]. Reset is applied AFTER the recurrent
 /// affine, including b_hh,new: n=tanh(a_new + r*b_new); h'=(1-z)*n+z*h.
 pub fn gru_cell(x: &Tensor, h: &Tensor, wi: &Tensor, wh: &Tensor, bi: Option<&Tensor>, bh: Option<&Tensor>) -> Result<Tensor> {
     let (a,b)=affines(x,h,wi,wh,bi,bh,3)?;
+    gru_gates(&a,&b,h)
+}
+fn gru_gates(a: &Tensor, b: &Tensor, h: &Tensor) -> Result<Tensor> {
     let n=h.shape()[1];
-    let r=gate(&a,0,n)?.add(&gate(&b,0,n)?)?.sigmoid();
-    let z=gate(&a,1,n)?.add(&gate(&b,1,n)?)?.sigmoid();
-    let candidate=gate(&a,2,n)?.add(&r.mul(&gate(&b,2,n)?)?)?.tanh();
+    let r=gate(a,0,n)?.add(&gate(b,0,n)?)?.sigmoid();
+    let z=gate(a,1,n)?.add(&gate(b,1,n)?)?.sigmoid();
+    let candidate=gate(a,2,n)?.add(&r.mul(&gate(b,2,n)?)?)?.tanh();
     Tensor::ones(z.shape()).sub(&z)?.mul(&candidate)?.add(&z.mul(h)?)
 }
 /// Gate order [input, forget, candidate, output]. No implicit forget bias.
@@ -98,10 +101,53 @@ pub fn lstm_cell(x: &Tensor, h: &Tensor, c: &Tensor, wi: &Tensor, wh: &Tensor, b
     check(c)?;
     if c.shape()!=h.shape() { return Err(invalid("cell and hidden shapes differ")); }
     let (a,b)=affines(x,h,wi,wh,bi,bh,4)?;
-    let gates=a.add(&b)?; let n=h.shape()[1];
+    lstm_gates(&a,&b,c)
+}
+fn lstm_gates(a: &Tensor, b: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)> {
+    let gates=a.add(b)?; let n=c.shape()[1];
     let c=gate(&gates,1,n)?.sigmoid().mul(c)?.add(&gate(&gates,0,n)?.sigmoid().mul(&gate(&gates,2,n)?.tanh())?)?;
     let h=gate(&gates,3,n)?.sigmoid().mul(&c.tanh())?;
     Ok((h,c))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CellKind { Rnn, Gru, Lstm }
+
+/// `unroll` over a built-in tanh RNN, GRU or LSTM cell. W_ih is applied to every
+/// timestep in one GEMM before the loop and W_hh is transposed once, so each
+/// step costs one [B,H]x[H,G*H] product. Padded positions are zeroed before
+/// the projection, which keeps NaN padding out of the weight gradient.
+#[allow(clippy::too_many_arguments)]
+pub fn unroll_cell(kind: CellKind, input: &Tensor, initial: &RecurrentState, wi: &Tensor, wh: &Tensor, bi: Option<&Tensor>, bh: Option<&Tensor>, lengths: &[usize], reset: Option<&[bool]>, truncate: Option<usize>) -> Result<UnrollOutput> {
+    for t in [input,wi,wh].into_iter().chain(bi).chain(bh) { check(t)?; }
+    initial.validate()?;
+    if (kind==CellKind::Lstm)!=initial.c.is_some() { return Err(invalid("LSTM needs cell state; RNN/GRU must not carry one")); }
+    if input.shape().len()!=3 { return Err(invalid("input must be [T,B,I]")); }
+    let (time,batch,features)=(input.shape()[0],input.shape()[1],input.shape()[2]);
+    let width=initial.h.shape()[1];
+    let gates=width.checked_mul(match kind { CellKind::Rnn => 1, CellKind::Gru => 3, CellKind::Lstm => 4 }).ok_or_else(|| invalid("gate width overflow"))?;
+    if wi.shape()!=[gates,features] || wh.shape()!=[gates,width] { return Err(invalid("weights must be [G*H,I] and [G*H,H]")); }
+    if [bi,bh].into_iter().flatten().any(|b| b.shape()!=[gates]) { return Err(invalid("bias must be [G*H]")); }
+    if lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
+    let x=if lengths.iter().all(|&n| n==time) { input.clone() } else {
+        let keep=(0..time).flat_map(|t| lengths.iter().map(move |&n| t<n)).collect();
+        Tensor::where_cond(&Tensor::from_vec_bool(keep,&[time,batch,1])?,input,&Tensor::zeros(&[1]))?
+    };
+    let mut projected=x.reshape(&[time*batch,features])?.matmul(&wi.transpose(0,1)?.contiguous()?)?;
+    if let Some(b)=bi { projected=projected.add(b)?; }
+    let projected=projected.reshape(&[time,batch,gates])?;
+    let recurrent=wh.transpose(0,1)?.contiguous()?;
+    // Bias rows are identical, so any A of them serve A active rows without a per-step broadcast.
+    let bias=bh.map(|b| b.expand(&[batch,gates])?.contiguous()).transpose()?;
+    unroll(&projected,initial,lengths,reset,truncate,|a,s| {
+        let mut b=s.h.matmul(&recurrent)?;
+        if let Some(bias)=&bias { b=b.add(&bias.narrow(0,0,b.shape()[0])?)?; }
+        Ok(match kind {
+            CellKind::Rnn => RecurrentState { h:a.add(&b)?.tanh(), c:None },
+            CellKind::Gru => RecurrentState { h:gru_gates(a,&b,&s.h)?, c:None },
+            CellKind::Lstm => { let (h,c)=lstm_gates(a,&b,s.c.as_ref().expect("validated LSTM state"))?; RecurrentState { h,c:Some(c) } }
+        })
+    })
 }
 
 fn invalid(msg: &str) -> Error { Error::InvalidShape { op: "recurrent", msg: msg.into() } }

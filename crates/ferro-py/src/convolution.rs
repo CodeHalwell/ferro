@@ -35,12 +35,18 @@ fn fold2d(x: &PyTensor, output_size: [usize;2], kernel: [usize;2], stride: [usiz
     x.inner.fold2d(output_size,kernel,stride,padding,dilation).map(PyTensor::wrap).map_err(map_err)
 }
 #[pyfunction]
+fn conv3d_options(x: &PyTensor, weight: &PyTensor, stride: [usize;3], padding: [usize;3], dilation: [usize;3], groups: usize) -> PyResult<PyTensor> {
+    cpu(&[x,weight])?;
+    x.inner.conv3d_with_options(&weight.inner,stride,padding,dilation,groups).map(PyTensor::wrap).map_err(map_err)
+}
+#[pyfunction]
 fn max_pool_windows(x: &PyTensor, axes: Vec<Vec<(usize,usize,usize)>>) -> PyResult<(PyTensor, PyTensor)> {
     cpu(&[x])?;
     x.inner.max_pool_windows(&axes).map(|(f,l)| (PyTensor::wrap(f),PyTensor::wrap(l))).map_err(map_err)
 }
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(max_pool_windows,m)?)?;
+    m.add_function(wrap_pyfunction!(conv3d_options,m)?)?;
     m.add_function(wrap_pyfunction!(conv2d_options,m)?)?;
     m.add_function(wrap_pyfunction!(unfold2d,m)?)?;
     m.add_function(wrap_pyfunction!(fold2d,m)?)?;

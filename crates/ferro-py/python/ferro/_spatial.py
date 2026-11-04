@@ -216,6 +216,8 @@ def conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     zero = x.narrow(0, 0, 0).sum() + weight.narrow(0, 0, 0).sum()
     if x.shape[0] == 0:
         result = Tensor.zeros(shape) + zero
+    elif x.dtype == 'float32' and weight.dtype == 'float32':
+        result = _native.conv3d_options(x, weight, list(s), list(p), list(d), groups)
     else:
         planes = []
         for out_depth in range(spatial[0]):

@@ -157,3 +157,41 @@ fn batched_unroll_matches_per_row_reference_and_steps_once_per_time() {
         x.zero_grad(); h0.zero_grad(); c0.zero_grad();
     }
 }
+
+#[test]
+fn hoisted_cell_unroll_matches_closure_unroll_and_ignores_nan_padding() {
+    let (time,batch,width)=(4,3,2);
+    let lengths=[4,2,3];
+    let mut data=(0..time*batch*2).map(|i| ((i*5%13) as f32-6.0)*0.1).collect::<Vec<_>>();
+    for t in 0..time { for b in 0..batch { if t>=lengths[b] { data[(t*batch+b)*2]=f32::NAN; } } }
+    let mut reset=vec![false;time*batch]; reset[batch+2]=true;
+    for (kind,gates) in [(CellKind::Rnn,1),(CellKind::Gru,3),(CellKind::Lstm,4)] {
+        let param=|seed: usize, n: usize| t(&(0..n).map(|i| (((i+seed)*7%17) as f32-8.0)*0.05).collect::<Vec<_>>(), &[n]).requires_grad_(true).unwrap();
+        let (wi,wh)=(param(1,gates*width*2).reshape(&[gates*width,2]).unwrap(),param(2,gates*width*width).reshape(&[gates*width,width]).unwrap());
+        let (bi,bh)=(param(3,gates*width),param(4,gates*width));
+        let leaves=[wi.clone(),wh.clone(),bi.clone(),bh.clone()];
+        let x=t(&data,&[time,batch,2]).requires_grad_(true).unwrap();
+        let h0=t(&[0.1,-0.2,0.3,0.4,-0.1,0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let c0=(kind==CellKind::Lstm).then(|| t(&[0.2,0.1,-0.3,0.1,0.4,-0.2], &[batch,width]));
+        let init=RecurrentState { h:h0.clone(), c:c0 };
+        let run=|hoisted: bool| {
+            let out=if hoisted { unroll_cell(kind,&x,&init,&wi,&wh,Some(&bi),Some(&bh),&lengths,Some(&reset),Some(3)).unwrap() } else {
+                unroll(&x,&init,&lengths,Some(&reset),Some(3),|x,s| Ok(match kind {
+                    CellKind::Rnn => RecurrentState { h:rnn_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
+                    CellKind::Gru => RecurrentState { h:gru_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
+                    CellKind::Lstm => { let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().unwrap(),&wi,&wh,Some(&bi),Some(&bh))?; RecurrentState { h,c:Some(c) } }
+                })).unwrap()
+            };
+            out.outputs.sum().add(&out.state.h.sum()).unwrap().backward();
+            let grads=leaves.iter().chain([&x,&h0]).map(|p| { let g=p.grad().unwrap().to_vec(); p.zero_grad(); g }).collect::<Vec<_>>();
+            (out.outputs.to_vec(),grads)
+        };
+        let (hoisted,hg)=run(true); let (reference,rg)=run(false);
+        close(&t(&hoisted,&[hoisted.len()]),&reference);
+        for (a,b) in hg.iter().zip(&rg) { assert!(a.iter().all(|v| v.is_finite())); close(&t(a,&[a.len()]),b); }
+    }
+    let x=Tensor::zeros(&[2,1,3]); let init=RecurrentState { h:Tensor::zeros(&[1,2]), c:None };
+    assert!(unroll_cell(CellKind::Lstm,&x,&init,&Tensor::zeros(&[8,3]),&Tensor::zeros(&[8,2]),None,None,&[2],None,None).is_err());
+    assert!(unroll_cell(CellKind::Gru,&x,&init,&Tensor::zeros(&[6,2]),&Tensor::zeros(&[6,2]),None,None,&[2],None,None).is_err());
+    assert!(unroll_cell(CellKind::Rnn,&x,&init,&Tensor::zeros(&[2,3]),&Tensor::zeros(&[2,2]),None,None,&[3],None,None).is_err());
+}

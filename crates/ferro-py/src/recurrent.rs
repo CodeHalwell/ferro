@@ -44,17 +44,9 @@ fn unroll(kind: &str, input: &PyTensor, initial: &PyState, weight_ih: &PyTensor,
     if !matches!(kind,"rnn"|"gru"|"lstm") || (kind=="lstm") != initial.inner.c.is_some() {
         return Err(PyValueError::new_err("kind must be rnn/gru with hidden-only state, or lstm with hidden and cell state"));
     }
-    let wi=&weight_ih.inner; let wh=&weight_hh.inner;
-    let bi=bias_ih.map(|t| &t.inner); let bh=bias_hh.map(|t| &t.inner);
-    recurrent::unroll(&input.inner,&initial.inner,&lengths,reset.as_deref(),truncate,|x,s| {
-        if kind=="lstm" {
-            let (h,c)=recurrent::lstm_cell(x,&s.h,s.c.as_ref().unwrap(),wi,wh,bi,bh)?;
-            Ok(RecurrentState { h,c:Some(c) })
-        } else {
-            let h=if kind=="rnn" { recurrent::rnn_cell(x,&s.h,wi,wh,bi,bh)? } else { recurrent::gru_cell(x,&s.h,wi,wh,bi,bh)? };
-            Ok(RecurrentState { h,c:None })
-        }
-    }).map(|inner| PyUnroll { inner }).map_err(map_err)
+    let cell=match kind { "rnn" => recurrent::CellKind::Rnn, "gru" => recurrent::CellKind::Gru, _ => recurrent::CellKind::Lstm };
+    recurrent::unroll_cell(cell,&input.inner,&initial.inner,&weight_ih.inner,&weight_hh.inner,bias_ih.map(|t| &t.inner),bias_hh.map(|t| &t.inner),&lengths,reset.as_deref(),truncate)
+        .map(|inner| PyUnroll { inner }).map_err(map_err)
 }
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyState>()?;

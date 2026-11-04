@@ -26,6 +26,7 @@ pub mod ceil;
 pub mod celu;
 pub mod clamp;
 pub mod conv2d;
+pub mod conv3d;
 mod conv2d_f64;
 pub mod copysign;
 pub mod cos;
