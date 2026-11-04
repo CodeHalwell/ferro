@@ -110,3 +110,25 @@ fn fused_path_keeps_unroll_argument_validation() {
     assert!(unroll_cell(CellKind::Rnn, &x, &init, &wi, &wh, None, None, &[2], Some(&[false]), None).is_err());
     assert!(unroll_cell(CellKind::Rnn, &x, &init, &wi, &wh, None, None, &[2], Some(&[false, false]), None).is_ok());
 }
+
+#[test]
+fn truncated_segments_cut_off_from_the_loss_stay_out_of_weight_gradients() {
+    for (kind, gates) in [(CellKind::Rnn, 1), (CellKind::Gru, 3), (CellKind::Lstm, 4)] {
+        let x = t(&[0., 0., 0.2, 0.3], &[2, 1, 2]).requires_grad_(true).unwrap();
+        let w = [t(&vec![1.; gates * 2], &[gates, 2]).requires_grad_(true).unwrap(), t(&vec![1.; gates], &[gates, 1]).requires_grad_(true).unwrap()];
+        let init = RecurrentState { h: t(&[f32::INFINITY], &[1, 1]).requires_grad_(true).unwrap(), c: (kind == CellKind::Lstm).then(|| t(&[0.5], &[1, 1])) };
+        let grads = |fused: bool| {
+            let out = if fused { unroll_cell(kind, &x, &init, &w[0], &w[1], None, None, &[2], None, Some(1)).unwrap() } else { composed(kind, &x, &init, &w, [None, None], &[2], Some(1)) };
+            out.state.h.sum().backward();
+            let h0 = init.h.grad().map(|g| g.to_vec()); init.h.zero_grad();
+            (w.iter().map(|p| { let g = p.grad().unwrap().to_vec(); p.zero_grad(); g }).collect::<Vec<_>>(), h0)
+        };
+        let (fused, reference) = (grads(true), grads(false));
+        assert_eq!(fused.1.is_some(), reference.1.is_some(), "{kind:?} initial-state gradient presence");
+        // GRU carries z * h, so its infinite state genuinely reaches the kept segment.
+        if kind != CellKind::Gru { assert!(reference.0.iter().flatten().all(|v| v.is_finite()), "{kind:?} reference"); }
+        for (a, b) in fused.0.iter().zip(&reference.0) {
+            for (p, q) in a.iter().zip(b) { assert!(p.is_nan() == q.is_nan() && (p.is_nan() || (p - q).abs() < 2e-5), "{kind:?}: {p} != {q}"); }
+        }
+    }
+}

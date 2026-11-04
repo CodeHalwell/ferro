@@ -131,10 +131,10 @@ pub(super) fn sequence(kind: CellKind, x: &Tensor, initial: &RecurrentState, wi:
     let saved = Arc::new(saved);
     let differentiable = vec![true; outputs.len()];
     let mut outputs = Tensor::record_many_optional(outputs, inputs, &differentiable, move |seeds| {
-        let grads = backward(&saved, seeds, &x_saved, &wi_saved, &wh_saved).expect("fused recurrent backward on validated shapes");
+        let (grads, initial) = backward(&saved, seeds, &x_saved, &wi_saved, &wh_saved).expect("fused recurrent backward on validated shapes");
         let [dx, dh0, dc0, dwi, dwh, dbi, dbh] = grads;
-        let mut result = vec![Some(dx), Some(dh0)];
-        if lstm { result.push(Some(dc0)); }
+        let mut result = vec![Some(dx), initial.then_some(dh0)];
+        if lstm { result.push(initial.then_some(dc0)); }
         result.extend([Some(dwi), Some(dwh)]);
         if has_bi { result.push(Some(dbi)); }
         if has_bh { result.push(Some(dbh)); }
@@ -145,7 +145,8 @@ pub(super) fn sequence(kind: CellKind, x: &Tensor, initial: &RecurrentState, wi:
     Ok(UnrollOutput { outputs: outputs_seq, state: RecurrentState { h, c: outputs.next() } })
 }
 
-fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &Tensor) -> Result<[Tensor; 7]> {
+/// Returns the input gradients and whether any cotangent reaches the initial state.
+fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &Tensor) -> Result<([Tensor; 7], bool)> {
     let [time, batch, features, width, gates] = s.dims;
     let (bh_len, hw) = (batch * width, batch * gates);
     let seed = |k: usize| seeds.get(k).and_then(Option::as_ref).map(Tensor::to_vec);
@@ -155,10 +156,19 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
     // Cotangents of the input-side affine (a) and the recurrent-side affine (b); they differ only in GRU's new gate.
     let mut da = vec![0f32; time * hw];
     let mut db = if s.kind == CellKind::Gru { vec![0f32; time * hw] } else { Vec::new() };
+    // Which (step, row) cells some cotangent actually reaches, mirroring the
+    // composed graph: unreached cells (ended rows, segments cut off by
+    // truncation) must stay out of every batched product, where 0 times a
+    // nonfinite saved value would otherwise be NaN.
+    let mut live = vec![seeds.get(1).is_some_and(Option::is_some) || seeds.get(2).is_some_and(Option::is_some); batch];
+    let mut reached = vec![false; time * batch];
     for t in (0..time).rev() {
         let mut dh_prev = dh.clone();
         let mut dc_prev = dc.clone();
         for b in (0..batch).filter(|&b| t < s.lengths[b]) {
+            if !(live[b] || gout.is_some()) { continue; }
+            reached[t * batch + b] = true;
+            live[b] = true;
             let row = b * width;
             let dhb = &mut dh[row..][..width];
             if let Some(g) = &gout { for (d, v) in dhb.iter_mut().zip(&g[t * bh_len + row..][..width]) { *d += v; } }
@@ -195,30 +205,38 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
                 }
             }
         }
-        let side = if s.kind == CellKind::Gru { &db } else { &da };
-        let through = with_grad_enabled(false, || mm(side[t * hw..][..hw].to_vec(), batch, gates, wh))?;
-        for b in (0..batch).filter(|&b| t < s.lengths[b]) {
-            for j in b * width..(b + 1) * width { dh_prev[j] += through[j]; }
+        let step = &reached[t * batch..][..batch];
+        if step.contains(&true) {
+            let side = if s.kind == CellKind::Gru { &db } else { &da };
+            let through = with_grad_enabled(false, || mm(side[t * hw..][..hw].to_vec(), batch, gates, wh))?;
+            for b in (0..batch).filter(|&b| step[b]) {
+                for j in b * width..(b + 1) * width { dh_prev[j] += through[j]; }
+            }
         }
         if s.truncate.is_some_and(|k| t > 0 && t % k == 0) {
             dh_prev.iter_mut().for_each(|v| *v = 0.);
             dc_prev.iter_mut().for_each(|v| *v = 0.);
+            live.iter_mut().for_each(|l| *l = false);
         }
         dh = dh_prev;
         dc = dc_prev;
     }
     let rows = time * batch;
     let side = if s.kind == CellKind::Gru { &db } else { &da };
-    // Ended rows have zero gate cotangents, but their carried state may be nonfinite: 0 * NaN must not reach W_hh.
-    let mut h_in = s.h_in.clone();
-    for t in 0..time { for b in (0..batch).filter(|&b| t >= s.lengths[b]) { h_in[t * bh_len + b * width..][..width].fill(0.); } }
+    let (mut h_in, mut xs) = (s.h_in.clone(), x.to_vec());
+    for (cell, _) in reached.iter().enumerate().filter(|(_, r)| !**r) {
+        h_in[cell * width..][..width].fill(0.);
+        xs[cell * features..][..features].fill(0.);
+    }
     with_grad_enabled(false, || {
         let dwh = Tensor::from_vec(mm_tn(side, &h_in, rows, gates, width)?, &[gates, width])?;
         let dbh = Tensor::from_vec(column_sums(side, gates), &[gates])?;
-        let dwi = Tensor::from_vec(mm_tn(&da, &x.to_vec(), rows, gates, features)?, &[gates, features])?;
+        let dwi = Tensor::from_vec(mm_tn(&da, &xs, rows, gates, features)?, &[gates, features])?;
         let dbi = Tensor::from_vec(column_sums(&da, gates), &[gates])?;
-        let dx = Tensor::from_vec(mm(da.clone(), rows, gates, wi)?, &[time, batch, features])?;
+        let mut dx = mm(da.clone(), rows, gates, wi)?;
+        for (cell, _) in reached.iter().enumerate().filter(|(_, r)| !**r) { dx[cell * features..][..features].fill(0.); }
+        let dx = Tensor::from_vec(dx, &[time, batch, features])?;
         let dc0 = if s.kind == CellKind::Lstm { Tensor::from_vec(dc, &[batch, width])? } else { Tensor::zeros(&[batch, width]) };
-        Ok([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh])
+        Ok(([dx, Tensor::from_vec(dh, &[batch, width])?, dc0, dwi, dwh, dbi, dbh], live.contains(&true)))
     })
 }
