@@ -47,7 +47,7 @@ impl Tensor {
             }
         }
         let out = Tensor::from_vec(y, &out_shape)?;
-        if !self.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
 

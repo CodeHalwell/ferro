@@ -76,7 +76,7 @@ impl Tensor {
         let zv: Vec<f32> = xv.iter().enumerate().map(|(i, &x)| x + bv[i % d]).collect();
         let y: Vec<f32> = zv.iter().map(|&z| act_fwd(act, z)).collect();
         let out = Tensor::from_vec(y, &shape)?;
-        if !self.requires_grad() && !bias.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !bias.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
         Ok(out.record_fn(vec![self.clone(), bias.clone()], move |g| {

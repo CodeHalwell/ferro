@@ -1,4 +1,4 @@
-use ferro_core::{Error, Tensor};
+use ferro_core::{DType, Error, Tensor};
 
 fn scalar(x: f32) -> Tensor { Tensor::scalar(x).requires_grad_(true).unwrap() }
 fn tensor(v: &[f32], shape: &[usize]) -> Tensor {
@@ -207,7 +207,7 @@ fn rejects_unsupported_formulas_and_invalid_seeds_without_grad_side_effects() {
     let x = scalar(0.5);
     x.mul(&x).unwrap().backward();
     let before = x.grad().unwrap().item();
-    assert!(matches!(x.relu().grad_wrt(&[&x], true), Err(Error::Unsupported { .. })));
+    assert!(matches!(x.gelu_erf().grad_wrt(&[&x], true), Err(Error::Unsupported { .. })));
     let custom = Tensor::scalar(1.0).record_fn(vec![x.clone()], |g| vec![g.detach_copy()]);
     assert!(matches!(custom.grad_wrt(&[&x], true), Err(Error::Unsupported { .. })));
     close(&custom.grad_wrt(&[&x], false).unwrap()[0], 1.0);
@@ -219,5 +219,58 @@ fn rejects_unsupported_formulas_and_invalid_seeds_without_grad_side_effects() {
     close(&x.grad().unwrap(), before);
     // An unrelated unsupported branch is not on the selected derivative path.
     let y = scalar(0.8);
-    close(&x.mul(&x).unwrap().add(&y.relu()).unwrap().grad_wrt(&[&x], true).unwrap()[0], 1.0);
+    close(&x.mul(&x).unwrap().add(&y.gelu_erf()).unwrap().grad_wrt(&[&x], true).unwrap()[0], 1.0);
+}
+
+#[test]
+fn rejects_non_float_custom_vjps_before_accumulation() {
+    let x = scalar(2.0);
+    let existing = x.mul(&x).unwrap();
+    existing.backward();
+    for invalid in [Tensor::from_vec_i64(vec![3], &[]).unwrap(), Tensor::from_vec_f64(vec![3.0], &[]).unwrap()] {
+        for repeated in [false, true] {
+            let got = invalid.dtype();
+            let invalid = invalid.clone();
+            let inputs = if repeated { vec![x.clone(), x.clone()] } else { vec![x.clone()] };
+            let custom = Tensor::scalar(5.0).record_fn(inputs, move |g| {
+                if repeated { vec![g.clone(), invalid.clone()] } else { vec![invalid.clone()] }
+            });
+            let error = custom.grad_wrt(&[&x], false).err().expect("invalid gradient dtype must fail");
+            assert_eq!(error, Error::DtypeMismatch { op: "vjp_wrt backward", expected: DType::F32, got });
+            close(&x.grad().unwrap(), 4.0);
+            close(&existing.grad().unwrap(), 1.0);
+            assert!(custom.grad().is_none());
+        }
+    }
+}
+
+#[test]
+fn functional_derivatives_reject_capture_without_changing_grad_state() {
+    use ferro_core::autograd::{is_grad_enabled, with_grad_enabled};
+    use ferro_core::{capture, graph::CompiledChain};
+
+    let x = scalar(2.0);
+    let y = x.mul(&x).unwrap();
+    y.backward();
+    for create_graph in [false, true] {
+        with_grad_enabled(false, || {
+            let source = Tensor::scalar(2.0);
+            let recorded = capture(|| {
+                assert!(matches!(y.grad_wrt(&[&x], create_graph), Err(Error::Unsupported { op: "grad_wrt", .. })));
+                assert!(!is_grad_enabled());
+                let seed = Tensor::scalar(1.0);
+                assert!(matches!(capture(|| y.vjp_wrt(&[&x], &seed, create_graph)), Err(Error::Unsupported { op: "vjp_wrt", .. })));
+                assert!(!is_grad_enabled());
+                source.mul(&source).unwrap()
+            });
+            let compiled = CompiledChain::compile(&recorded).unwrap();
+            source.copy_from(&Tensor::scalar(3.0)).unwrap();
+            close(&compiled.replay().unwrap(), 9.0);
+            close(&x.grad().unwrap(), 4.0);
+            close(&y.grad().unwrap(), 1.0);
+            close(&y.grad_wrt(&[&x], create_graph).unwrap()[0], 4.0);
+            assert!(!is_grad_enabled());
+        });
+        assert!(is_grad_enabled());
+    }
 }

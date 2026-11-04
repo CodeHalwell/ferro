@@ -1,19 +1,24 @@
-//! `rsqrt` operator. Forward: y = 1 / sqrt(x), domain x > 0. Backward:
-//! d/dx rsqrt(x) = -0.5 * x^(-3/2) = -0.5 * y / x, so dx = g * -0.5 * y / x.
-//! No device kernel exists for this op, so both forward and backward go
-//! through the host `raw_binary` path, applied to the tensor with itself.
-
-use crate::error::Result;
-use crate::tensor::{raw_binary, Tensor};
+//! Reciprocal square root. Its adjoint reads the saved output, not the input.
+use crate::{DType, Device, Error, Result, Tensor};
 
 impl Tensor {
     pub fn rsqrt(&self) -> Result<Tensor> {
-        let out = raw_binary("rsqrt", self, self, |v, _| 1.0 / v.sqrt())?.to_device(self.device())?;
-        let x = self.detach_copy();
-        let y = out.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
-            let dydx = raw_binary("rsqrt_dydx", &y, &x, |yy, xx| -0.5 * yy / xx).unwrap();
-            vec![raw_binary("rsqrt_bw", g, &dydx, |gg, d| gg * d).unwrap()]
-        }))
+        if matches!(self.dtype(), DType::Bool | DType::I64) {
+            if self.device() != Device::Cpu {
+                return Err(Error::Unsupported { op: "rsqrt", msg: "integer reciprocal square root requires CPU storage".into() });
+            }
+            return self.to_dtype_autograd(DType::F32, false)?.rsqrt();
+        }
+        let out = crate::typed_math::pointwise_real(self, "rsqrt", |value| 1.0 / value.sqrt(), |value| 1.0 / value.sqrt())?;
+        let saved = out.detach_copy();
+        Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Rsqrt, move |gradient| {
+            let derivative = if saved.dtype() == DType::F64 {
+                Tensor::from_vec_f64(gradient.to_vec_f64().into_iter().zip(saved.to_vec_f64())
+                    .map(|(g, y)| (g * -0.5) * y.powi(3)).collect(), saved.shape()).unwrap()
+            } else {
+                crate::tensor::raw_binary("rsqrt_backward", gradient, &saved, |g, y| (g * -0.5) * y.powi(3)).unwrap()
+            };
+            vec![derivative]
+        }).save_output_version())
     }
 }

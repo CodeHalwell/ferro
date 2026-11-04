@@ -32,6 +32,34 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
+pub(crate) struct SharedSlice(Arc<CachedSlice>);
+
+struct CachedSlice {
+    data: std::mem::ManuallyDrop<CudaSlice<f32>>,
+    alloc: CachingAllocator,
+}
+
+impl SharedSlice {
+    pub(crate) fn new(data: CudaSlice<f32>, alloc: CachingAllocator) -> Self {
+        Self(Arc::new(CachedSlice { data: std::mem::ManuallyDrop::new(data), alloc }))
+    }
+}
+
+impl std::ops::Deref for SharedSlice {
+    type Target = CudaSlice<f32>;
+    fn deref(&self) -> &Self::Target { &self.0.data }
+}
+
+impl Drop for CachedSlice {
+    fn drop(&mut self) {
+        // The last owner retires the original slice exactly once; graph owners
+        // retain this allocation rather than CudaSlice::clone's detached copy.
+        let data = unsafe { std::mem::ManuallyDrop::take(&mut self.data) };
+        self.alloc.recycle(data);
+    }
+}
+
 /// Max recycled slices retained per size bin. Bounds resident pool growth for
 /// shapes that are allocated in bursts then never reused at that multiplicity.
 const MAX_PER_BIN: usize = 64;

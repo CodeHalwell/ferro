@@ -83,7 +83,7 @@ impl Tensor {
             .map(|(i, &h)| h * w[(i / spatial) % c] + b[(i / spatial) % c])
             .collect();
         let out = Tensor::from_vec(y_data, &shape)?;
-        if !self.requires_grad() && !weight.requires_grad() && !bias.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !weight.requires_grad() && !bias.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
 

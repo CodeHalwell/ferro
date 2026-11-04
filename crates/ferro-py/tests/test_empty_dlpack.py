@@ -117,7 +117,7 @@ class EmptyDlpackTests(unittest.TestCase):
                  ((1 << 62, 1 << 62, 0), None, None, "overflows"),
                  ((0,), None, ("ndim", -1), "negative ndim"),
                  ((0,), None, ("byte_offset", 1), "aligned"),
-                 ((0,), None, ("dtype", Dtype(2, 64, 1)), "float32"),
+                 ((0,), None, ("dtype", Dtype(2, 16, 1)), "unsupported DLPack dtype"),
                  ((0,), None, ("device", Device(2, -1)), "device_id")]
         for shape, strides, change, message in cases:
             with self.subTest(shape=shape, message=message):

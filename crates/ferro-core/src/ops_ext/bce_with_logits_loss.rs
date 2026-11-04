@@ -17,6 +17,9 @@ use crate::tensor::{raw_binary, raw_unary_k, unbroadcast, Tensor};
 
 impl Tensor {
     pub fn bce_with_logits_loss(&self, target: &Tensor) -> Result<Tensor> {
+        if self.device() == Device::Cpu && self.shape() == target.shape() {
+            return Ok(self.bce_with_logits_unreduced(target, None)?.mean());
+        }
         let out = raw_binary("bce_with_logits_loss", self, target, |x, t| {
             x.max(0.0) - x * t + (-x.abs()).exp().ln_1p()
         })?

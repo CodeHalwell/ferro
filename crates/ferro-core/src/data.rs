@@ -6,9 +6,8 @@ use crate::error::{Error, Result};
 use crate::rng::Rng;
 use crate::tensor::Tensor;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// An (input, target) pairs source addressable by index.
 pub trait Dataset: Send + Sync {
@@ -139,7 +138,8 @@ pub struct DataLoader<D: Dataset> {
     pub drop_last: bool,
     /// Number of prefetch worker threads (0 = inline, single-threaded).
     pub workers: usize,
-    /// Upper bound on batches buffered ahead of the consumer per cycle.
+    /// Outstanding batches per worker, including loading and reordered results.
+    /// Zero uses one; the total window never exceeds the epoch's batch count.
     pub prefetch: usize,
     pub sampler: Box<dyn Sampler>,
     pub collate: Arc<dyn CollateFn>,
@@ -201,6 +201,7 @@ impl<D: Dataset + 'static> DataLoader<D> {
     }
 
     /// One epoch of batches, in sampler order regardless of worker count.
+    /// Sample-loading and collation errors/panics become ordered batch errors.
     pub fn iter(&self) -> Batches<'_, D> {
         let order = self.sampler.order(self.dataset.len());
         let mut slices: Vec<Vec<usize>> = order
@@ -227,40 +228,81 @@ impl<D: Dataset + 'static> DataLoader<D> {
         }
         let nbatches = slices.len();
         let workers = self.workers.min(nbatches);
+        let capacity = workers.saturating_mul(self.prefetch.max(1)).min(nbatches);
         let (tx, rx) =
-            mpsc::sync_channel::<(usize, Result<(Tensor, Tensor)>)>(workers * self.prefetch.max(1));
+            mpsc::sync_channel::<(usize, Result<(Tensor, Tensor)>)>(capacity);
         let slices = Arc::new(slices);
-        let next_batch = Arc::new(AtomicUsize::new(0));
+        let window = Arc::new(PrefetchWindow {
+            state: Mutex::new(WindowState { next: 0, consumed: 0, cancelled: false }),
+            changed: Condvar::new(), capacity, total: nbatches,
+        });
+        let mut threaded = ThreadedIter {
+            rx: Some(rx), buffer: BTreeMap::new(), next_id: 0, nbatches,
+            window: window.clone(), pending_error: None,
+        };
         for _ in 0..workers {
             let tx = tx.clone();
             let slices = slices.clone();
-            let next_batch = next_batch.clone();
+            let window = window.clone();
             let ds = self.dataset.clone();
             let collate = self.collate.clone();
-            std::thread::spawn(move || loop {
-                let b = next_batch.fetch_add(1, Ordering::SeqCst);
-                if b >= slices.len() {
-                    break;
-                }
-                let items: Result<Vec<(Tensor, Tensor)>> =
-                    slices[b].iter().map(|&i| ds.get(i)).collect();
-                let batch = items.and_then(|items| collate.collate(&items));
+            let spawned = std::thread::Builder::new().spawn(move || loop {
+                let Some(b) = window.claim() else { break };
+                let batch = load_batch(&*ds, &*collate, &slices[b]);
                 if tx.send((b, batch)).is_err() {
                     break;
                 }
             });
+            if let Err(error) = spawned {
+                threaded.stop();
+                threaded.pending_error = Some(Error::Unsupported { op: "DataLoader", msg: format!("cannot start prefetch worker: {error}") });
+                break;
+            }
         }
         drop(tx);
         Batches {
             inline: None,
-            threaded: Some(ThreadedIter {
-                rx,
-                buffer: BTreeMap::new(),
-                next_id: 0,
-                nbatches,
-            }),
+            threaded: Some(threaded),
             _marker: std::marker::PhantomData,
         }
+    }
+}
+
+fn load_batch(ds: &dyn Dataset, collate: &dyn CollateFn, indices: &[usize]) -> Result<(Tensor, Tensor)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let items: Result<Vec<_>> = indices.iter().map(|&i| ds.get(i)).collect();
+        items.and_then(|items| collate.collate(&items))
+    })).unwrap_or_else(|panic| {
+        let message = panic.downcast_ref::<String>().map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("non-string panic");
+        Err(Error::Unsupported { op: "DataLoader", msg: format!("dataset or collate panicked: {message}") })
+    })
+}
+
+struct WindowState { next: usize, consumed: usize, cancelled: bool }
+
+struct PrefetchWindow {
+    state: Mutex<WindowState>,
+    changed: Condvar,
+    capacity: usize,
+    total: usize,
+}
+
+impl PrefetchWindow {
+    fn claim(&self) -> Option<usize> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        while !state.cancelled && state.next < self.total && state.next - state.consumed >= self.capacity {
+            state = self.changed.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+        if state.cancelled || state.next >= self.total { return None; }
+        let next = state.next;
+        state.next += 1;
+        Some(next)
+    }
+
+    fn cancel(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).cancelled = true;
+        self.changed.notify_all();
     }
 }
 
@@ -275,40 +317,62 @@ impl Iterator for InlineIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let slice = self.slices.pop_front()?;
-        let items: Result<Vec<(Tensor, Tensor)>> = slice.iter().map(|&i| self.ds.get(i)).collect();
-        Some(items.and_then(|items| self.collate.collate(&items)))
+        Some(load_batch(self.ds, &*self.collate, &slice))
     }
 }
 
 struct ThreadedIter {
-    rx: mpsc::Receiver<(usize, Result<(Tensor, Tensor)>)>,
+    rx: Option<mpsc::Receiver<(usize, Result<(Tensor, Tensor)>)>>,
     buffer: BTreeMap<usize, Result<(Tensor, Tensor)>>,
     next_id: usize,
     nbatches: usize,
+    window: Arc<PrefetchWindow>,
+    pending_error: Option<Error>,
+}
+
+impl ThreadedIter {
+    fn stop(&mut self) {
+        self.next_id = self.nbatches;
+        self.window.cancel();
+        self.rx = None;
+        self.buffer.clear();
+    }
+}
+
+impl Drop for ThreadedIter {
+    fn drop(&mut self) { self.stop(); }
 }
 
 impl Iterator for ThreadedIter {
     type Item = Result<(Tensor, Tensor)>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(error) = self.pending_error.take() { return Some(Err(error)); }
         if self.next_id >= self.nbatches {
             return None;
         }
         while !self.buffer.contains_key(&self.next_id) {
-            match self.rx.recv() {
+            match self.rx.as_ref()?.recv() {
                 Ok((b, batch)) => {
                     self.buffer.insert(b, batch);
                 }
-                Err(_) => return None,
+                Err(_) => {
+                    let error = Error::Unsupported { op: "DataLoader", msg: format!("prefetch workers stopped before batch {}", self.next_id) };
+                    self.stop();
+                    return Some(Err(error));
+                }
             }
         }
         let batch = self.buffer.remove(&self.next_id)?;
         self.next_id += 1;
+        self.window.state.lock().unwrap_or_else(|e| e.into_inner()).consumed += 1;
+        self.window.changed.notify_all();
         Some(batch)
     }
 }
 
-/// Epoch iterator over batches. Dropping it stops the workers.
+/// Epoch iterator over batches. Drop cancels new work and unblocks worker waits
+/// and sends. Already-running dataset/collate calls finish independently.
 pub struct Batches<'a, D: Dataset> {
     inline: Option<InlineIter<'a>>,
     threaded: Option<ThreadedIter>,

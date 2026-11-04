@@ -21,9 +21,11 @@ impl Tensor {
                 msg: format!("p must be in [0, 1), got {p}"),
             });
         }
-        if !train || p == 0.0 {
+        if !train || p == 0.0 || self.numel() == 0 {
             return Ok(self.clone());
         }
+
+        crate::forward_ad::check_random_operation()?;
 
         let philox = Philox::new(seed);
         let scale = 1.0 / (1.0 - p);
@@ -41,6 +43,7 @@ impl Tensor {
         let out = Tensor::from_vec(out_data, self.shape())?;
 
         let mask = Tensor::from_vec(mask_data, self.shape())?;
+        if crate::forward_ad::is_active() { return self.mul(&mask); }
         Ok(out.record_fn(vec![self.clone()], move |g| {
             vec![raw_binary("dropout_bw", g, &mask, |gg, m| gg * m).unwrap()]
         }))

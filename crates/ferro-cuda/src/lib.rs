@@ -18,7 +18,7 @@ mod kernels;
 mod alloc;
 mod segment;
 mod static_graph;
-pub use static_graph::{StaticPointwiseGraph, StaticPointwiseRun};
+pub use static_graph::{CapturedChain, StaticPointwiseGraph, StaticPointwiseRun};
 
 pub use kernels::{chain_bc_args, chain_source, broadcast_strides, ChainStep};
 
@@ -83,29 +83,14 @@ fn as_i32(op: &'static str, n: usize) -> Result<i32> {
 /// lives on. Core hands these back through `&dyn DeviceBuffer`; the backend
 /// recovers the slice by downcasting via `as_any`.
 pub struct CudaBuf {
-    // ManuallyDrop so `Drop` can move the slice out and hand it to the
-    // caching allocator for recycling instead of freeing it. Deref keeps
-    // every `buf.data.len()` / method call site working unchanged; only
-    // `&buf.data` reference sites need `&*buf.data`.
-    data: std::mem::ManuallyDrop<CudaSlice<f32>>,
+    data: crate::alloc::SharedSlice,
     device: Device,
-    // Allocator this buffer's slice returns to on drop. Cheap Arc clone.
-    alloc: crate::alloc::CachingAllocator,
 }
 
 impl std::ops::Deref for CudaBuf {
     type Target = CudaSlice<f32>;
     fn deref(&self) -> &CudaSlice<f32> {
         &self.data
-    }
-}
-
-impl Drop for CudaBuf {
-    fn drop(&mut self) {
-        // SAFETY: `data` is never touched again after this take (we are in
-        // drop), so the ManuallyDrop is not double-read.
-        let slice = unsafe { std::mem::ManuallyDrop::take(&mut self.data) };
-        self.alloc.recycle(slice);
     }
 }
 
@@ -133,6 +118,17 @@ pub struct CapturedStep {
     _retained: Vec<CudaSlice<f32>>,
 }
 
+struct ScopedAlias<T> {
+    value: Option<T>,
+    relinquish: fn(T),
+}
+
+impl<T> Drop for ScopedAlias<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() { (self.relinquish)(value); }
+    }
+}
+
 impl CapturedStep {
     /// Re-execute the entire captured step with one host call.
     pub fn replay(&self) -> Result<()> {
@@ -144,39 +140,6 @@ impl CapturedStep {
     /// Number of device buffers the graph pins for its lifetime.
     pub fn retained_buffers(&self) -> usize {
         self._retained.len()
-    }
-}
-
-/// A CUDA-graph-captured chain launch. `replay()` re-runs the recorded
-/// launch with one host call, writing into the SAME output buffer every time
-/// (stable-address contract). The graph and the output slice share this
-/// struct's lifetime; dropping it destroys both.
-pub struct CapturedChain {
-    _graph: cudarc::driver::safe::CudaGraph,
-    out: CudaSlice<f32>,
-    buf: CudaBuf,
-    n: usize,
-}
-
-impl CapturedChain {
-    /// Replay the captured launch. Results appear in `output()` afterwards.
-    pub fn replay(&self) -> Result<()> {
-        self._graph.launch().map_err(|e| cuda_err("graph_replay", e))
-    }
-    /// The pre-allocated output buffer (last replay's results).
-    pub fn output(&self) -> &CudaSlice<f32> {
-        &self.out
-    }
-    /// Download the last replay's results to the host. Reads `self.out`
-    /// directly - NOT the `buf` wrapper, whose data is a detached copy.
-    pub fn copy_output_to_host(&self, backend: &CudaBackend) -> Result<Vec<f32>> {
-        backend.dtoh("captured_output", &self.out)
-    }
-    pub fn len(&self) -> usize {
-        self.n
-    }
-    pub fn is_empty(&self) -> bool {
-        self.n == 0
     }
 }
 
@@ -197,16 +160,19 @@ impl CudaBackend {
         // SAFETY: ptr/len come from a live CudaSlice on this stream's
         // context; the alias never outlives this call and is leaked, so
         // ownership stays with `b`.
-        let mut alias: CudaSlice<f32> = unsafe { stream.upgrade_device_ptr(ptr, b.data.len()) };
-        let res = f(&mut alias);
-        let _ = alias.leak();
-        res
+        let mut alias = ScopedAlias {
+            value: Some(unsafe { stream.upgrade_device_ptr::<f32>(ptr, b.data.len()) }),
+            // leak relinquishes the device pointer while dropping its event and
+            // stream owners; ScopedAlias also runs this path during unwind.
+            relinquish: |slice| { let _ = slice.leak(); },
+        };
+        f(alias.value.as_mut().unwrap())
     }
 
     /// Overwrite a device buffer's contents in place, preserving its address
     /// (the stable-address contract captured graphs and in-place ops rely
     /// on). Root-caused fix over the original: this used to `memcpy_htod`
-    /// into `b.data.clone()`, but cudarc's `CudaSlice::clone` is
+    /// into a cloned CudaSlice, but cudarc's `CudaSlice::clone` is
     /// `clone_dtod` - a fresh allocation - so the write landed in a
     /// temporary that was immediately dropped and the real buffer was never
     /// touched.
@@ -427,9 +393,8 @@ impl CudaBackend {
     /// (not freed) on drop. Single construction point for f32 device buffers.
     fn make_buf(&self, data: CudaSlice<f32>) -> CudaBuf {
         CudaBuf {
-            data: std::mem::ManuallyDrop::new(data),
+            data: crate::alloc::SharedSlice::new(data, self.alloc.clone()),
             device: self.device,
-            alloc: self.alloc.clone(),
         }
     }
 
@@ -1001,115 +966,26 @@ impl CudaBackend {
         })
     }
 
-    /// CUDA-graph capture of a fused chain launch, plus a replay method.
-    ///
-    /// `capture_chain` allocates the output buffer FIRST (outside capture),
-    /// then records one chain-kernel launch into a `CudaGraph` on this
-    /// backend's stream and instantiates it. Because the output buffer is
-    /// pre-allocated, every replay writes to the SAME memory - so replay is
-    /// only valid until the returned `CudaSlice` is dropped. This is the
-    /// static-shape, stable-address contract wave 5's step-level graphs
-    /// build on.
+    /// Prepare one captured chain using owned allocations and tracked graph replay.
+    /// Inputs retain their original addresses and remain live after caller handles
+    /// are dropped. In-place input updates remain visible on subsequent replays.
+    /// Capture uses a private stream and never disables context event tracking.
     pub fn capture_chain(
         self: &Arc<Self>,
         steps: &[kernels::ChainStep],
         inputs: &[&dyn DeviceBuffer],
     ) -> Result<CapturedChain> {
-        const OP: &str = "capture_chain";
-        let users = self.static_graphs.lock().unwrap_or_else(|e| e.into_inner());
-        if *users != 0 { return Err(cuda_err(OP, "live static graphs require event tracking")); }
-        assert!(!inputs.is_empty(), "a chain needs at least the seed input");
-        let bufs: Vec<&CudaBuf> = inputs
-            .iter()
-            .map(|b| self.resident(OP, *b))
-            .collect::<Result<Vec<_>>>()?;
-        let n = bufs[0].data.len();
-        // SAFETY: no other stream work is in flight (single-stream backend);
-        // cudarc requires disabling its event tracking for slices created
-        // during capture, so do that around the whole capture scope. The
-        // output buffer is allocated with ASYNC malloc from the stream's
-        // memory pool BEFORE begin_capture, which is legal and keeps the
-        // address stable for replays.
-        // Warm the kernel cache and synchronize BEFORE capture: nvrtc
-        // compile, module load, event creation, and stream syncs are not
-        // capturable operations.
-        let func = self.get_kernel(OP, &kernels::chain_source(steps))?;
-        self.stream.synchronize().map_err(|e| cuda_err(OP, e))?;
-        // Event tracking must be OFF for the whole capture scope: cudarc's
-        // arg()/launch() record events on slices when it is on, and event
-        // records inside a captured region are illegal (capture isolation).
-        unsafe { self.ctx.disable_event_tracking() };
-        let mut out = self.stream.alloc_zeros::<f32>(n).map_err(|e| {
-            unsafe { self.ctx.enable_event_tracking() };
-            cuda_err(OP, e)
+        let arity = steps.iter().try_fold(1usize, |arity, step| match step {
+            ChainStep::Unary(_) => Ok(arity),
+            ChainStep::Binary { other, .. } | ChainStep::BinaryBc { other, .. } if *other < inputs.len() => Ok(arity.max(other + 1)),
+            _ => Err(cuda_err("capture_chain", "chain references a missing input")),
         })?;
-        let captured = (|| -> Result<_> {
-            self.stream
-                .begin_capture(cudarc::driver::sys::CUstreamCaptureMode_enum::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
-                .map_err(|e| {
-                    cuda_err(OP, e)
-                })?;
-            let launched = (|| -> Result<()> {
-                if n == 0 {
-                    return Ok(());
-                }
-                let n_arg = as_u32(OP, n)?;
-                // Raw launch: the safe builder's arg()/launch() do event
-                // bookkeeping and context syncs that are not capturable. The
-                // CudaFunction/CudaSlice internals are inaccessible, so use
-                // the safe builder but with event tracking disabled - which
-                // makes is_managing_stream_synchronization() false and strips
-                // all event work from arg()/launch().
-                let mut launch = self.stream.launch_builder(&func);
-                for buf in &bufs[..kernels::chain_input_count(steps)] {
-                    launch.arg(&*buf.data);
-                }
-                let extra = kernels::chain_bc_args(steps);
-                for v in &extra {
-                    launch.arg(v);
-                }
-                let mut out_view = out.as_view_mut();
-                launch.arg(&mut out_view);
-                launch.arg(&n_arg);
-                unsafe { launch.launch(LaunchConfig::for_num_elems(n_arg)) }
-                    .map_err(|e| {
-                        cuda_err(OP, e)
-                    })?;
-                Ok(())
-            })();
-            match launched {
-                Ok(()) => match self
-                    .stream
-                    .end_capture(cudarc::driver::sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH)
-                {
-                    Ok(Some(graph)) => Ok(graph),
-                    Ok(None) => {
-                        Err(Error::Unsupported {
-                            op: OP,
-                            msg: "stream capture produced an empty graph".into(),
-                        })
-                    }
-                    Err(e) => {
-                        Err(cuda_err(OP, e))
-                    }
-                },
-                Err(e) => {
-                    // Abort the poisoned capture so the stream stays usable.
-                    let _ = self.stream.capture_status();
-                    Err(e)
-                }
-            }
-        })();
-        unsafe { self.ctx.enable_event_tracking() };
-        let graph = captured?;
-        graph.upload().map_err(|e| cuda_err(OP, e))?;
-
-        Ok(CapturedChain {
-            _graph: graph,
-            buf: self.make_buf(out.clone()),
-            out,
-            n,
-        })
+        let leaves = inputs.iter().map(|input| {
+            let buf = self.resident("capture_chain", *input)?;
+            Ok(Arc::new(CudaBuf { data: buf.data.clone(), device: buf.device }) as Arc<dyn DeviceBuffer>)
+        }).collect::<Result<Vec<_>>>()?;
+        let run = StaticPointwiseRun { inputs: (0..arity).collect(), steps: steps.to_vec() };
+        Ok(CapturedChain { graph: self.prepare_pointwise_graph(&[run], leaves)? })
     }
 
     /// Host-slice convenience wrapper: htod every input, run [`chain_dev`]
@@ -1802,6 +1678,11 @@ impl Backend for CudaBackend {
                 ),
             });
         }
+        if !Arc::ptr_eq(idx.data.stream(), &self.stream) {
+            return Err(Error::Unsupported {
+                op: OP, msg: "index buffer belongs to a different CUDA backend stream/context".into(),
+            });
+        }
         // The kernel indexes w by idx[o]*inner + j with unsigned int math;
         // dim_size * inner must stay inside that range.
         as_u32(OP, inner)?;
@@ -2075,6 +1956,45 @@ mod tests {
     use ferro_core::dispatch::naive_matmul;
     use ferro_core::Tensor;
 
+    #[test]
+    fn scoped_alias_relinquishes_on_return_error_and_unwind() {
+        struct Probe { state: Arc<[AtomicUsize; 2]>, owns: bool }
+        impl Drop for Probe {
+            fn drop(&mut self) { if self.owns { self.state[0].fetch_add(1, Ordering::SeqCst); } }
+        }
+        for mode in 0..3 {
+            let state = Arc::new(std::array::from_fn(|_| AtomicUsize::new(0)));
+            let result = std::panic::catch_unwind({
+                let state = state.clone();
+                move || -> std::result::Result<(), ()> {
+                    let _alias = ScopedAlias {
+                        value: Some(Probe { state, owns: true }),
+                        relinquish: |mut probe| {
+                            probe.state[1].fetch_add(1, Ordering::SeqCst);
+                            probe.owns = false;
+                        },
+                    };
+                    match mode { 0 => Ok(()), 1 => Err(()), _ => panic!("injected alias closure panic") }
+                }
+            });
+            assert_eq!(state[0].load(Ordering::SeqCst), 0, "alias must never free the original allocation");
+            assert_eq!(state[1].load(Ordering::SeqCst), 1, "relinquish exactly once");
+            assert_eq!(Arc::strong_count(&state), 1, "alias metadata must not leak");
+            assert_eq!(result.is_err(), mode == 2);
+        }
+    }
+
+    fn backend_or_skip() -> Option<Arc<CudaBackend>> {
+        match CudaBackend::new(0) {
+            Ok(b) => Some(Arc::new(b)),
+            Err(e) => {
+                assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
+                eprintln!("SKIP CUDA unit test: {e}");
+                None
+            }
+        }
+    }
+
     // Compile-level proof that CudaBackend implements the full Backend trait
     // (including the *_dev overrides) and CudaBuf the DeviceBuffer trait.
     #[test]
@@ -2251,13 +2171,7 @@ mod tests {
     /// match the host reference loops bitwise.
     #[test]
     fn gpu_inplace_kernels_mutate_the_original_buffer() {
-        if !is_available() {
-            return;
-        }
-        let backend = match CudaBackend::new(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let Some(backend) = backend_or_skip() else { return };
         let buf = backend.alloc_from_host(&[1.0, 2.0, 3.0, 4.0]).unwrap();
 
         backend.copy_into(buf.as_ref(), &[5.0, 6.0, 7.0, 8.0]).unwrap();
@@ -2349,13 +2263,7 @@ mod tests {
     /// so results agree to f32 tolerance rather than bit-identically.
     #[test]
     fn adamw_capturable_dev_matches_host_reference() {
-        if !is_available() {
-            return;
-        }
-        let backend = match CudaBackend::new(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let Some(backend) = backend_or_skip() else { return };
         let (lr, beta1, beta2, eps, wd) = (0.01f32, 0.9f32, 0.999f32, 1e-8f32, 0.01f32);
         let p0 = vec![0.5f32, -1.0, 2.0, -0.25];
         let g0 = vec![0.1f32, -0.2, 0.3, -0.4];
@@ -2425,13 +2333,7 @@ mod tests {
     /// this test (every replay re-applying step-1's correction).
     #[test]
     fn captured_adamw_advances_bias_correction_across_replays() {
-        if !is_available() {
-            return;
-        }
-        let backend = match CudaBackend::new(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let Some(backend) = backend_or_skip() else { return };
         let (lr, beta1, beta2, eps, wd) = (0.01f32, 0.9f32, 0.999f32, 1e-8f32, 0.0f32);
         let p0 = vec![0.5f32, -1.0, 2.0, -0.25];
         let g0 = vec![0.1f32, -0.2, 0.3, -0.4];
@@ -2470,6 +2372,7 @@ mod tests {
             backend.alloc_from_host(&[0.0f32, 0.0, 0.0]).unwrap(),
         );
         if let Err(e) = backend.begin_step_capture() {
+            assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA capture required: {e}");
             eprintln!("begin_step_capture unsupported: {e}; skipping");
             return;
         }
@@ -2901,13 +2804,7 @@ mod tests {
     /// pass-through baseline, so correctness is not traded for the win.
     #[test]
     fn g6_zero_fresh_allocations_per_step_after_warmup() {
-        if !is_available() {
-            return;
-        }
-        let backend = match CudaBackend::new(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let Some(backend) = backend_or_skip() else { return };
 
         // A small "layer": y = relu(x @ w + b_bcast). Fixed shapes every step,
         // exactly as a real training loop re-requests the same buffers.
@@ -2958,10 +2855,7 @@ mod tests {
 
         // Correctness: the recycling allocator must match a pass-through
         // backend bit-for-bit on the same inputs (re-zero-on-hit is correct).
-        let plain = match CudaBackend::new_passthrough(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let plain = Arc::new(CudaBackend::new_passthrough(0).expect("pass-through backend after successful CUDA setup"));
         let px = plain.alloc_from_host(&backend.copy_to_host(x.as_ref()).unwrap()).unwrap();
         let pw = plain.alloc_from_host(&backend.copy_to_host(w.as_ref()).unwrap()).unwrap();
         let pb = plain.alloc_from_host(&backend.copy_to_host(b.as_ref()).unwrap()).unwrap();
@@ -2988,10 +2882,7 @@ mod tests {
     /// the GEMM-skip path (bot review finding on PR #12).
     #[test]
     fn matmul_k_zero_is_zeroed_even_with_dirty_pool() {
-        let backend = match CudaBackend::new(0) {
-            Ok(b) => Arc::new(b),
-            Err(_) => return,
-        };
+        let Some(backend) = backend_or_skip() else { return };
         let (m, n) = (4usize, 3usize);
         // Dirty the m*n bin: allocate a buffer full of non-zero values, drop it
         // so its slice returns to the freelist for the next m*n request.

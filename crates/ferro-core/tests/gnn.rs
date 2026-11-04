@@ -53,6 +53,73 @@ fn scatter_reductions_zero_fill_and_gradients() {
 }
 
 #[test]
+fn zero_width_reductions_do_not_allocate_per_group_storage() {
+    let groups = isize::MAX as usize;
+    for rows in [0, 2] {
+        let ids = if rows == 0 { vec![] } else { vec![groups - 1, groups - 1] };
+        for reduce in [Aggr::Sum, Aggr::Mean, Aggr::Max, Aggr::Min] {
+            let x = Tensor::from_vec(vec![], &[rows, 0]).unwrap().requires_grad_(true).unwrap();
+            let y = scatter(&x, &ids, groups, reduce).unwrap();
+            assert_eq!(y.shape(), &[groups, 0]);
+            assert_eq!(y.numel(), 0);
+            y.sum().backward();
+            assert_eq!(x.grad().unwrap().shape(), &[rows, 0]);
+            assert!(x.grad().unwrap().to_vec().is_empty());
+            assert!(scatter(&x, &[groups], groups, reduce).is_err());
+        }
+    }
+    let x = Tensor::from_vec(vec![], &[2, 0]).unwrap().requires_grad_(true).unwrap();
+    let y = ferro_core::segment::mean(&x, &[groups - 1, groups - 1], groups).unwrap();
+    y.sum().backward();
+    assert_eq!(x.grad().unwrap().shape(), &[2, 0]);
+}
+
+#[test]
+fn scatter_rejects_unsupported_dtypes_without_panicking() {
+    let inputs = [
+        Tensor::from_vec_i64(vec![1, 2], &[2]).unwrap(),
+        Tensor::from_vec_f64(vec![1., 2.], &[2]).unwrap(),
+        Tensor::from_vec_f16_bits(vec![0x3c00, 0x4000], &[2]).unwrap(),
+        Tensor::from_vec_bf16_bits(vec![0x3f80, 0x4000], &[2]).unwrap(),
+    ];
+    for x in inputs {
+        for reduce in [Aggr::Sum, Aggr::Mean, Aggr::Max, Aggr::Min] {
+            assert!(matches!(scatter(&x, &[0, 0], 1, reduce), Err(ferro_core::Error::DtypeMismatch { .. })));
+        }
+    }
+}
+
+#[test]
+fn scatter_cpu_reductions_reject_device_inputs_before_compute() {
+    use ferro_core::dispatch::{Backend, BinaryKind, DeviceBuffer, UnaryKind};
+    use ferro_core::{Device, Error, Result};
+    use std::sync::{Arc, Mutex};
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const DEV: Device = Device::Cuda(232);
+    struct Buffer(usize);
+    impl DeviceBuffer for Buffer {
+        fn device(&self) -> Device { DEV }
+        fn len(&self) -> usize { self.0 }
+        fn as_any(&self) -> &dyn std::any::Any { self }
+    }
+    struct RefuseCompute;
+    impl Backend for RefuseCompute {
+        fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { panic!("unexpected compute") }
+        fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { panic!("unexpected compute") }
+        fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { panic!("unexpected compute") }
+        fn alloc_from_host(&self, data: &[f32]) -> Result<Box<dyn DeviceBuffer>> { Ok(Box::new(Buffer(data.len()))) }
+        fn copy_to_host(&self, _: &dyn DeviceBuffer) -> Result<Vec<f32>> { panic!("must reject before download") }
+        fn unary_dev(&self, _: UnaryKind, _: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> { panic!("must reject before compute") }
+    }
+    ferro_core::register_backend(DEV, Arc::new(RefuseCompute));
+    let x = t(&[1., 2.], &[2]).to_device(DEV).unwrap();
+    for reduce in [Aggr::Mean, Aggr::Max, Aggr::Min] {
+        assert!(matches!(scatter(&x, &[0, 0], 1, reduce), Err(Error::Unsupported { .. })));
+    }
+}
+
+#[test]
 fn edge_index_validation_self_loops_and_round_trip() {
     assert!(EdgeIndex::new(3, vec![0, 1], vec![2]).is_err());
     assert!(EdgeIndex::new(3, vec![0, 3], vec![1, 2]).is_err());
@@ -74,6 +141,49 @@ fn edge_index_validation_self_loops_and_round_trip() {
     std::fs::remove_file(&dir).unwrap();
     let (_, saved) = loaded.iter().find(|(n, _)| n == "edge_index").unwrap();
     assert_eq!(EdgeIndex::from_tensor(saved, 5).unwrap(), e);
+}
+
+#[test]
+fn checked_batch_preserves_empty_graphs_and_rejects_size_overflow() {
+    let empty = EdgeIndex::new(0, vec![], vec![]).unwrap();
+    let graphs = [empty.clone(), toy(), EdgeIndex::new(2, vec![1, 1], vec![0, 0]).unwrap(), empty];
+    let (edges, owner) = EdgeIndex::try_batch(&graphs).unwrap();
+    assert_eq!(edges.num_nodes(), 7);
+    assert_eq!(&edges.src()[8..], &[6, 6]);
+    assert_eq!(&edges.dst()[8..], &[5, 5]);
+    assert_eq!(owner, [1, 1, 1, 1, 1, 2, 2]);
+    assert_eq!(EdgeIndex::batch(&graphs), (edges, owner));
+    assert_eq!(EdgeIndex::try_batch(&[]).unwrap(), (EdgeIndex::new(0, vec![], vec![]).unwrap(), vec![]));
+
+    let capacity = isize::MAX as usize / std::mem::size_of::<usize>() + 1;
+    let huge = EdgeIndex::new(capacity, vec![], vec![]).unwrap();
+    assert!(matches!(EdgeIndex::try_batch(&[huge]), Err(ferro_core::Error::InvalidShape { .. })));
+    let max_nodes = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+    let huge = EdgeIndex::new(max_nodes, vec![], vec![]).unwrap();
+    assert!(matches!(EdgeIndex::try_batch(&[huge.clone(), huge]), Err(ferro_core::Error::InvalidShape { .. })));
+}
+
+#[test]
+fn gcn_validates_nodes_parameters_dtype_and_capture_before_compute() {
+    use ferro_core::Error;
+    let edges = EdgeIndex::new(2, vec![], vec![]).unwrap();
+    let x = Tensor::ones(&[2, 1]);
+    for shape in [vec![], vec![1], vec![1, 1, 1]] {
+        let model = GcnConv::new(1, 1, &Rng::new(1));
+        model.parameters()[0].set(Tensor::ones(&shape));
+        assert!(matches!(model.forward_graph(&x, &edges), Err(Error::InvalidShape { op: "gcn_conv", .. })));
+    }
+    for shape in [vec![], vec![1], vec![1, 2]] {
+        let model = GcnConv::new(1, 2, &Rng::new(1));
+        model.parameters()[1].set(Tensor::ones(&shape));
+        assert!(matches!(model.forward_graph(&x, &edges), Err(Error::InvalidShape { op: "gcn_conv", .. })));
+    }
+    let model = GcnConv::new(1, 1, &Rng::new(1));
+    let max_nodes = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+    let huge = EdgeIndex::new(max_nodes, vec![], vec![]).unwrap();
+    assert!(matches!(model.forward_graph(&x, &huge), Err(Error::InvalidShape { op: "gcn_conv", .. })));
+    assert!(matches!(model.forward_graph(&Tensor::from_vec_i64(vec![1, 2], &[2, 1]).unwrap(), &edges), Err(Error::DtypeMismatch { .. })));
+    assert!(matches!(ferro_core::capture(|| model.forward_graph(&x, &edges)), Err(Error::Unsupported { op: "gcn_conv", .. })));
 }
 
 #[test]

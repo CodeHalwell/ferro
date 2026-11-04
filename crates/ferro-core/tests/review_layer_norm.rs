@@ -47,7 +47,7 @@ impl Backend for Partial {
         self.check("broadcast")?;
         let a = Tensor::from_vec(data(a).to_vec(), sa)?;
         let b = Tensor::from_vec(data(b).to_vec(), sb)?;
-        let out = match k { BinaryKind::Add => a.add(&b), BinaryKind::Sub => a.sub(&b), BinaryKind::Mul => a.mul(&b), BinaryKind::Div => a.div(&b) }?;
+        let out = match k { BinaryKind::Add => a.add(&b), BinaryKind::Sub => a.sub(&b), BinaryKind::Mul => a.mul(&b), BinaryKind::Div => a.div(&b), BinaryKind::ReluBackward => return Err(Error::Unsupported { op: "test backend", msg: "internal ReLU backward broadcast is not implemented".into() }) }?;
         Ok(buffer(out.to_vec()))
     }
 }
@@ -105,4 +105,21 @@ fn layer_norm_strided_input_without_layout_kernels() {
     close(&out, &host.transpose(0, 1).unwrap().layer_norm(None, None, 1e-5).unwrap());
     let compiled = CompiledChain::compile(&out).unwrap();
     close(&compiled.replay().unwrap(), &out);
+}
+
+#[test]
+fn layer_norm_composed_resident_sqrt_keeps_values_and_adjoints() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    register_backend(DEV, Arc::new(Partial("none")));
+    let host = Tensor::from_vec(vec![0.2, -0.7, 1.3, 0.5, 0.1, -0.9], &[2, 3]).unwrap().requires_grad_(true).unwrap();
+    let device = host.detach().to_device(DEV).unwrap().requires_grad_(true).unwrap();
+    let expected = host.layer_norm(None, None, 1e-5).unwrap();
+    let actual = device.layer_norm(None, None, 1e-5).unwrap();
+    assert_eq!(actual.device(), DEV);
+    close(&actual, &expected);
+    let seed = Tensor::from_vec(vec![0.1, 0.3, -0.2, 0.8, -0.4, 0.2], &[2, 3]).unwrap();
+    expected.backward_with(&seed);
+    actual.backward_with(&seed.to_device(DEV).unwrap());
+    assert_eq!(device.grad().unwrap().device(), DEV);
+    close(&device.grad().unwrap(), &host.grad().unwrap());
 }

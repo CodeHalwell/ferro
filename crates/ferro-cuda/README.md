@@ -1,5 +1,10 @@
 # ferro-cuda
 
+For the current Rust kernel-authoring ecosystem and optional compiler plans,
+see [Rust CUDA integration research](../../docs/RUST_CUDA.md), checked 2026-11-03.
+The capability overview below describes the original backend; the broader
+[current ledger](../../docs/CURRENT_STATUS.md) records later additions.
+
 CUDA backend for ferro, implementing ferro-core's `Backend` trait on top of
 [`cudarc`](https://docs.rs/cudarc): cuBLAS sgemm for `matmul`, and tiny
 nvrtc-compiled CUDA C kernels (generated per `UnaryKind`/`BinaryKind`,
@@ -88,7 +93,64 @@ simulation of cuBLAS semantics (no GPU needed).
 
 ## Testing
 
-`cargo test -p ferro-cuda` is green without a GPU: it covers kernel source
+### Captured chain ownership
+
+`capture_chain` retains the original input allocations and backend, and uses the
+same private-stream preparation and cleanup boundary as `StaticPointwiseGraph`.
+Dropping caller input handles cannot return those allocations to the pool while
+the graph still owns them. Context event tracking stays enabled.
+
+Bind the returned handle as mutable: `let mut captured = backend.capture_chain(...)?`.
+`captured.replay()` now takes `&mut self`, so a live output borrow cannot coexist
+with a replay that overwrites it. The handle is neither `Send` nor `Sync`.
+`output()` panics after a failed replay; `copy_output_to_host` returns an error
+for a poisoned graph. Zero-element captured chains are explicitly unsupported.
+
+Input mutation is scoped to the owning backend stream. The older in-place alias
+helper still lacks original-allocation write-event bookkeeping for concurrent
+foreign-stream readers; the unwind repair does not close that gap. Experimental
+whole-training-step capture is separate and retains its existing limitations.
+GPU regressions for retained inputs, changed inputs, broadcasts and failed capture
+cleanup must execute on real hardware before claiming runtime validation.
+
+### Capturable AdamW
+
+The 2026-11-03 optimizer update gives eager AdamW a counter per parameter.
+`AdamW::capturable()` enables its shared device counter only when all parameters
+are on one CUDA device and their counters are equal. Unequal counters leave the
+optimizer in eager mode. Restore into an existing capturable optimizer rejects
+unequal counters before committing state. Calling `capturable()` again preserves
+the current device counter and its allocation.
+
+Each host invocation of a capturable step requires gradients for every parameter
+or none. With none, weights, moments and the device counter remain unchanged.
+A partial set, including a mix of frozen and active parameters, is rejected
+before advancing the counter; the current infallible `step()` API panics on that
+update error.
+
+These checks run when the host invokes the optimizer. Changing freeze flags or
+gradient presence does not change an already-captured CUDA graph; dynamic
+freezing during graph replay is unsupported. Whole-training-step capture retains
+the separate safety limitations described above.
+
+The new contract has CPU/mock regression and compile coverage. Its GPU regression
+is gated and has not executed in this environment; passing host tests does not
+prove CUDA execution.
+
+On a CPU-only machine, run:
+
+```sh
+cargo check -p ferro-cuda --all-targets
+cargo test -p ferro-cuda -- --skip required_cuda_
+```
+
+The filter explicitly excludes the five mandatory GPU residency tests in
+`strided_seed_residency.rs`. Other GPU-gated bodies return early when CUDA is
+unavailable, so a successful harness result is not GPU verification. For full
+GPU validation use `FERRO_REQUIRE_CUDA=1 cargo test -p ferro-cuda`; missing CUDA
+or required capture support then fails instead of silently returning.
+
+The host-executable tests cover kernel source
 generation for every op kind (elementwise including `Gtz`, broadcast binary,
 reduce, sum_dim, fill), the broadcast stride/index math against a host
 reference, the sgemm layout mapping for all four `(ta, tb)` combinations on

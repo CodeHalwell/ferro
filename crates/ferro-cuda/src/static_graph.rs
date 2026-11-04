@@ -9,7 +9,7 @@ static TEST_CONTEXT: Mutex<()> = Mutex::new(());
 thread_local! { static REPLAY_GUARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// Slots 0..leaves.len() are owned leaves; each run appends one output slot.
-/// Only shape-preserving pointwise runs are supported by this first primitive.
+/// Pointwise runs preserve the seed's shape; trailing operands may broadcast.
 pub struct StaticPointwiseRun {
     pub inputs: Vec<usize>,
     pub steps: Vec<ChainStep>,
@@ -20,12 +20,14 @@ struct Command {
     inputs: Vec<usize>,
     output: usize,
     n: u32,
+    extra: Vec<u32>,
 }
 
 impl Command {
     fn enqueue(&self, stream: &CudaStream, pointers: &[u64]) -> Result<()> {
         let mut launch = stream.launch_builder(&self.function);
         for &i in &self.inputs { launch.arg(&pointers[i]); }
+        for value in &self.extra { launch.arg(value); }
         launch.arg(&pointers[self.output]).arg(&self.n);
         // Scalar u64 arguments carry validated device addresses, not forged CudaSlice
         // aliases. Original owners and usage guards are retained by the caller.
@@ -37,6 +39,70 @@ impl Command {
 
 mod native;
 use native::{CaptureSession, GraphOwner};
+
+/// One chain backed by the same ownership and failure boundary as static graphs.
+/// Original input allocations stay pinned; caller-side in-place updates remain
+/// visible. A live output borrow prevents replay from overwriting its allocation.
+/// This owner is neither Send nor Sync, like StaticPointwiseGraph.
+pub struct CapturedChain {
+    pub(super) graph: StaticPointwiseGraph,
+}
+
+impl CapturedChain {
+    /// Replay requires mutable access. Bind the handle with `let mut captured`.
+    /// ```compile_fail
+    /// fn invalid(chain: &mut ferro_cuda::CapturedChain) {
+    ///     let output = chain.output();
+    ///     chain.replay().unwrap();
+    ///     let _ = output.len();
+    /// }
+    /// ```
+    pub fn replay(&mut self) -> Result<()> { self.graph.replay() }
+    /// Borrow the stable output allocation. Panics after a failed replay;
+    /// copy_output_to_host reports the poisoned state as an error instead.
+    pub fn output(&self) -> &CudaSlice<f32> { self.graph.output().expect("captured chain is poisoned") }
+    pub fn copy_output_to_host(&self, backend: &CudaBackend) -> Result<Vec<f32>> {
+        backend.dtoh("captured_output", self.graph.output()?)
+    }
+    pub fn len(&self) -> usize { self.output().len() }
+    pub fn is_empty(&self) -> bool { self.output().is_empty() }
+}
+
+fn validate_runs(runs: &[StaticPointwiseRun], mut sizes: Vec<usize>) -> Result<Vec<usize>> {
+    let invalid = || cuda_err("prepare_static_graph", "invalid pointwise shape, operand or broadcast metadata");
+    if sizes.is_empty() || runs.is_empty() { return Err(invalid()); }
+    for run in runs {
+        if run.inputs.is_empty() || run.steps.is_empty() || run.inputs.iter().any(|&i| i >= sizes.len()) {
+            return Err(invalid());
+        }
+        let n = sizes[run.inputs[0]];
+        as_u32("prepare_static_graph", n)?;
+        if n == 0 { return Err(invalid()); }
+        let mut arity = 1;
+        for step in &run.steps {
+            match step {
+                ChainStep::Unary(_) => {},
+                ChainStep::Binary { other, .. } => {
+                    if *other >= run.inputs.len() || sizes[run.inputs[*other]] != n { return Err(invalid()); }
+                    arity = arity.max(other + 1);
+                },
+                ChainStep::BinaryBc { other, dims, strides, .. } => {
+                    if *other >= run.inputs.len() || dims.len() != strides.len() { return Err(invalid()); }
+                    let elements = dims.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d as usize)).ok_or_else(invalid)?;
+                    if elements != n { return Err(invalid()); }
+                    let last = dims.iter().zip(strides).try_fold(0usize, |acc, (&d, &s)| {
+                        (d as usize).checked_sub(1)?.checked_mul(s as usize)?.checked_add(acc)
+                    }).ok_or_else(invalid)?;
+                    if last > u32::MAX as usize || last >= sizes[run.inputs[*other]] { return Err(invalid()); }
+                    arity = arity.max(other + 1);
+                },
+            }
+        }
+        if arity != run.inputs.len() { return Err(invalid()); }
+        sizes.push(n);
+    }
+    Ok(sizes)
+}
 
 /// A CUDA graph owner shared by pointwise DAG and static model preparation.
 /// The model path lowers supported pointwise, matrix, layout, normalization,
@@ -180,36 +246,17 @@ impl CudaBackend {
         if !self.ctx.is_event_tracking() || self.stream.capture_status().map_err(|e| cuda_err("prepare_static_graph", e))? != sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_NONE {
             return Err(cuda_err("prepare_static_graph", "another capture mode is active"));
         }
-        if leaves.is_empty() || runs.is_empty() { return Err(cuda_err("prepare_static_graph", "empty DAG")); }
         let mut sizes = Vec::new();
         for leaf in &leaves { sizes.push(self.resident("prepare_static_graph", leaf.as_ref())?.len()); }
         // Validate the entire DAG before allocating, compiling or beginning capture.
-        for run in runs {
-            if run.inputs.is_empty() || run.steps.is_empty() || run.inputs.iter().any(|&i| i >= sizes.len()) {
-                return Err(cuda_err("prepare_static_graph", "invalid DAG input or empty run"));
-            }
-            let n = sizes[run.inputs[0]];
-            as_u32("prepare_static_graph", n)?;
-            if n == 0 { return Err(cuda_err("prepare_static_graph", "empty runs are not supported")); }
-            for step in &run.steps {
-                match step {
-                    ChainStep::Unary(_) => {},
-                    ChainStep::Binary { other, .. } if *other < run.inputs.len() && sizes[run.inputs[*other]] == n => {},
-                    _ => return Err(cuda_err("prepare_static_graph", "unsupported broadcast or invalid operand")),
-                }
-            }
-            if kernels::chain_input_count(&run.steps) != run.inputs.len() {
-                return Err(cuda_err("prepare_static_graph", "input arity differs from kernel signature"));
-            }
-            sizes.push(n);
-        }
+        let sizes = validate_runs(runs, sizes)?;
         let mut outputs = Vec::new();
         let mut commands = Vec::new();
         for (i, run) in runs.iter().enumerate() {
             let n = sizes[leaves.len() + i];
             let function = self.get_kernel("prepare_static_graph", &kernels::chain_source(&run.steps))?;
             outputs.push(self.alloc_zeros("prepare_static_graph", n)?);
-            commands.push(Command { function, inputs: run.inputs.clone(), output: leaves.len() + i, n: n as u32 });
+            commands.push(Command { function, inputs: run.inputs.clone(), output: leaves.len() + i, n: n as u32, extra: kernels::chain_bc_args(&run.steps) });
         }
         let capture_stream = self.ctx.new_stream().map_err(|e| cuda_err("prepare_static_graph", e))?;
         let mut flight = native::Flight { graph: None, data: Some((outputs, leaves, commands, self.clone())), calls: Arc::new(native::Driver::new(capture_stream.clone())), streams: vec![self.stream.cu_stream(), capture_stream.cu_stream()], users: &mut users };
@@ -245,6 +292,47 @@ impl CudaBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointwise_validation_checks_all_addresses_before_cuda_work() {
+        let bc = |dims, strides| ChainStep::BinaryBc { kind: BinaryKind::Add, other: 1, dims, strides };
+        let valid = StaticPointwiseRun { inputs: vec![0, 1], steps: vec![bc(vec![2, 3], vec![0, 1])] };
+        assert_eq!(validate_runs(&[valid], vec![6, 3]).unwrap(), vec![6, 3, 6]);
+        for step in [
+            ChainStep::Binary { kind: BinaryKind::Add, other: usize::MAX },
+            ChainStep::Binary { kind: BinaryKind::Add, other: 1 },
+            bc(vec![2, 3], vec![1]),
+            bc(vec![3], vec![1]),
+            bc(vec![0, 3], vec![0, 1]),
+            bc(vec![2, 3], vec![3, 1]),
+            bc(vec![2, 3], vec![u32::MAX, u32::MAX]),
+        ] {
+            let run = StaticPointwiseRun { inputs: vec![0, 1], steps: vec![step] };
+            assert!(validate_runs(&[run], vec![6, 3]).is_err());
+        }
+        for (inputs, steps, sizes) in [
+            (vec![], vec![ChainStep::Unary(UnaryKind::Relu)], vec![2]),
+            (vec![1], vec![ChainStep::Unary(UnaryKind::Relu)], vec![2]),
+            (vec![0], vec![], vec![2]),
+            (vec![0], vec![ChainStep::Unary(UnaryKind::Relu)], vec![0]),
+            (vec![0, 1], vec![ChainStep::Unary(UnaryKind::Relu)], vec![2, 2]),
+        ] {
+            assert!(validate_runs(&[StaticPointwiseRun { inputs, steps }], sizes).is_err());
+        }
+    }
+
+    #[test]
+    fn pointwise_validation_allows_scalar_broadcast_and_checks_later_runs() {
+        let unary = StaticPointwiseRun { inputs: vec![0], steps: vec![ChainStep::Unary(UnaryKind::Relu)] };
+        assert_eq!(validate_runs(&[unary], vec![6, 3]).unwrap(), vec![6, 3, 6], "unused trailing capture inputs remain valid");
+        let runs = [
+            StaticPointwiseRun { inputs: vec![0, 1], steps: vec![ChainStep::BinaryBc { kind: BinaryKind::Mul, other: 1, dims: vec![2, 3], strides: vec![0, 0] }] },
+            StaticPointwiseRun { inputs: vec![2], steps: vec![ChainStep::Unary(UnaryKind::Relu)] },
+        ];
+        assert_eq!(validate_runs(&runs, vec![6, 1]).unwrap(), vec![6, 1, 6, 6]);
+        assert!(validate_runs(&runs, vec![6, 0]).is_err());
+        assert!(validate_runs(&runs, vec![usize::MAX, 1]).is_err());
+    }
 
     #[test]
     fn replay_tracks_leaves_and_exported_output_not_private_scratch() {

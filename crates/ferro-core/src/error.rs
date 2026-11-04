@@ -19,6 +19,10 @@ pub enum Error {
     /// This capability decline must never represent an operational failure.
     /// Adding this public variant requires downstream exhaustive matches to add an arm.
     MaterializeUnavailable,
+    /// The backend has no row-gather kernel; no work was attempted or source mutated.
+    /// Ownership and operational failures must not use this capability decline.
+    /// Adding this public variant requires downstream exhaustive matches to add an arm.
+    GatherUnavailable,
     /// Operands live on different devices.
     DeviceMismatch {
         op: &'static str,
@@ -46,6 +50,7 @@ impl fmt::Display for Error {
             Error::InvalidShape { op, msg } => write!(f, "{op}: invalid shape: {msg}"),
             Error::Unsupported { op, msg } => write!(f, "{op}: unsupported: {msg}"),
             Error::MaterializeUnavailable => write!(f, "materialize_dev: backend materializer unavailable"),
+            Error::GatherUnavailable => write!(f, "gather_rows_dev: backend row gather unavailable"),
             Error::DeviceMismatch { op, lhs, rhs } => {
                 write!(f, "{op}: operands on different devices ({lhs} vs {rhs})")
             }

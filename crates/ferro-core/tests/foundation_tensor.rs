@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 
 const DEV: Device = Device::Cuda(87);
 static LOCK: Mutex<()> = Mutex::new(());
-struct Buffer<T>(Vec<T>);
+struct Buffer<T>(Mutex<Vec<T>>);
 impl<T: Send + Sync + 'static> DeviceBuffer for Buffer<T> {
     fn device(&self) -> Device { DEV }
-    fn len(&self) -> usize { self.0.len() }
+    fn len(&self) -> usize { self.0.lock().unwrap().len() }
     fn as_any(&self) -> &dyn Any { self }
 }
 struct Partial;
@@ -66,22 +66,28 @@ fn partial_backend_reductions_fall_back_with_gradients() {
 }
 
 impl Backend for Partial {
+    fn copy_into_dev(&self, destination: &dyn DeviceBuffer, source: &dyn DeviceBuffer) -> Result<()> {
+        self.write_dev_from_host(destination, &self.copy_to_host(source)?)
+    }
+    fn write_dev_from_host(&self, destination: &dyn DeviceBuffer, values: &[f32]) -> Result<()> {
+        destination.as_any().downcast_ref::<Buffer<f32>>().unwrap().0.lock().unwrap().copy_from_slice(values); Ok(())
+    }
     fn binary_dev(&self, kind: BinaryKind, a: &dyn DeviceBuffer, b: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
         self.binary_bc_dev(kind, a, &[a.len()], b, &[b.len()], &[a.len()])
     }
     fn binary_bc_dev(&self, kind: BinaryKind, a: &dyn DeviceBuffer, sa: &[usize], b: &dyn DeviceBuffer, sb: &[usize], _: &[usize]) -> Result<Box<dyn DeviceBuffer>> {
         let a = Tensor::from_vec(self.copy_to_host(a)?, sa)?;
         let b = Tensor::from_vec(self.copy_to_host(b)?, sb)?;
-        let out = match kind { BinaryKind::Add => a.add(&b)?, BinaryKind::Sub => a.sub(&b)?, BinaryKind::Mul => a.mul(&b)?, BinaryKind::Div => a.div(&b)? };
+        let out = match kind { BinaryKind::Add => a.add(&b)?, BinaryKind::Sub => a.sub(&b)?, BinaryKind::Mul => a.mul(&b)?, BinaryKind::Div => a.div(&b)?, BinaryKind::ReluBackward => return Err(Error::Unsupported { op: "test backend", msg: "internal ReLU backward broadcast is not implemented".into() }) };
         self.alloc_from_host(&out.to_vec())
     }
     fn unary(&self, _: UnaryKind, _: &[f32]) -> Vec<f32> { unreachable!() }
     fn binary(&self, _: BinaryKind, _: &[f32], _: &[f32]) -> Vec<f32> { unreachable!() }
     fn matmul(&self, _: &[f32], _: &[f32], _: usize, _: usize, _: usize) -> Vec<f32> { unreachable!() }
-    fn alloc_from_host(&self, v: &[f32]) -> Result<Box<dyn DeviceBuffer>> { Ok(Box::new(Buffer(v.to_vec()))) }
-    fn copy_to_host(&self, b: &dyn DeviceBuffer) -> Result<Vec<f32>> { Ok(b.as_any().downcast_ref::<Buffer<f32>>().unwrap().0.clone()) }
-    fn alloc_i64_from_host(&self, v: &[i64]) -> Result<Box<dyn DeviceBuffer>> { Ok(Box::new(Buffer(v.to_vec()))) }
-    fn copy_i64_to_host(&self, b: &dyn DeviceBuffer) -> Result<Vec<i64>> { Ok(b.as_any().downcast_ref::<Buffer<i64>>().unwrap().0.clone()) }
+    fn alloc_from_host(&self, v: &[f32]) -> Result<Box<dyn DeviceBuffer>> { Ok(Box::new(Buffer(Mutex::new(v.to_vec())))) }
+    fn copy_to_host(&self, b: &dyn DeviceBuffer) -> Result<Vec<f32>> { Ok(b.as_any().downcast_ref::<Buffer<f32>>().unwrap().0.lock().unwrap().clone()) }
+    fn alloc_i64_from_host(&self, v: &[i64]) -> Result<Box<dyn DeviceBuffer>> { Ok(Box::new(Buffer(Mutex::new(v.to_vec())))) }
+    fn copy_i64_to_host(&self, b: &dyn DeviceBuffer) -> Result<Vec<i64>> { Ok(b.as_any().downcast_ref::<Buffer<i64>>().unwrap().0.lock().unwrap().clone()) }
 }
 
 #[test]

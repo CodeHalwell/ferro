@@ -1,8 +1,5 @@
-//! accumulate_grad's in-place fast path is a pure optimization: it may only
-//! fire when the stored gradient is provably unshared (sole handle, sole
-//! storage reference). These tests pin the observable semantics that gate
-//! protects - shared seed gradients (one backward can hand several inputs
-//! the same tensor) and user-held grad() clones must never be mutated.
+//! Ordinary publication owns or safely steals initial gradients, then updates
+//! existing public slots in place, including handles retained by callers.
 
 use ferro_core::Tensor;
 
@@ -15,16 +12,14 @@ fn leaf(v: &[f32]) -> Tensor {
 
 #[test]
 fn shared_seed_gradients_survive_repeated_accumulation() {
-    // add's backward passes the SAME upstream gradient tensor to both
-    // inputs, so after the first backward a.grad and b.grad share storage.
-    // The second backward accumulates into each slot; an unguarded in-place
-    // add would double-count through the shared buffer.
+    // Shared upstream cotangents must become independently writable slots.
     let a = leaf(&[1.0, 2.0]);
     let b = leaf(&[3.0, 4.0]);
     let loss = a.add(&b).unwrap().sum();
     loss.backward();
     assert_eq!(a.grad().unwrap().to_vec(), vec![1.0, 1.0]);
     assert_eq!(b.grad().unwrap().to_vec(), vec![1.0, 1.0]);
+    assert_ne!(a.grad().unwrap()._storage_ptr(), b.grad().unwrap()._storage_ptr());
 
     loss.backward();
     assert_eq!(a.grad().unwrap().to_vec(), vec![2.0, 2.0]);
@@ -36,18 +31,17 @@ fn shared_seed_gradients_survive_repeated_accumulation() {
 }
 
 #[test]
-fn user_held_grad_clone_keeps_its_value_across_further_accumulation() {
+fn user_held_grad_handle_observes_further_accumulation_like_torch() {
     let x = leaf(&[1.0, 2.0]);
     let loss = x.mul(&x).unwrap().sum();
     loss.backward();
     let held = x.grad().unwrap();
     assert_eq!(held.to_vec(), vec![2.0, 4.0]);
 
-    // The held clone raises the tensor's refcount, so this accumulation must
-    // take the allocating path and leave `held` untouched.
     loss.backward();
     assert_eq!(x.grad().unwrap().to_vec(), vec![4.0, 8.0]);
-    assert_eq!(held.to_vec(), vec![2.0, 4.0], "held grad clone was mutated");
+    assert_eq!(x.grad().unwrap().id(), held.id());
+    assert_eq!(held.to_vec(), vec![4.0, 8.0]);
 }
 
 #[test]

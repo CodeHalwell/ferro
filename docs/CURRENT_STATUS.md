@@ -2,10 +2,364 @@
 
 > Current publication scope and merged-tree evidence: [stabilisation publication](STABILISATION_PUBLICATION.md). Earlier local verification links below are historical provenance, not shipped artifacts. CPU training/restart from PR26 and operators from PR28 are retained.
 
-Updated 2026-09-19. This is the current roadmap status index. The
+Original ledger updated 2026-09-19; the scoped 2026-11-03 continuation is recorded
+below. This is the current roadmap status index. The
 [foundations roadmap](FOUNDATIONS_AND_ARCHITECTURE_ROADMAP.md) retains the
 detailed B0-B7 acceptance criteria; [FUTURE.md](FUTURE.md) and
 [PARITY_ROADMAP.md](PARITY_ROADMAP.md) retain earlier strategy.
+
+## 2026-11-04 active completeness continuation
+
+PyTorch/PyG work continues. The latest green matching checkpoint is
+[candidate31](../verification/completeness-2026-11-03/README.md): 1,092 selected
+source/fixture inputs, 123 matching installed Python files and one native library.
+Python discovers 1,787 cases: 1,757 pass and 30 GPU cases are unavailable
+(1,781 reported executions; 25 skip indicators including a class hiding six cases).
+The corrected fresh wheel passes all 16 focused methods and eight standalones.
+
+Candidate31 adds native CPU F64 RMSprop/Adagrad and affine GroupNorm. Actual-Torch
+trajectories/gradients, typed state and full-precision options, mixed F32/F64
+slots, lazy Adagrad groups, aliased parameters, atomic invalid-state handling and
+fresh-process optimizer/model/RNG continuation are covered. GroupNorm uses its
+existing functional operators; existing typed LRN receives module/training
+controls without a new operator.
+
+The first integration had eight failing Adaptive methods (15 error indicators)
+and all eight GroupNorm methods passed. The binding's step preflight still used
+F32-only validation. Production training_state.rs was repaired and a fresh wheel
+passed full discovery without changing fixtures. First failures remain recorded.
+All 557 workspace Rust/CUDA/build inputs excluding the binding crate match the
+first proof, so its workspace/CUDA evidence is reused explicitly. The changed
+binding was rebuilt; DLPack, full Python, focused tests and standalones ran anew.
+
+Rust records 1,433 core passes (2 ignored), 41 fastcpu (2 ignored), 142 CUDA and
+8 tokenizer harness passes, plus two E0502 CUDA doctests. Five mandatory GPU
+cases are filtered and 17 nested summaries excluded from 1,624 runtime passes.
+Fresh DLPack has 12 harness passes, one early-return GPU body and three filtered
+cases. Optional bodies can return early; no hardware execution follows from
+these counts. Frozen locks use cudarc 0.19.10. Main/frozen sources and ZIPs,
+wheel payloads and private/global installations are rehashed before publication.
+
+Previous [candidate30](../verification/completeness-2026-11-03/candidate30/README.md),
+[candidate29](../verification/completeness-2026-11-03/candidate29/README.md) and
+earlier green/failed checkpoints preserve their full evidence. New adaptive
+optimizers retain finite-option and 2^24 counter bounds, exact-dtype state loads,
+contiguous snapshots and checked manual-gradient mutation. RMSprop Double alpha
+above one is supported; F32 validation is unchanged. GroupNorm F64 is ordinary
+CPU support, not general higher/forward/capture/GPU coverage.
+
+New Adamax/Adadelta/ASGD, convolution/recurrent/pooling, power-zero direct-JVP and
+unused materialized-gradient layout repairs, generic empty accumulation/scheduling,
+physical-batch Jacobians and shared multi-output/nested rules remain isolated.
+Full framework parity and dtype/operator/catalog gaps stay open. Name presence
+does not prove semantics or performance. Changes are local and uncommitted.
+No NVIDIA or Apple GPU is available; Metal and complete GPU models remain open.
+See the [compatibility matrix](PYTORCH_PYG_COMPATIBILITY.md),
+[GPU portability](GPU_PORTABILITY.md) and [Rust CUDA research](RUST_CUDA.md).
+
+## 2026-11-03 portability and compatibility continuation (historical)
+
+The next implementation stage adds real CPU Bool storage, comparisons, logical
+reductions, exact boolean counts, typed selection, gradient-preserving scalar
+and bool indexing, safetensors BOOL and DLPack boolean interchange. Boolean
+node/subgraph masks retain isolated nodes and survive graph batching.
+
+Training now supports native optimizer parameter groups, owning state dictionaries
+and four Python schedulers, with exact fresh-process continuation and atomic
+restore validation. New synchronous data pipelines support custom map-style and
+iterable datasets, nested typed collation, samplers, subsets and concatenation.
+The synchronous native TensorDataset path now yields one batch at a time while
+retaining its exact Rust sampler order; native worker mode still holds an epoch.
+
+The graph API adds HeteroData/HeteroConv, RGCN, GINE, APPNP, Cheb and TransformerConv,
+plus homogeneous NeighborLoader/LinkNeighborLoader, negative sampling and link
+splitting. Supported hetero relations, edge attributes, gradients, shared-module
+aliases and checkpoints have real PyG comparisons. Finite fanouts follow the
+documented Ferro frontier algorithm. PyG's optional native sampler backend is
+unavailable here; all-neighbor cyclic two-layer values/gradients compare against
+full PyG models instead. General custom graph Batch index offsets reject.
+
+Spatial additions include Conv1d/3d, ConvTranspose1d/2d and AdaptiveAvgPool1d/2d/3d.
+MultiheadAttention supports both batched layouts, unbatched inputs, bool/additive
+masks, padding masks and per-head weights. Functional attention supports CPU
+masks/custom scale and safely handles fully masked rows. Nonzero attention and
+recurrent dropout remain unsupported.
+
+These additions retain the zero-dependency Rust core and existing autograd
+mechanism. They are CPU compatibility work. NVIDIA CUDA and Apple Metal are the
+GPU targets, with separate backend/residency/performance acceptance gates;
+Metal is not yet implemented. See [GPU portability and remaining gaps](GPU_PORTABILITY.md),
+the [compatibility matrix](PYTORCH_PYG_COMPATIBILITY.md) and
+[matching-build report](../verification/portability-2026-11-03/README.md).
+The final matching build passes 388 Python cases, with 30 CUDA cases unavailable,
+plus 916 core and 38 fastcpu Rust tests. CUDA host tests/all-target compilation
+pass; no GPU bodies were executed. The report identifies 579 unchanged source
+inputs and 36 matching installed Python/native files. This adds 101 Python
+test methods beyond the prior parity stage.
+Full PyTorch/PyG parity, typed arithmetic, AMP, distributed training and broad
+compiler/ecosystem coverage remain open. Changes remain local and uncommitted.
+
+## 2026-11-03 PyTorch and PyG API expansion
+
+The Python API now includes PyTorch-style tensor factories, typed metadata and
+scalar access, functional shape operations, multi-axis reductions and broadcast
+matmul. New `nn.RNN/GRU/LSTM` modules and cells cover stacked, bidirectional,
+batch-first and unbatched CPU f32 networks with PyTorch parameter layouts.
+Classification losses now support class weights, ignored indices, spatial and
+probability targets, label smoothing and reference empty/zero-denominator cases.
+
+The graph API adds PyG-style `GCNConv`, `SAGEConv`, `GINConv`, `GATConv` and
+`GATv2Conv`, alongside homogeneous `Data`, `Batch`, `DataLoader`, global pooling,
+grouped softmax and topology utilities. Sparse GATv2 uses query-dependent dynamic
+attention, with optional shared projections and ordinary Ferro checkpointing.
+Existing `graph.GcnConv` and native graph APIs remain available.
+
+Actual PyTorch 2.13.0+cpu and PyG 2.8.1 comparisons cover forward values,
+input/state/parameter/edge gradients, empty and strided inputs, state aliases
+and checkpoint validation. The reference packages are development dependencies;
+Ferro runtime modules do not import them, and core remains dependency-free.
+CI installs both references explicitly. The
+[compatibility matrix](PYTORCH_PYG_COMPATIBILITY.md) records supported signatures,
+examples, deliberate tied-extrema differences and rejected options.
+
+The comparisons exposed two numerical defects, now repaired: large-offset
+log-softmax cancellation across core/AVX2/CUDA source, and normalization's
+zero/tiny-vector gradients plus overflowed norm handling. New targeted native
+and actual-Torch regressions cover both. CUDA tests compile, but real GPU
+execution remains outstanding. This is a CPU f32 compatibility expansion,
+not full Torch/PyG, heterogeneous-graph, distributed or mixed-precision parity.
+
+See the [matching-build report](../verification/parity-2026-11-03/README.md) for
+final validation and the integrated graph training/checkpoint example.
+The final installed build passes 287 Python cases, with 30 CUDA cases unavailable;
+core has 904 passes and fastcpu 38. CUDA host tests and all-target compilation
+pass, with no GPU execution. The new example passes GCN/SAGE/GATv2 learning and
+exact epoch-boundary fresh-process continuation at seed 7. All reach 100%
+held-out accuracy and 50% with edges removed; GCN/SAGE begin at 100%, so their
+large cross-entropy reduction establishes learning. The frozen report identifies
+555 source inputs and 27 matching installed Python/native files.
+All changes remain local and uncommitted.
+
+## 2026-11-03 sparse attention, streaming state and pipeline continuation
+
+Public `ferro.graph.edge_attention` now composes CPU f32 gather, scaled dot
+products, per-destination segment softmax and segment sum. It supports optional
+per-edge additive bias, duplicate edges, isolated nodes and eager first-order
+gradients. It rejects capture and unsupported dtype/device/layout metadata.
+The sparse forward/backward allocation regression uses 4096 nodes and 128 edges,
+with total allocation below 8 MiB and no allocation above 256 KiB; a dense node
+matrix alone would require 64 MiB. This is no claim of resident CUDA attention.
+
+Two public examples pass fixed learning and exact fresh-process restart gates
+across seeds 7, 11 and 43:
+
+- `examples/train_restart_graph_attention.py` learns crossed query/key and
+  edge-attribute routing on disjoint feature samples with repeated topology
+  templates. At 400 updates, accuracy rises from 50% to 100% and cross-entropy
+  falls below 0.0001. Query/attribute/edge removal and uniform attention score
+  50%; rewired routing endpoints score 0%. Checkpoint step 197 preserves actual
+  topology, attributes, data, cursor and model/optimizer/config/Generator state.
+- `examples/train_restart_streaming.py` trains a delayed-sign LSTM across
+  three chunks per episode, carrying detached hidden/cell state between updates.
+  At 600 updates, final-chunk cross-entropy falls from 0.647-0.687 to
+  0.0000224-0.0000565. Final-chunk accuracy was already 100% at initialization; the declared
+  loss reduction establishes learning. Erasing state reduces continuation
+  accuracy to 50%. Step 293 saves the actual nonzero h/c before the pending third
+  chunk; resume does not recompute the prefix with updated weights.
+
+Independent dense PyTorch/manual-LSTM references check all parameter and relevant
+input gradients. Separate review uses `torch.nn.LSTM`, tests prefix-free resume,
+and checks topology permutations and duplicate-edge invariance. Both fixtures
+passed their first declared training configuration without budget/gate changes.
+These are synthetic CPU f32 examples, not full graph-transformer certification,
+arbitrary stream/data-loader checkpoints or cross-platform bitwise guarantees.
+
+The same review repaired finite-mask leakage in causal attention, incompatible
+rank-4 batch/head folding, invalid attention/RoPE configurations, and stale cached
+causal masks after backend replacement. Rust data loading now reports unwinding
+sample/collation panics as ordered errors, bounds all outstanding prefetched work,
+and cancels waiting workers on iterator drop. Running user callbacks finish
+independently. Python `Trainer.fit` no longer consumes an extra shuffled epoch
+while checking whether a source supports multiple epochs.
+
+See the [matching-build report](../verification/graph-sequence-2026-11-03/README.md)
+for validation, exact API boundaries, source identity and independent review.
+GPU execution and the historical numerical/native-crash investigations remain
+open. All changes remain local and uncommitted.
+
+## 2026-11-03 generative training and optimizer continuation
+
+Two more public CPU f32 fixtures pass held-out learning and exact fresh-process
+restart across seeds 7, 11 and 43:
+
+- `examples/train_restart_vae.py` trains a Gaussian VAE with reparameterized
+  latent samples, normalized Gaussian NLL and analytic KL. After 600 steps,
+  held-out Monte Carlo negative ELBO is 0.5764-0.5797 against a constant baseline
+  of 8.7466; decoder-mean MSE is 0.00128-0.00342 against 0.4051. Evaluation uses
+  a saved fixed noise bank; restart at step 293 preserves subsequent latent draws.
+- `examples/train_restart_wgan.py` learns a Gaussian location/scale transform
+  with a tanh critic and differentiable gradient penalty. After 4000 cycles of
+  five critic updates and one generator update, empirical held-out W1 is
+  0.01315-0.11369, below the fixed 0.25 absolute and 25%-of-initial gates.
+  Restart at update 11997 preserves the partially completed critic cycle,
+  both named optimizers, data cursor and subsequent noise/interpolation draws.
+
+Independent PyTorch checks cover separate objective terms and all relevant
+gradients. WGAN checks inactive parameter/optimizer isolation; VAE checks that
+reparameterization and KL paths remain live. The first WGAN configuration failed
+seed 7's learning gate, and an independent PyTorch trajectory reproduced that
+failure. Revision 2 changed critic initialization, learning rates, penalty weight
+and budget before rerunning all seeds; quality gates stayed fixed. Penalty and
+gradient-norm measurements are diagnostics, not Lipschitz certification.
+
+Optimizer review repaired per-parameter AdamW step counting and shared mutable
+moment buffers in public Rust SGD/Adam/AdamW clones. Frozen or absent gradients
+now leave AdamW counters, moments and weights unchanged. Clones retain shared
+parameter slots but own optimizer buffers. AdamW snapshot `t` is now f32 `[n]`;
+new code accepts the legacy scalar and broadcasts its recorded global count.
+Old readers cannot read the new vector form, historical skipped counts cannot
+be reconstructed, and the existing large-counter f32 precision limit remains.
+Capturable AdamW requires equal counters and all-or-none gradients; this has
+host regression coverage, with GPU execution still outstanding.
+
+See the [matching-build report](../verification/adversarial-2026-11-03/README.md)
+for exact source/build identity, suites, migration details and failed experiments.
+This closes only these synthetic eager CPU f32 fixtures. General generative
+model quality, arbitrary data-loader state and real-GPU training remain open.
+All changes remain local and uncommitted.
+
+## 2026-11-03 differentiable-derivative training continuation
+
+Two public CPU f32 fixtures now exercise mixed coordinate/parameter derivatives
+inside real training objectives, with seeds 7, 11 and 43:
+
+- `examples/train_restart_pinn.py` solves u'' = -pi^2 sin(pi*x), enforcing zero
+  endpoint values with u=x(1-x)*MLP(2x-1). Only the strong-form residual enters
+  training. At 1500 steps, held-out solution RMSE is 0.000320-0.000587 and
+  residual RMSE is 0.0540-0.0851, below the declared 0.01 and 0.1 gates.
+- `examples/train_restart_contractive.py` trains a smooth autoencoder with a
+  live squared encoder-Jacobian penalty. At 400 steps, reconstruction MSE is
+  0.270-0.326% of the constant baseline; the final penalty is 4.64-30.67% of
+  its initial value, below the declared 10% and 75% gates respectively. Sorted
+  minibatches failed seed 11 in both Ferro and PyTorch. A documented interleaved
+  schedule passed with the sample set, model, optimizer, budget and gates retained.
+
+All six runs pass exact fresh-process continuation, including saved data/cursors,
+model/AdamW/config/Generator state and subsequent draws. Independent curvature,
+Jacobian and finite-difference checks establish that the losses reach parameters
+through coordinate derivatives. Detachment faults and optimized-Python acceptance
+gates are tested. The [matching-build report](../verification/scientific-2026-11-03/README.md)
+records the final suites, source identity and original failed schedule.
+
+Review also repaired three functional-AD contract gaps: derivative capture could
+freeze gradients and replay incorrect values; custom backward callbacks could
+return non-f32 gradients; and invalid scalar-gradient operands could allocate an
+implicit device seed before validation. Functional `grad`/`vjp` now reject capture,
+enforce f32 callback gradients, and validate operands before seed allocation.
+Ordinary infallible backward asserts gradient dtype before touching its gradient
+mutex; it remains nontransactional. The supported higher-order subset is documented
+in the Python autograd module. Independent probes passed 188 PyTorch comparisons
+through third-order derivatives, with maximum absolute error 2.39e-7.
+
+This closes only these eager CPU f32, synthetic, complete-step fixtures. The PINN
+uses sampled coordinates as inputs and hard boundary conditions; the autoencoder penalty can
+be reduced through encoder/decoder rescaling and proves no robustness property.
+General PDEs, f64 AD, derivative capture and GPU certification remain separate.
+The subsequent selected gradient-penalty GAN fixture is recorded above.
+Independent review found no blockers; all changes remain local and uncommitted.
+
+## 2026-11-03 CNN, GRU and KAN continuation
+
+Three further public CPU f32 learning/restart fixtures are implemented. All
+use seeds 7, 11 and 43, predeclared fixed budgets and gates, independent
+PyTorch input/all-parameter gradient checks, and exact fresh-process restart:
+
+| Fixture | Learning result | Restart boundary |
+|---|---|---|
+| `examples/train_restart_cnn.py` | 100% held-out bar-orientation accuracy from 50% initially; replacing each image with its mean reduces accuracy to 50%. | Step 147 of 300 |
+| `examples/train_restart_recurrent.py` | 100% held-out token-order accuracy from 50% initially; erasing history before the last token reduces accuracy to 50%. | Step 137 of 300 |
+| `examples/train_restart_kan.py` | Held-out MSE is 0.608-2.231% of a training-fit affine baseline and 0.0419-0.1536% of a constant baseline, below the declared 10% gates. | Step 197 of 400 |
+
+All remaining losses, serialized model/AdamW/config/Generator state, next draws,
+dataset identity and nonzero checkpoint cursors match. Maximum gradient errors
+are 5.15e-8 (CNN), 1.59e-8 (GRU) and 1.20e-7 (KAN), within atol 1e-5 / rtol 1e-4.
+Corruption/configuration checks and acceptance-gate sensitivity under optimized
+Python are included. Independent reviews found no blockers in this scoped work.
+
+The fixtures exposed and repaired two API defects. KAN checkpoints now serialize
+immutable knots, degree and outside-domain policy, rejecting incompatible bases
+before mutation. `KanLayer.basis` remains readable; changing it requires a new
+layer. Recurrent unroll validates output layout and allocation capacity before
+constructing steps, returning errors for two previously panicking zero-data
+inputs. Representable empty and fully masked sequences retain their behavior.
+
+See [architecture continuation evidence](../verification/architectures-2026-11-03/README.md)
+for the matching build, complete regression results and source manifest. These
+are synthetic CPU fixtures: CNN spatial templates repeat, GRU hidden state is
+reset each batch and restart is between complete optimizer steps, and KAN knots
+are fixed. General data-loader state, mid-sequence restart, higher-order spline
+input derivatives and GPU model certification remain open. Changes are local
+and uncommitted; historical numerical/native-crash investigations remain open.
+
+## 2026-11-03 GCN and capture continuation
+
+The selected public CPU GCN learning/restart fixture is implemented and locally
+verified. Run `python examples/train_restart_gcn.py`. All three seeds (7, 11, 43)
+reach 100% accuracy on disjoint held-out feature samples; removing edges reduces
+accuracy to 50%. Topology templates may repeat. The maximum independent dense
+PyTorch gradient error is 4.47e-8 against declared atol 1e-5 / rtol 1e-4 gates.
+Restoration at step 117 reproduces the remaining losses, serialized
+model/AdamW/config/RNG state, next draws, dataset identity and cyclic cursor in
+a fresh process. Topology/data persistence belongs to this fixture's explicit
+bundle; it does not extend the general checkpoint API to arbitrary data loaders.
+
+Further repairs validate GCN inputs before computation, add recoverable
+`EdgeIndex::try_batch` (also used by Python), and avoid allocations for empty
+feature axes. The legacy `CapturedChain` now retains exact input allocation
+owners and uses the existing static-graph capture/cleanup boundary. Replay
+requires `&mut self`; poisoned output access rejects. Input mutation is scoped
+to the owning backend stream. Foreign-stream mutation event bookkeeping and
+experimental whole-step capture remain open, as does real-GPU execution of the
+new ownership regressions.
+
+The release wheel excludes generated bytecode. CI now includes CUDA host
+regressions and a wheel-content check; hosted CI has not run for this local tree.
+See [continuation evidence](../verification/continuation-2026-11-03/README.md)
+for the matching source/build identity, commands and limits. All changes remain
+uncommitted. Broader GNN variants, unseen-topology generalization, resident GPU
+graph training and other model-family certification remain separate gates.
+
+## 2026-11-03 initial review
+
+Reviewed checkout base: `5f1ebe9b54742a690cd7cbdd6b17568329b1c701`.
+The new implementation is an uncommitted working-tree change, not a release.
+See [this review's evidence](../verification/review-2026-11-03/README.md) for the
+final source manifest, commands, failures and verification limits.
+
+- The recent Rust GNN work already implements `EdgeIndex::batch`, `scatter`,
+  `MessagePassing` and `GcnConv`; graph batching is no longer wholly open.
+- Python now exposes immutable `ferro.graph.EdgeIndex`, CPU f32 `scatter` and
+  `GcnConv`. Focused tests compare outputs and every input/parameter gradient
+  against a dense PyTorch oracle, cover batching/permutation and empty graphs,
+  and exercise saved Adam/model/config/RNG continuation in fresh objects.
+  Topology remains an explicit input saved separately. This is not a fresh-process
+  GNN learning/restart certification, resident GPU graph training or higher-order AD.
+- Review repairs cover minimum-scatter validation, CUDA gather ownership and
+  error propagation, required-CUDA test enforcement, and driver-independent
+  native fault-injection error reporting. GPU runtime regressions still require
+  hardware; CPU-only harness passes must not be counted as GPU execution.
+  Non-whole I64 index views use the existing host path rather than passing
+  unvalidated backing entries to CUDA. `Error::GatherUnavailable` is a new
+  public enum variant: downstream exhaustive matches need updating, and custom
+  backends must return it only when declining gather without attempting work.
+- [Rust CUDA research](RUST_CUDA.md) records current NVIDIA and community
+  toolchain requirements. Keep cudarc as the baseline and both NVIDIA authoring
+  tracks optional. No experimental compiler or Rust GPU kernel was enabled.
+
+The public CPU GCN learning milestone proposed by this initial review is now
+recorded in the continuation above. The existing
+historical CPU numerical/crash investigations remain unresolved. Earlier
+evidence identities and counts below describe their own runs, not this tree.
 
 ## Evidence boundary
 
@@ -30,14 +384,14 @@ historical failure reports rather than rewriting them into current status.
 |---|---|---|---|
 | Tensor and first-order AD / B0-B1 | Checked shape/layout work, typed selection, storage versions, gradient contracts and Python cotangent entry points | Primary math/AD is f32; typed storage is not full typed arithmetic. Device fallback and layout behavior remain operation-specific. | Core and binding suites are recorded in [combined verification](../verification/post25/combined/README.md). A public per-op dtype/placement matrix and broader resident indexing remain open. |
 | Public training / B1 | Python Module registration/containers, Linear, losses, SGD/Adam/AdamW, freezing, Trainer and progress | Python convenience APIs do not imply complete torch compatibility or universal CUDA layer coverage. | [Training API tests](../crates/ferro-py/tests/test_training_api.py) and [architecture fixtures](../verification/python-architecture-api/test_architecture.py). Full model certification remains separate. |
-| Training state / B2 | Owning snapshots, immutable generations, named optimizers, ties, persistent buffers, modes/config and one explicit Generator; Python save/load/restore | Whole-training restore is paused, compatible, whole-contiguous CPU f32. Pending gradients, data cursors, optimizer groups, schedulers, extra RNG streams and arbitrary loop state are outside the Python contract. | [Python state report](../verification/post25/python-state/README.md), [checkpoint tests](../crates/ferro-py/tests/test_training_checkpoint.py), [schema tests](../crates/ferro-py/tests/test_checkpoint_schema.py). Broader state completeness and CUDA transactions remain open. |
+| Training state / B2 | Owning snapshots, immutable generations, named optimizers, ordered parameter groups, ties, persistent buffers, modes/config and one explicit Generator; Python save/load/restore; per-parameter eager AdamW counters and owning optimizer clones | Whole-training restore is paused, compatible, whole-contiguous CPU f32. Optimizer groups and exact Python scalar metadata restore atomically. Scheduler state uses an explicit state_dict sidecar; example bundles persist selected data/cursors/phases. Pending gradients, general data cursors, extra RNG streams and arbitrary loop state remain outside the Python contract. | [Python state report](../verification/post25/python-state/README.md), [checkpoint tests](../crates/ferro-py/tests/test_training_checkpoint.py), [schema tests](../crates/ferro-py/tests/test_checkpoint_schema.py), [optimizer and multi-phase evidence](../verification/adversarial-2026-11-03/README.md), [grouped optimizer/scheduler continuation](../verification/portability-2026-11-03/README.md). Broader state completeness and CUDA transactions remain open. |
 | Segments / B3 | CPU sum/mean/max/softmax; prepared CUDA sum/softmax and adjoints; public Python PreparedSegments | First-order f32. CUDA topology uploads once per preparation. Nonempty softmax performs a synchronized four-byte status download; no zero-total-transfer claim. Mean/max remain CPU-only; capture unsupported. | [Native report](../verification/post25/segments/README.md), [Python prepared-plan report](../verification/post25/prepared-python/README.md). General resident indexed adjoints and additional segment kernels remain open. |
-| Sparse / B4 | Validated COO/CSR and CPU sparse algebra, with Python wrappers | CPU f32 algebra does not establish resident CUDA SpMM/SDDMM or a complete graph data pipeline. | [Sparse tests](../crates/ferro-core/tests/foundation_sparse.rs) and architecture fixtures. Graph batching, resident sparse execution and GNN/connectome/graph-transformer training/restart gates remain open. |
-| Vision, sequence, basis / B5 | Grouped convolution/window work, RNN/GRU/LSTM cells and explicit masked/reset/truncated unroll, spline basis and KAN | New architecture wrappers are CPU f32 scoped. Explicit unroll is not fused scan or bounded-memory training. | [Foundation publication](../verification/foundation-wave/pr-readiness/PR_BODY.md), architecture fixtures, recurrent/basis tests. GPU implementations, decoder breadth and full model proofs remain open. |
-| Higher-order AD / B6 | Functional gradients/VJPs and graph-building derivatives for a declared smooth subset; Python exposure | Unsupported derivative paths must reject. No general operator coverage, f64 AD, or all-PINN support claim. | [Implementation](../crates/ferro-core/src/higher_order.rs), [tests](../crates/ferro-core/tests/higher_order.rs). Mixed coordinate/parameter gradients and each scientific/adversarial architecture need separate certification. |
+| Sparse and graph / B4 | Validated COO/CSR and CPU sparse algebra; checked topology/batching, message passing, GCN and edge-restricted attention; Python wrappers and selected learning/restart fixtures | New graph wrappers are CPU f32 and first-order. Edge attention uses node/edge-sized intermediates. Sparse algebra does not establish resident CUDA SpMM/SDDMM or a complete graph data pipeline. | [Sparse tests](../crates/ferro-core/tests/foundation_sparse.rs), [Rust graph tests](../crates/ferro-core/tests/gnn.rs), [GCN proof](../examples/train_restart_gcn.py), [attention proof](../verification/graph-sequence-2026-11-03/README.md). Resident sparse execution and full connectome/graph-transformer gates remain open. |
+| Vision, sequence, basis / B5 | Grouped convolution/window work, RNN/GRU/LSTM cells and explicit masked/reset/truncated unroll, spline basis and checkpoint-compatible KAN; selected CNN/GRU/KAN and streaming LSTM learning proofs | New architecture wrappers are CPU f32 scoped. Explicit unroll is not fused scan or a general bounded-memory guarantee. Streaming h/c persistence belongs to the explicit example bundle. | [Foundation publication](../verification/foundation-wave/pr-readiness/PR_BODY.md), [architecture proofs](../verification/architectures-2026-11-03/README.md), [streaming proof](../verification/graph-sequence-2026-11-03/README.md). GPU implementations, decoder breadth and other model variants remain open. |
+| Higher-order AD / B6 | Functional gradients/VJPs and graph-building derivatives for a declared smooth subset; selected strong-form PINN, contractive-AE and gradient-penalty WGAN learning/restart proofs | Eager execution; functional derivative capture rejects. Unsupported derivative paths must reject. No general operator coverage, f64 AD, or all-PINN support claim. | [Implementation](../crates/ferro-core/src/higher_order.rs), [tests](../crates/ferro-core/tests/higher_order.rs), [scientific proofs](../verification/scientific-2026-11-03/README.md), [adversarial proof](../verification/adversarial-2026-11-03/README.md). Other scientific/adversarial variants need separate certification. |
 | Compilation and capture | Compiled supported inference DAGs, pointwise fusion and prepared static CUDA model execution | Supported operation/layout subsets only. No automatic whole-training compiler or general torch.compile parity claim. | [Graph implementation](../crates/ferro-core/src/graph.rs), [static CUDA owner](../crates/ferro-cuda/src/static_graph.rs), combined regression report. Mutable state/RNG/restore interactions need explicit gates. |
 | CPU matmul / BMM | Packed BLIS-style SGEMM (runtime AVX-512 / AVX2+FMA / scalar kernels) on every fastcpu matmul, BMM and install path; containment retired | f32 only. One ascending-k fused chain per output: bitwise independent of threads/blocking, not bitwise equal to the non-fused reference. Custom registrations can change dispatch. | [CPU GEMM incident report](../verification/cpu-gemm-incidents/README.md): exact mul_add oracles, f64 gamma(k) bound, opt-in FERRO_GEMM_CHECK guard. It rules out the enumerated GEMM numerical mechanisms and ungated SIMD in the scanned configuration; a possible abort and both root causes remain unexplained. |
-| Architecture certification / B7 | Existing training examples, primitive reference/gradient tests and focused stochastic checkpoint continuation | These provide bounded proofs, not all-family held-out learning and fresh-process restart certification. | Next milestone below; certify each family, variant, API, dtype and device independently. |
+| Architecture certification / B7 | Selected regression, classifier, GCN, CNN, GRU, KAN, PINN, contractive-AE, VAE, WGAN-GP, sparse attention and streaming LSTM held-out learning and fresh-process restart fixtures | Bounded synthetic CPU f32 proofs within one environment; no all-family or cross-platform certification. | [Architecture evidence](../verification/architectures-2026-11-03/README.md), [scientific evidence](../verification/scientific-2026-11-03/README.md), [generative evidence](../verification/adversarial-2026-11-03/README.md), [graph/sequence evidence](../verification/graph-sequence-2026-11-03/README.md); certify other variants, APIs, dtypes and devices independently. |
 
 ## Recorded verification and chronology
 
@@ -65,19 +419,19 @@ contains them. Before publication, select durable reports/manifests explicitly;
 do not publish raw logs, wheels or whole verification directories by default.
 Do not rerun archival collectors that overwrite preserved evidence.
 
-## Open defects and investigation tracks
+## Defects and investigation tracks
 
 | Priority | Issue | Required next evidence |
 |---|---|---|
 | P0 investigation | Historical 343812-ULP CPU discrepancy remains root-cause unresolved. The suspect kernel is retired and code-level mechanisms are ruled out ([report](../verification/cpu-gemm-incidents/README.md)); a host fault is the leading, unverified hypothesis. | Record CPU model/microcode of the original host and run `FERRO_GEMM_CHECK=1` suites there. Passing repetitions do not resolve it. |
 | P0 investigation | Recorded Windows 0xc000001d illegal-instruction exit remains unexplained. Ungated SIMD is ruled out for the crashing build configuration by an asm scan ([report](../verification/cpu-gemm-incidents/README.md)). | Reproduce on the original host with CPU model/microcode recorded; distinguish environment from a ud2 abort. |
-| P1 correctness | Re-registering CUDA replaces the registry/stream; generic copying of an older allocation can consult the new backend and fail. | The [prepared-plan report](../verification/post25/prepared-python/README.md) links an isolated tensor probe. Define initialization/ownership semantics and add a regression before changing behavior. |
-| P1 residency | General backward detaches a strided seed through a host round trip. | Add a counting-backend regression and real CUDA check for arbitrary supported seed layouts; contiguous-seed segment tests do not close this. |
+| Recorded repair, scoped | F32/I64 host reads after CUDA registry replacement use the allocation-owned stream. The earlier old-allocation download defect is closed within that scope. | [Stabilisation publication](STABILISATION_PUBLICATION.md). Foreign-owner compute, mutation and D2D remain rejected; current GPU execution is still unavailable locally. |
+| Recorded repair, scoped | Supported same-device F32 materialization removes the earlier strided backward-seed host round trip. | [Stabilisation publication](STABILISATION_PUBLICATION.md). Legacy backends and CUDA rank greater than 16 retain explicit host fallback; this is not universal strided-adjoint residency. |
 
 These priorities guide follow-up work; they neither reopen a historical merge
 decision automatically nor authorize merging. No incident-free claim is made.
 
-## Next milestone: CPU public training with reproducible restart
+## Original CPU public training milestone: reproducible restart
 
 Status: implemented and locally verified for the two CPU f32 fixtures; independent review and broader B7 certification remain open. The work extends existing public APIs and checkpoint
 regressions into two small architecture proofs before widening the device scope.
@@ -141,10 +495,11 @@ determinism, general data-cursor resume, independent review or hosted CI claim.
 
 - Complete B3 general resident indexing and B4 sparse/graph batching before
   claiming a resident GNN or sparse graph transformer.
-- Certify CNN, recurrent and KAN training/restart independently using existing
-  CPU primitives; extend to CUDA only with execution and residency evidence.
-- Certify PINN/contractive-AE/gradient-penalty models only after required mixed
-  derivative depth reaches model parameters.
+- Extend the selected CNN, GRU, streaming LSTM, sparse attention and KAN proofs to other variants and datasets;
+  extend to CUDA only with execution and residency evidence.
+- Extend the selected PINN, contractive-AE, VAE and gradient-penalty adversarial
+  proofs to other problems and architectures. Retain mixed-derivative, optimizer
+  isolation and phase-resume checks when extending the adversarial fixture.
 - Expand checkpoint state and architecture variants explicitly, then measure
   representative performance with equal work, grad modes and same-session
   comparisons. Retain the separate CPU incident investigations throughout.

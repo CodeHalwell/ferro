@@ -1,20 +1,31 @@
-//! `softsign` operator: y = x / (1 + |x|). Backward: dy/dx = 1 / (1 + |x|)^2,
-//! so dx = g / (1 + |x|)^2. No device kernel exists for this op, so both
-//! forward and backward go through the host `raw_binary` path.
+//! Softsign with typed, staged quotient adjoints.
 
-use crate::error::Result;
-use crate::tensor::{raw_binary, Tensor};
+use crate::{DType, Error, Result, Tensor};
 
 impl Tensor {
     pub fn softsign(&self) -> Result<Tensor> {
-        let out = raw_binary("softsign", self, self, |v, _| v / (1.0 + v.abs()))?.to_device(self.device())?;
-        let x = self.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
-            vec![raw_binary("softsign_bw", g, &x, |gg, xx| {
-                let d = 1.0 + xx.abs();
-                gg / (d * d)
-            })
-            .unwrap()]
+        if crate::capture::is_recording() {
+            return Err(Error::Unsupported { op: "softsign", msg: "inference capture is not supported".into() });
+        }
+        let output = crate::typed_math::pointwise_real(self, "softsign", |x| x / (1.0 + x.abs()), |x| x / (1.0 + x.abs()))?
+            .to_device(self.device())?;
+        let saved = self.detach_copy();
+        Ok(output.record_fn(vec![self.clone()], move |gradient| {
+            let result = if saved.dtype() == DType::F64 {
+                let values = gradient.to_vec_f64().into_iter().zip(saved.to_vec_f64()).map(|(g, x)| {
+                    let d = 1.0 + x.abs();
+                    let sign = if x < 0.0 { -1.0 } else if x > 0.0 { 1.0 } else { 0.0 };
+                    g / d + ((-g) * ((x / d) / d)) * sign
+                }).collect();
+                Tensor::from_vec_f64(values, saved.shape()).unwrap()
+            } else {
+                crate::tensor::raw_binary("softsign_backward", gradient, &saved, |g, x| {
+                    let d = 1.0 + x.abs();
+                    let sign = if x < 0.0 { -1.0 } else if x > 0.0 { 1.0 } else { 0.0 };
+                    g / d + ((-g) * ((x / d) / d)) * sign
+                }).unwrap()
+            };
+            vec![result]
         }))
     }
 }

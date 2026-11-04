@@ -44,6 +44,9 @@ fn data(buf: &dyn DeviceBuffer) -> &[f32] {
 }
 
 impl Backend for FakeDevice {
+    fn copy_dev(&self, source: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(Box::new(FakeBuf(data(source).to_vec())))
+    }
     fn unary(&self, _kind: UnaryKind, _x: &[f32]) -> Vec<f32> {
         panic!("host-slice path must not run for device-resident tensors");
     }
@@ -90,6 +93,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let out = data(a)
             .iter()
@@ -139,6 +143,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         // Right-aligned broadcast indexing over the flat output.
         let n: usize = out_shape.iter().product();

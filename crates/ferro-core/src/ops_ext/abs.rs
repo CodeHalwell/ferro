@@ -6,17 +6,12 @@ use crate::tensor::{raw_binary, raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn abs(&self) -> Tensor {
+        if self.dtype() == crate::DType::F64 { return crate::typed_math::unary_grad_tensor(self, "abs", |x| x.abs(), false, |g, x| g.mul(&x.sign()?)).expect("float64 unary"); }
         let out = raw_unary_k(self, UnaryKind::Abs).expect("cpu backend is always registered");
         let x = self.clone();
-        out.record_fn(vec![self.clone()], move |g| {
+        out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Abs), move |g| {
             vec![raw_binary("abs_bw", g, &x, |gg, xx| {
-                if xx > 0.0 {
-                    gg
-                } else if xx < 0.0 {
-                    -gg
-                } else {
-                    0.0
-                }
+                gg * if xx > 0.0 { 1.0 } else if xx < 0.0 { -1.0 } else { 0.0 }
             })
             .unwrap()]
         })

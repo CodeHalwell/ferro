@@ -7,6 +7,7 @@ use crate::tensor::{try_raw_sum_dim, Tensor};
 
 impl Tensor {
     pub fn sum_dim(&self, dim: usize, keepdim: bool) -> Result<Tensor> {
+        if self.dtype() == crate::DType::Bool { return self.bool_sum(Some(dim), keepdim); }
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {

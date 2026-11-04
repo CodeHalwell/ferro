@@ -53,7 +53,7 @@ fn row_forward(v: &[f32], cols: usize, log: bool) -> Vec<f32> {
         let sum: f32 = row.iter().map(|&x| (x - m).exp()).sum();
         for (k, &x) in row.iter().enumerate() {
             out[r * cols + k] = if log {
-                x - (m + sum.ln())
+                (x - m) - sum.ln()
             } else {
                 (x - m).exp() / sum
             };
@@ -63,6 +63,9 @@ fn row_forward(v: &[f32], cols: usize, log: bool) -> Vec<f32> {
 }
 
 impl Backend for FakeDevice {
+    fn copy_dev(&self, source: &dyn DeviceBuffer) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(Box::new(FakeBuf(data(source).to_vec())))
+    }
     // Host-slice paths must never run for device-resident tensors.
     fn unary(&self, _kind: UnaryKind, _x: &[f32]) -> Vec<f32> {
         panic!("host unary must not run for device-resident tensors");
@@ -114,6 +117,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let out = data(a)
             .iter()
@@ -152,6 +156,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let n: usize = out_shape.iter().product();
         let idx = |flat: usize, shape: &[usize]| -> usize {

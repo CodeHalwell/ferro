@@ -104,18 +104,18 @@ fn requires_grad_on_i64_errors() {
 }
 
 #[test]
-fn float_ops_reject_non_f32() {
+fn typed_ops_promote_arithmetic_but_matmul_requires_matching_dtypes() {
     let i = Tensor::arange(4).reshape(&[2, 2]).unwrap();
     let f = Tensor::ones(&[2, 2]);
     let d = f.to_dtype(DType::F64);
 
-    assert!(matches!(i.add(&i), Err(Error::DtypeMismatch { .. })));
-    assert!(matches!(f.add(&i), Err(Error::DtypeMismatch { .. })));
-    assert!(matches!(d.add(&d), Err(Error::DtypeMismatch { .. })));
-    assert!(matches!(d.mul(&f), Err(Error::DtypeMismatch { .. })));
+    assert_eq!(i.add(&i).unwrap().to_vec_i64(), vec![0, 2, 4, 6]);
+    assert_eq!(f.add(&i).unwrap().to_vec(), vec![1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(d.add(&d).unwrap().to_vec_f64(), vec![2.0; 4]);
+    assert_eq!(d.mul(&f).unwrap().dtype(), DType::F64);
     assert!(matches!(d.matmul(&f), Err(Error::DtypeMismatch { .. })));
 
-    // Explicit cast is the supported route into float math.
+    // An explicit cast agrees with promotion.
     let sum = i.to_dtype(DType::F32).add(&f).unwrap();
     assert_eq!(sum.to_vec(), vec![1.0, 2.0, 3.0, 4.0]);
 }

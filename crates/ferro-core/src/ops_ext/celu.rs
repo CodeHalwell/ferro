@@ -1,36 +1,25 @@
-//! `celu` operator: y = max(0, x) + min(0, alpha * (exp(x/alpha) - 1)).
-//! Backward: dy/dx = 1 for x > 0, else exp(x/alpha). No device kernel exists
-//! for this op, so both forward and backward go through the host `raw_binary`
-//! path.
-
-use crate::error::{Error, Result};
-use crate::tensor::{raw_binary, Tensor};
+//! CELU preserves separate forward and backward scalar conversion stages.
+use crate::{Error, Result, Tensor};
+use crate::ops_ext::add_alpha::Alpha;
 
 impl Tensor {
     pub fn celu(&self, alpha: f32) -> Result<Tensor> {
-        if alpha == 0.0 {
-            return Err(Error::InvalidShape {
-                op: "celu",
-                msg: "alpha must be nonzero".to_string(),
-            });
-        }
-        let out = raw_binary("celu", self, self, move |v, _| {
-            if v > 0.0 {
-                v
-            } else {
-                alpha * (v / alpha).exp_m1()
-            }
-        })?.to_device(self.device())?;
-        let x = self.detach_copy();
-        Ok(out.record_fn(vec![self.clone()], move |g| {
-            vec![raw_binary("celu_bw", g, &x, move |gg, xx| {
-                if xx > 0.0 {
-                    gg
-                } else {
-                    gg * (xx / alpha).exp()
-                }
-            })
-            .unwrap()]
-        }))
+        self.celu_alpha(Alpha::F64(alpha as f64))
     }
+
+    pub fn celu_alpha(&self, alpha: Alpha) -> Result<Tensor> {
+        let (value, value32) = super::elu::scalar(alpha);
+        if value == 0.0 {
+            return Err(Error::InvalidShape { op: "celu", msg: "alpha must be nonzero".into() });
+        }
+        super::elu::apply(self, "celu", alpha, 1.0, 1.0 / value, 1.0 / value32 as f64)
+    }
+}
+
+pub(crate) fn validate_backward(alpha: Alpha) -> Result<()> {
+    let (value, _) = super::elu::scalar(alpha);
+    if value.is_finite() && value.abs() > f32::MAX as f64 {
+        return Err(Error::InvalidShape { op: "celu backward", msg: "alpha cannot be converted to float32 without overflow".into() });
+    }
+    Ok(())
 }

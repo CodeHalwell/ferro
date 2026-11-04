@@ -9,9 +9,15 @@ use crate::tensor::{raw_unary_k, Tensor};
 
 impl Tensor {
     pub fn silu(&self) -> Tensor {
+        if self.dtype() == crate::DType::F64 {
+            return crate::typed_math::unary_grad(self, "silu", |x| x / (1.0 + (-x).exp()), |g, x| {
+                let s = 1.0 / (1.0 + (-x).exp());
+                g * s * (1.0 + x * (1.0 - s))
+            }).expect("float64 silu requires eager CPU tensors");
+        }
         let out = raw_unary_k(self, UnaryKind::Silu)
             .expect("tensor's device backend is always registered");
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::forward_ad::is_active() {
             return if crate::capture::is_recording() {
                 out.record_fn_tagged(vec![self.clone()], crate::OpTag::Unary(UnaryKind::Silu), |_| unreachable!("inference node has no backward"))
             } else { out };

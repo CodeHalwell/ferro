@@ -2,6 +2,37 @@
 
 > Historical diagnostic/roadmap snapshot. Current scope, limits and fresh merged-tree results: [stabilisation publication](STABILISATION_PUBLICATION.md). Linked local archives are not shipped artifacts.
 
+2026-11-03 continuation: the working-tree `CapturedChain` adapter now retains
+exact input allocation owners and reuses static-graph RAII preparation/replay
+instead of disabling context tracking. Replay requires mutable access and
+poisoned output access rejects. Alias relinquishment also runs during unwinding.
+See [continuation evidence](../verification/continuation-2026-11-03/README.md).
+Real-GPU validation, experimental whole-step capture safety and original-owner
+write-event bookkeeping for foreign-stream mutation remain open. The inspection
+below describes its historical baseline, not the repaired adapter.
+
+## Current capturable AdamW contract (2026-11-03)
+
+Eager AdamW now advances a separate counter only for each parameter that receives
+an active gradient. The capturable path still uses one device counter and requires
+equal per-parameter counters when activated. Unequal counters leave activation
+in eager mode; restoring unequal counters into an already-capturable optimizer
+rejects before committing state. Repeating `capturable()` preserves the existing
+device counter and allocation rather than resetting them from host state.
+
+Before a host-invoked capturable update advances its counter, it requires all
+parameter gradients or none. No gradients means no change to weights, moments
+or the counter. A partial set, including frozen slots alongside active slots,
+returns an update error before the increment; the infallible public `step()`
+method panics on that error. These host checks do not add dynamic freeze or
+missing-gradient behavior to an already-captured CUDA graph. Changing its active
+parameter set requires a new capture with supported inputs.
+
+CPU/mock tests cover these state transitions and rejection boundaries, and the
+CUDA targets compile. The new GPU regression has not executed in this environment.
+This update does not resolve the experimental whole-step capture safety issues
+listed in the historical inspection below and is not GPU execution proof.
+
 ## Scope and evidence
 
 Read-only engineering inspection against HEAD `0dd0c1b2a7d01b631e1085e6071876186c6804de`, branch `perf-fused-layernorm`. No production source edits, installs, builds, tests, or GPU execution were performed. A concurrent agent started modifying `dispatch.rs` during inspection; source observations below refer to the inspected baseline, not a review of that work. This is a proposed implementation, NOT an implemented or measured capability.

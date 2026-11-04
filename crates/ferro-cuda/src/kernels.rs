@@ -34,19 +34,26 @@ pub fn unary_expr(kind: UnaryKind) -> String {
         UnaryKind::Tanh => "tanhf(v)".to_string(),
         UnaryKind::Sqrt => "sqrtf(v)".to_string(),
         UnaryKind::Abs => "fabsf(v)".to_string(),
+        UnaryKind::Sign => "(v < 0.0f ? -1.0f : (v > 0.0f ? 1.0f : 0.0f))".to_string(),
         UnaryKind::Log => "logf(v)".to_string(),
+        UnaryKind::Powf(p) if p == 0.5 => "sqrtf(v)".into(),
+        UnaryKind::Powf(p) if p == -0.5 => "rsqrtf(v)".into(),
+        UnaryKind::Powf(p) if p == -1.0 => "(1.0f / v)".into(),
+        // Torch CUDA preserves the float square before the double reciprocal.
+        UnaryKind::Powf(p) if p == -2.0 => "(1.0 / (v * v))".into(),
+        UnaryKind::Powf(p) if p == 2.0 => "(v * v)".into(),
+        UnaryKind::Powf(p) if p == 3.0 => "((v * v) * v)".into(),
         UnaryKind::Powf(p) => format!("powf(v, {})", c_f32(p)),
-        // max-then-min chain matches core's CpuBackend (and torch):
-        // min > max yields max everywhere; NaN passes through explicitly
-        // since fmaxf/fminf would drop it.
+        // Ordered comparisons preserve source signed-zero ties. NaN bounds
+        // produce NaN even when the input is finite.
         UnaryKind::Clamp { min, max } => {
-            format!(
-                "(isnan(v) ? v : fminf(fmaxf(v, {}), {}))",
-                c_f32(min),
-                c_f32(max)
-            )
+            if min.is_nan() || max.is_nan() { c_f32(f32::NAN) }
+            else {
+                let lower = format!("(v < {} ? {} : v)", c_f32(min), c_f32(min));
+                format!("(isnan(v) ? v : ({lower} > {} ? {} : {lower}))", c_f32(max), c_f32(max))
+            }
         }
-        UnaryKind::Gtz => "(v > 0.0f) ? 1.0f : 0.0f".to_string(),
+        UnaryKind::Gtz => "(v <= 0.0f ? 0.0f : 1.0f)".to_string(),
         // Tanh-approximation GELU, matching core's ops_ext/gelu.rs constants.
         UnaryKind::Gelu => {
             "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))".to_string()
@@ -71,6 +78,7 @@ pub fn binary_expr(kind: BinaryKind) -> &'static str {
         BinaryKind::Sub => "x - y",
         BinaryKind::Mul => "x * y",
         BinaryKind::Div => "x / y",
+        BinaryKind::ReluBackward => "(y <= 0.0f ? 0.0f : x)",
     }
 }
 
@@ -559,10 +567,10 @@ pub fn softmax_row_stats_source() -> String {
 }
 
 /// Softmax pass 2: elementwise apply of the per-row stats. `log` selects
-/// log_softmax (y = x - (m + log s)) over plain softmax (y = exp(x - m) / s).
+/// log_softmax (y = (x - m) - log s) over plain softmax (y = exp(x - m) / s).
 pub fn softmax_apply_source(log: bool) -> String {
     let body = if log {
-        "x[i] - (m + logf(s))"
+        "(x[i] - m) - logf(s)"
     } else {
         "expf(x[i] - m) / s"
     };
@@ -603,6 +611,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clamp_nan_bounds_and_zero_ties_are_explicit_in_generated_source() {
+        for (min, max) in [(f32::NAN, 1.), (-1., f32::NAN), (f32::NAN, f32::NAN)] {
+            assert_eq!(unary_expr(UnaryKind::Clamp { min, max }), "__int_as_float(0x7fc00000)");
+        }
+        for (min, max) in [(-0., 0.), (0., -0.), (2., -2.), (f32::NEG_INFINITY, f32::INFINITY)] {
+            let expression = unary_expr(UnaryKind::Clamp { min, max });
+            assert!(expression.contains("v < ") && expression.contains(" > ") && expression.contains("isnan(v)"));
+            assert!(!expression.contains("fmaxf") && !expression.contains("fminf"));
+            assert!(unary_source(UnaryKind::Clamp { min, max }).contains(&expression));
+        }
+    }
+
+    #[test]
+    fn half_power_source_preserves_sqrt_domain_and_signed_zero_policy() {
+        assert_eq!(unary_expr(UnaryKind::Powf(0.5)),"sqrtf(v)");
+        assert_eq!(unary_expr(UnaryKind::Powf(-0.5)),"rsqrtf(v)");
+        assert!(unary_source(UnaryKind::Powf(0.5)).contains("sqrtf(v)"));
+        assert!(unary_source(UnaryKind::Powf(-0.5)).contains("rsqrtf(v)"));
+        assert_eq!(unary_expr(UnaryKind::Powf(-1.0)), "(1.0f / v)");
+        assert_eq!(unary_expr(UnaryKind::Powf(-2.0)), "(1.0 / (v * v))");
+        assert_eq!(unary_expr(UnaryKind::Powf(2.0)), "(v * v)");
+        assert_eq!(unary_expr(UnaryKind::Powf(3.0)), "((v * v) * v)");
+    }
+
+    #[test]
     fn unary_exprs_cover_every_kind() {
         assert_eq!(unary_expr(UnaryKind::Neg), "-v");
         assert_eq!(
@@ -614,6 +647,7 @@ mod tests {
         assert_eq!(unary_expr(UnaryKind::Tanh), "tanhf(v)");
         assert_eq!(unary_expr(UnaryKind::Sqrt), "sqrtf(v)");
         assert_eq!(unary_expr(UnaryKind::Abs), "fabsf(v)");
+        assert_eq!(unary_expr(UnaryKind::Sign), "(v < 0.0f ? -1.0f : (v > 0.0f ? 1.0f : 0.0f))");
         assert_eq!(unary_expr(UnaryKind::Log), "logf(v)");
         assert_eq!(unary_expr(UnaryKind::Powf(2.5)), "powf(v, 2.5f)");
         let clamp = UnaryKind::Clamp {
@@ -622,9 +656,9 @@ mod tests {
         };
         assert_eq!(
             unary_expr(clamp),
-            "(isnan(v) ? v : fminf(fmaxf(v, -1.0f), 2.0f))"
+            "(isnan(v) ? v : ((v < -1.0f ? -1.0f : v) > 2.0f ? 2.0f : (v < -1.0f ? -1.0f : v)))"
         );
-        assert_eq!(unary_expr(UnaryKind::Gtz), "(v > 0.0f) ? 1.0f : 0.0f");
+        assert_eq!(unary_expr(UnaryKind::Gtz), "(v <= 0.0f ? 0.0f : 1.0f)");
         assert_eq!(
             unary_expr(UnaryKind::Gelu),
             "0.5f * v * (1.0f + tanhf(0.7978846f * (v + 0.044715f * v * v * v)))"
@@ -649,7 +683,7 @@ mod tests {
         // log_softmax and softmax share the stats pass but differ in apply.
         let (soft, lsoft) = (softmax_apply_source(false), softmax_apply_source(true));
         assert!(soft.contains("out[i] = expf(x[i] - m) / s;"));
-        assert!(lsoft.contains("out[i] = x[i] - (m + logf(s));"));
+        assert!(lsoft.contains("out[i] = (x[i] - m) - logf(s);"));
         assert_ne!(soft, lsoft);
     }
 
@@ -661,7 +695,7 @@ mod tests {
         };
         assert_eq!(
             unary_expr(one_sided),
-            "(isnan(v) ? v : fminf(fmaxf(v, 0.0f), __int_as_float(0x7f800000)))"
+            "(isnan(v) ? v : ((v < 0.0f ? 0.0f : v) > __int_as_float(0x7f800000) ? __int_as_float(0x7f800000) : (v < 0.0f ? 0.0f : v)))"
         );
         let lo = UnaryKind::Clamp {
             min: f32::NEG_INFINITY,
@@ -669,7 +703,7 @@ mod tests {
         };
         assert_eq!(
             unary_expr(lo),
-            "(isnan(v) ? v : fminf(fmaxf(v, __int_as_float(0xff800000)), 10000000000.0f))"
+            "(isnan(v) ? v : ((v < __int_as_float(0xff800000) ? __int_as_float(0xff800000) : v) > 10000000000.0f ? 10000000000.0f : (v < __int_as_float(0xff800000) ? __int_as_float(0xff800000) : v)))"
         );
         assert_eq!(
             unary_expr(UnaryKind::Powf(f32::NAN)),
@@ -683,6 +717,7 @@ mod tests {
         assert_eq!(binary_expr(BinaryKind::Sub), "x - y");
         assert_eq!(binary_expr(BinaryKind::Mul), "x * y");
         assert_eq!(binary_expr(BinaryKind::Div), "x / y");
+        assert_eq!(binary_expr(BinaryKind::ReluBackward), "(y <= 0.0f ? 0.0f : x)");
     }
 
     #[test]
@@ -742,7 +777,19 @@ mod tests {
     #[test]
     fn gtz_source_is_the_relu_gradient_mask() {
         let src = unary_source(UnaryKind::Gtz);
-        assert!(src.contains("out[i] = (v > 0.0f) ? 1.0f : 0.0f;"));
+        assert!(src.contains("out[i] = (v <= 0.0f ? 0.0f : 1.0f);"));
+    }
+
+    #[test]
+    fn activation_gradient_sources_route_conditionals_through_all_layouts() {
+        let branch = "(y <= 0.0f ? 0.0f : x)";
+        assert!(binary_source(BinaryKind::ReluBackward).contains(branch));
+        assert!(binary_bc_source(BinaryKind::ReluBackward, 3).contains(branch));
+        assert!(binary_inplace_source(BinaryKind::ReluBackward).contains(branch));
+        assert!(unary_source(UnaryKind::Sign).contains("(v < 0.0f ? -1.0f : (v > 0.0f ? 1.0f : 0.0f))"));
+        let chain = chain_source(&[ChainStep::Binary { kind: BinaryKind::ReluBackward, other: 1 }]);
+        assert!(chain.contains("float x = v0; float y = x1[i];"));
+        assert!(chain.contains("v1 = (y <= 0.0f ? 0.0f : x);"));
     }
 
     #[test]

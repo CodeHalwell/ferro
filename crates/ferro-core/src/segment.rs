@@ -156,6 +156,7 @@ pub fn sum(x: &Tensor, ids: &[usize], num_segments: usize) -> Result<Tensor> {
 pub fn mean(x: &Tensor, ids: &[usize], num_segments: usize) -> Result<Tensor> {
     cpu_f32(x, "segment_mean")?;
     let (width, shape) = layout(x, ids, num_segments, "segment_mean")?;
+    if width == 0 { return sum(x, ids, num_segments); }
     let data = x.to_vec();
     let mut counts = vec![0usize; num_segments];
     let mut out = vec![0.; num_segments * width];

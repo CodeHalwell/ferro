@@ -100,25 +100,24 @@ impl Tensor {
         }
 
         let x = self.to_vec();
-        let src_shape = src.shape().to_vec();
         let mut y = x.clone();
         for (t, sv) in targets.iter().zip(&s) {
             y[*t] += sv;
         }
         let out = Tensor::from_vec(y, &in_shape)?;
-        if !self.requires_grad() && !src.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !src.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
 
         let src_shape = idx_shape.clone();
         Ok(
-            out.record_fn(vec![self.clone(), index.clone(), src.clone()], move |g| {
+            out.record_fn_optional(vec![self.clone(), index.clone(), src.clone()], move |g| {
                 let gd = g.to_vec();
                 let gsrc: Vec<f32> = targets.iter().map(|&t| gd[t]).collect();
                 vec![
-                    Tensor::from_vec(gd, &in_shape).unwrap(),
-                    Tensor::zeros(&idx_shape),
-                    Tensor::from_vec(gsrc, &src_shape).unwrap(),
+                    Some(Tensor::from_vec(gd, &in_shape).unwrap()),
+                    None,
+                    Some(Tensor::from_vec(gsrc, &src_shape).unwrap()),
                 ]
             }),
         )

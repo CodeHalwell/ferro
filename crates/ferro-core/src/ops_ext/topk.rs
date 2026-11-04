@@ -9,6 +9,7 @@ use crate::tensor::Tensor;
 
 impl Tensor {
     pub fn topk(&self, k: usize, dim: usize) -> Result<(Tensor, Tensor)> {
+        crate::tensor::check_f32("topk", self)?;
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {
@@ -23,6 +24,16 @@ impl Tensor {
                 op: "topk",
                 msg: format!("k {k} out of range for dim {dim} with size {size}"),
             });
+        }
+        let mut out_shape = shape.clone();
+        out_shape[dim] = k;
+        if out_shape.contains(&0) {
+            let indices = Tensor::from_vec_i64(Vec::new(), &out_shape)?;
+            let values = Tensor::from_vec(Vec::new(), &out_shape)?.record_fn(vec![self.clone()], move |_| {
+                let zeros = crate::typed_math::filled("topk backward", &shape, 0.0f32).unwrap();
+                vec![Tensor::from_vec(zeros, &shape).unwrap()]
+            });
+            return Ok((values, indices));
         }
         let stride: usize = shape[dim + 1..].iter().product();
         let outer: usize = shape[..dim].iter().product();
@@ -60,8 +71,6 @@ impl Tensor {
 
         // Selected entries are laid out [outer, stride, k] by the loop above;
         // permute to the output layout [outer, k, stride].
-        let mut out_shape = shape.clone();
-        out_shape[dim] = k;
         let n = outer * k * stride;
         let mut v_out = vec![0.0f32; n];
         let mut i_out = vec![0i64; n];
@@ -80,7 +89,7 @@ impl Tensor {
 
         let indices = Tensor::from_vec_i64(i_out, &out_shape)?;
         let values = Tensor::from_vec(v_out, &out_shape)?;
-        if !self.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok((values, indices));
         }
         let in_shape = shape;

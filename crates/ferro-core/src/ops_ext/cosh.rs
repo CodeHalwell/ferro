@@ -7,6 +7,9 @@ use crate::tensor::{raw_binary, Tensor};
 
 impl Tensor {
     pub fn cosh(&self) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 {
+            return crate::typed_math::unary_grad_tensor(self, "cosh", f64::cosh, false, |g, x| g.mul(&x.sinh()?));
+        }
         let out = raw_binary("cosh", self, self, |v, _| v.cosh())?.to_device(self.device())?;
         let x = self.detach_copy();
         Ok(out.record_fn(vec![self.clone()], move |g| {

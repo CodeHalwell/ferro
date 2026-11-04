@@ -16,6 +16,11 @@ impl Tensor {
         }
         // No max(1) guard: like mean(), an empty reduced dim yields NaN
         // (0 * inf) to match torch rather than a silent 0.
+        if self.dtype() == crate::DType::F64 {
+            let s = self.sum_dim(dim, keepdim)?;
+            return s.div(&crate::typed_math::full_f64(&[], self.shape()[dim] as f64)?);
+        }
+        crate::tensor::check_f32("mean_dim", self)?;
         let n = self.shape()[dim] as f32;
         // sum_dim on a device VIEW falls back to a cpu tensor (only whole
         // device buffers reduce in place), so the scale scalar must live on the

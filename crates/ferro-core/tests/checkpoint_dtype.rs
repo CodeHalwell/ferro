@@ -45,6 +45,7 @@ fn samples() -> Vec<Tensor> {
         Tensor::from_vec_i64(vec![16_777_217, i64::MAX, i64::MIN, -16_777_217], &[2, 2]).unwrap(),
         Tensor::from_vec_f16_bits(vec![0x7d01, 0x8000, 0x0001, 0xfc00], &[2, 2]).unwrap(),
         Tensor::from_vec_bf16_bits(vec![0x7f81, 0x8000, 0x0001, 0xff80], &[2, 2]).unwrap(),
+        Tensor::from_vec_bool(vec![true, false, false, true], &[2, 2]).unwrap(),
     ]
 }
 
@@ -55,6 +56,7 @@ fn bits(t: &Tensor) -> Vec<u64> {
         DType::I64 => t.to_vec_i64().iter().map(|v| *v as u64).collect(),
         DType::F16 => t.to_vec_f16_bits().unwrap().iter().map(|v| *v as u64).collect(),
         DType::BF16 => t.to_vec_bf16_bits().unwrap().iter().map(|v| *v as u64).collect(),
+        DType::Bool => t.to_vec_bool().into_iter().map(u64::from).collect(),
     }
 }
 
@@ -109,6 +111,8 @@ fn i64_checkpoint_roundtrip() { typed_roundtrip(2); }
 fn f16_checkpoint_roundtrip() { typed_roundtrip(3); }
 #[test]
 fn bf16_checkpoint_roundtrip() { typed_roundtrip(4); }
+#[test]
+fn bool_checkpoint_roundtrip() { typed_roundtrip(5); }
 
 #[test]
 fn checkpoint_snapshots_do_not_alias_live_values_or_each_other() {
@@ -123,9 +127,10 @@ fn checkpoint_snapshots_do_not_alias_live_values_or_each_other() {
 }
 
 #[test]
-fn typed_io_does_not_enable_typed_transactional_restore() {
+fn integer_transactional_restore_preserves_values_above_f32_precision() {
     let t = Tensor::from_vec_i64(vec![16_777_217], &[1]).unwrap();
     let cp = Checkpoint::new(1).with_tensor("value", t.clone());
-    assert!(cp.load_named_state_into(&[("value".into(), t.clone())]).is_err());
+    t.copy_from(&Tensor::from_vec_i64(vec![3], &[1]).unwrap()).unwrap();
+    cp.load_named_state_into(&[("value".into(), t.clone())]).unwrap();
     assert_eq!(t.to_vec_i64(), [16_777_217]);
 }

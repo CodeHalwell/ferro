@@ -8,6 +8,9 @@ use crate::tensor::Tensor;
 
 impl Tensor {
     pub fn bce_loss(&self, target: &Tensor) -> Result<Tensor> {
+        if self.device() == crate::Device::Cpu && self.shape() == target.shape() {
+            return Ok(self.binary_cross_entropy_unreduced(target)?.mean());
+        }
         let one_minus_p = Tensor::full_on(self.shape(), 1.0, self.device())?.sub(self)?;
         let one_minus_t = Tensor::full_on(target.shape(), 1.0, target.device())?.sub(target)?;
         let t_log_p = target.mul(&self.log())?;

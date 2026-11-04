@@ -55,7 +55,12 @@ fn empty_eval_is_empty_with_zero_affine_gradients() {
         assert_eq!(x.grad().unwrap().shape(), shape);
         assert_eq!(w.grad().unwrap().to_vec(), vec![0., 0.]);
         assert_eq!(b.grad().unwrap().to_vec(), vec![0., 0.]);
-        assert!(x.batch_norm(&w, &b, &rm, &rv, 1e-5, true, 0.1).is_err());
+        let train = x.batch_norm(&w, &b, &rm, &rv, 1e-5, true, 0.1).unwrap();
+        assert_eq!(train.output.shape(), shape);
+        assert_eq!(train.running_mean.to_vec(), rm.to_vec());
+        assert_eq!(train.running_var.to_vec(), rv.to_vec());
+        train.output.sum().backward();
+        assert_eq!(w.grad().unwrap().to_vec(), vec![0., 0.]);
     }
 }
 

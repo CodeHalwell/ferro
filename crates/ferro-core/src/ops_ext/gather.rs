@@ -10,6 +10,10 @@ use crate::tensor::Tensor;
 
 impl Tensor {
     pub fn gather(&self, dim: usize, index: &Tensor) -> Result<Tensor> {
+        if self.dtype() == DType::F64 { crate::typed_math::check("gather", &[self], DType::F64)?; }
+        if self.device() != index.device() {
+            return Err(Error::DeviceMismatch { op: "gather", lhs: self.device(), rhs: index.device() });
+        }
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {
@@ -71,10 +75,29 @@ impl Tensor {
             }
         }
 
-        let x = self.to_vec();
-        let y: Vec<f32> = src.iter().map(|&o| x[o]).collect();
-        let out = Tensor::from_vec(y, &out_shape)?;
-        if !self.requires_grad() && !crate::capture::is_recording() {
+        macro_rules! select {
+            ($values:expr, $ctor:ident) => {{
+                let values = $values;
+                Tensor::$ctor(src.iter().map(|&o| values[o]).collect(), &out_shape)?
+            }};
+        }
+        let out = match self.dtype() {
+            DType::F32 => select!(self.to_vec(), from_vec),
+            DType::F64 => select!(self.to_vec_f64(), from_vec_f64),
+            DType::I64 => select!(self.to_vec_i64(), from_vec_i64),
+            DType::Bool => select!(self.to_vec_bool(), from_vec_bool),
+            DType::F16 => select!(self.to_vec_f16_bits()?, from_vec_f16_bits),
+            DType::BF16 => select!(self.to_vec_bf16_bits()?, from_vec_bf16_bits),
+        };
+        if self.dtype() == DType::F64 {
+            return Ok(out.record_fn(vec![self.clone()], move |g| {
+                let mut gx = crate::typed_math::filled("gather backward", &in_shape, 0.0f64).unwrap();
+                for (v, &i) in g.to_vec_f64().iter().zip(&src) { gx[i] += v; }
+                vec![Tensor::from_vec_f64(gx, &in_shape).unwrap()]
+            }));
+        }
+        if self.dtype() != DType::F32 { return Ok(out); }
+        if !self.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
         Ok(out.record_fn(vec![self.clone()], move |g| {

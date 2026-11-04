@@ -125,12 +125,12 @@ impl Tensor {
         } else {
             Tensor::from_vec(y, &in_shape)?.to_device(self.device())?
         };
-        if !self.requires_grad() && !src.requires_grad() && !crate::capture::is_recording() {
+        if !self.requires_grad() && !src.requires_grad() && !crate::capture::is_recording() && !crate::forward_ad::is_active() {
             return Ok(out);
         }
 
         Ok(
-            out.record_fn(vec![self.clone(), index.clone(), src.clone()], move |g| {
+            out.record_fn_optional(vec![self.clone(), index.clone(), src.clone()], move |g| {
                 let gd = g.to_vec();
                 let mut gx = gd.clone();
                 let mut gs = vec![0.0f32; s_len];
@@ -141,9 +141,9 @@ impl Tensor {
                     }
                 }
                 vec![
-                    Tensor::from_vec(gx, &in_shape).unwrap(),
-                    Tensor::zeros(&idx_shape),
-                    Tensor::from_vec(gs, &idx_shape).unwrap(),
+                    Some(Tensor::from_vec(gx, &in_shape).unwrap()),
+                    None,
+                    Some(Tensor::from_vec(gs, &idx_shape).unwrap()),
                 ]
             }),
         )

@@ -19,7 +19,7 @@ pub fn default_strides(shape: &[usize]) -> Vec<usize> {
     let mut acc = 1usize;
     for i in (0..shape.len()).rev() {
         stride[i] = acc;
-        acc *= shape[i];
+        acc *= shape[i].max(1);
     }
     stride
 }

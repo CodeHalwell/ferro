@@ -2,9 +2,9 @@
 //! A single checkpoint.json replacement publishes all arrays and metadata.
 //! Legacy model.safetensors plus checkpoint.json directories remain readable.
 //! Module snapshots include named buffers and exact scalar modes/counters.
-//! Whole-training snapshots also bind optimizer slots and parameter ties.
+//! Whole-training snapshots also bind optimizer slots, parameter ties and leaf AD flags.
 //! Snapshot I/O preserves tensor dtype bits and device placement in memory.
-//! Restore is transactional for supported whole-contiguous CPU f32 targets.
+//! Restore is transactional for whole-contiguous CPU F32/F64/I64/Bool targets.
 //! Model device restore is rejected: no backend transaction exists. Optimizer
 //! buffer restore is separate and supports devices without a rollback guarantee.
 
@@ -78,23 +78,24 @@ impl Checkpoint {
     }
 
     fn prepare_named_state(&self, targets: &[(String, Tensor)]) -> Result<Vec<(Tensor, Tensor)>> {
+        validate_restore_context()?;
         self.validate_header()?;
         if self.tensors.len() != targets.len() { return Err(format_error("state key count mismatch")); }
         let mut names = std::collections::HashSet::new();
-        let mut identities = std::collections::HashMap::<usize, Vec<u32>>::new();
+        let mut identities = std::collections::HashMap::<usize, Vec<u8>>::new();
         let mut staged = Vec::new();
         for (name, dst) in targets {
             if !names.insert(name) { return Err(format_error("duplicate target name")); }
             let src = self.tensor(name)?;
             validate_destination(dst, src)?;
             let identity = std::sync::Arc::as_ptr(&dst.0.storage) as usize;
-            let bits: Vec<_> = src.to_vec().iter().map(|x| x.to_bits()).collect();
+            let bits = state_bytes(src)?;
             if let Some(previous) = identities.get(&identity) {
                 if previous != &bits { return Err(format_error("conflicting aliased state values")); }
                 continue;
             }
             identities.insert(identity, bits);
-            staged.push((dst.clone(), src.to_device(crate::device::Device::Cpu)?.owned_detach_copy()));
+            staged.push((dst.clone(), src.to_device(crate::device::Device::Cpu)?.try_owned_detach_copy()?));
         }
         Ok(staged)
     }
@@ -105,6 +106,7 @@ impl Checkpoint {
     }
 
     pub fn load_rng_into(&self, rng: &crate::rng::Rng) -> Result<()> {
+        validate_restore_context()?;
         let t = self.tensor("rng.xorshift128")?;
         if t.shape() != [8] || t.dtype() != crate::dtype::DType::F32 { return Err(format_error("invalid RNG state")); }
         let words = t.to_vec();
@@ -126,6 +128,7 @@ impl Checkpoint {
     }
 
     pub fn load_named_optim_into(&self, name: &str, opt: &mut dyn crate::optim::OptimizerState) -> Result<()> {
+        validate_restore_context()?;
         let prefix = format!("optim.{name}.");
         let config = self.tensor(&format!("{prefix}config"))?;
         if config.dtype() != crate::dtype::DType::F32 || config.ndim() != 1 { return Err(format_error("invalid configuration tensor")); }
@@ -146,7 +149,7 @@ impl Checkpoint {
         validate_optimizer_isolation(module, optimizers.iter().map(|(_,opt)| *opt))?;
         let storage = storage_schema(module)?;
         let mut cp = Self::from_module(step, module).with_rng(rng);
-        for (key, value) in parameter_schema(module).into_iter().chain(storage) { cp.tensors.push((key, encode_u64(value))); }
+        for (key, value) in parameter_schema(module).into_iter().chain(parameter_grad_schema(module)).chain(storage) { cp.tensors.push((key, encode_u64(value))); }
         for (name, opt) in optimizers {
             cp = cp.with_optimizer(name, *opt)?;
             for (i, index) in optimizer_binding(module, *opt)?.into_iter().enumerate() {
@@ -163,6 +166,7 @@ impl Checkpoint {
     /// pause training; this is not concurrent-reader isolation or panic recovery.
     pub fn load_training_state_into(&self, module: &dyn Module,
         optimizers: &mut [(&str, &mut dyn crate::optim::OptimizerState)], rng: &crate::rng::Rng) -> Result<()> {
+        validate_restore_context()?;
         self.validate_header()?;
         let scalars = self.module_scalars()?;
         module.validate_scalars(&scalars)?;
@@ -183,17 +187,37 @@ impl Checkpoint {
             if (key.starts_with("ties.") && value != 1) || value > 1 { return Err(format_error("invalid parameter schema")); }
             expected.insert(key);
         }
+        let has_grad_flags = self.tensors.iter().any(|(name,_)| name.starts_with("grad_flags."));
+        if has_grad_flags {
+            if decode_u64(self.tensor("grad_flags.version")?)? != 1 { return Err(format_error("unsupported parameter gradient flag version")); }
+            expected.insert("grad_flags.version".into());
+        }
         let mut flags = std::collections::HashMap::new();
+        let mut grad_flags = std::collections::HashMap::new();
         for (name, p) in module.named_parameters() {
             let flag = decode_u64(self.tensor(&format!("trainable.{name}"))?)? != 0;
             if flags.insert(p.identity(), flag).is_some_and(|old| old != flag) { return Err(format_error("conflicting tied freeze flags")); }
-            trainable.push((p, flag));
+            let requires_grad = if has_grad_flags {
+                let key = format!("grad_flags.parameter.{name}");
+                let value = decode_u64(self.tensor(&key)?)?;
+                if value > 1 { return Err(format_error("invalid parameter gradient flag")); }
+                expected.insert(key);
+                value == 1
+            } else { true }; // Historical parameters always enabled leaf AD, even when optimizer-frozen.
+            if grad_flags.insert(p.identity(), requires_grad).is_some_and(|old| old != requires_grad) { return Err(format_error("conflicting tied parameter gradient flags")); }
+            let tensor = p.tensor();
+            if tensor.0.op.is_some() || !matches!(tensor.dtype(), crate::DType::F32 | crate::DType::F64) {
+                return Err(format_error("parameter gradient flags require floating leaf targets"));
+            }
+            trainable.push((p, flag, requires_grad));
         }
         let mut namespaces = std::collections::HashSet::new();
         for (name, opt) in optimizers.iter() {
             if !namespaces.insert(*name) { return Err(format_error("duplicate optimizer target")); }
             expected.insert(format!("optim.{name}.config"));
-            expected.extend(opt.snapshot().iter().map(|(n,_)| format!("optim.{name}.{n}")));
+            let config = self.tensor(&format!("optim.{name}.config"))?;
+            if config.dtype() != crate::dtype::DType::F32 || config.ndim() != 1 { return Err(format_error("invalid configuration tensor")); }
+            expected.extend(opt.expected_restore_keys(&config.to_vec())?.into_iter().map(|n| format!("optim.{name}.{n}")));
             for (i, index) in optimizer_binding(module, &**opt)?.into_iter().enumerate() {
                 let key = format!("bindings.{name}.{i}.{index}");
                 if decode_u64(self.tensor(&key)?)? != 1 { return Err(format_error("optimizer parameter order mismatch")); }
@@ -216,7 +240,10 @@ impl Checkpoint {
         }
         commit_tensors(staged);
         for commit in commits { commit(); }
-        for (p, flag) in trainable { p.set_trainable(flag); }
+        for (p, flag, requires_grad) in trainable {
+            p.set_trainable(flag);
+            p.tensor().set_requires_grad(requires_grad).expect("prevalidated parameter gradient flag");
+        }
         module.commit_scalars(&scalars);
         rng.restore_state(rng_state).expect("validated RNG state");
         Ok(())
@@ -253,6 +280,7 @@ impl Checkpoint {
     /// except optimizer buffers (`optim.` prefix), which belong to
     /// `load_optim_into`.
     pub fn load_into_module(&self, module: &dyn Module) -> Result<()> {
+        validate_restore_context()?;
         self.validate_header()?;
         let scalars = self.module_scalars()?;
         module.validate_scalars(&scalars)?;
@@ -282,6 +310,7 @@ impl Checkpoint {
     /// Restore optimizer state, strictly: every snapshot array must be present
     /// with matching shape and nothing extra may remain.
     pub fn load_optim_into(&self, opt: &mut dyn crate::optim::OptimizerState) -> Result<()> {
+        validate_restore_context()?;
         const OP: &str = "checkpoint_load";
         let mut remaining: Vec<(String, Tensor)> = self
             .tensors
@@ -503,7 +532,7 @@ fn storage_schema(module: &dyn Module) -> Result<Vec<(String, u64)>> {
         let first = *canonical.entry(t._storage_ptr()).or_insert(i as u64);
         if first != i as u64 {
             let original = &named[first as usize].1;
-            // Only identical whole-contiguous CPU f32 aliases have a commit protocol.
+            // Only identical whole-contiguous supported CPU aliases have a commit protocol.
             validate_destination(t, original)?;
             validate_destination(original, t)?;
         }
@@ -517,6 +546,11 @@ fn parameter_schema(module: &dyn Module) -> Vec<(String, u64)> {
         let canonical = &named.iter().find(|(_, q)| p.identity() == q.identity()).unwrap().0;
         [(format!("ties.{name}.{canonical}"), 1), (format!("trainable.{name}"), p.is_trainable() as u64)]
     }).collect()
+}
+
+fn parameter_grad_schema(module: &dyn Module) -> Vec<(String, u64)> {
+    std::iter::once(("grad_flags.version".into(), 1))
+        .chain(module.named_parameters().into_iter().map(|(name,p)| (format!("grad_flags.parameter.{name}"), p.tensor().requires_grad() as u64))).collect()
 }
 
 fn commit_tensors(staged: Vec<(Tensor, Tensor)>) {
@@ -542,12 +576,43 @@ fn decode_u64(t: &Tensor) -> Result<u64> {
     Ok(value)
 }
 
-pub(crate) fn validate_destination(dst: &Tensor, src: &Tensor) -> Result<()> {
-    if dst.shape() != src.shape() || dst.dtype() != src.dtype() { return Err(format_error("state shape/dtype mismatch")); }
-    if dst.device() != crate::device::Device::Cpu || dst.dtype() != crate::dtype::DType::F32 || dst.0.offset != 0 || !dst.is_contiguous() || dst.storage_len() != dst.numel() {
-        return Err(Error::Unsupported { op: "checkpoint_load", msg: "transaction requires whole contiguous CPU f32 destinations; device commit protocol not implemented".into() });
+#[doc(hidden)]
+pub fn validate_restore_context() -> Result<()> {
+    if crate::capture::is_recording() || crate::forward_ad::is_active() {
+        return Err(Error::Unsupported { op: "checkpoint_load", msg: "checkpoint restore requires quiescent execution outside capture and forward AD".into() });
     }
     Ok(())
+}
+
+#[doc(hidden)]
+pub fn validate_restore_target(dst: &Tensor) -> Result<()> {
+    use crate::dtype::DType;
+    validate_restore_context()?;
+    if dst.is_structural_zero() {
+        return Err(Error::Unsupported { op: "checkpoint_load", msg: "structural-zero destination is immutable; register an ordinary clone before restore".into() });
+    }
+    if dst.device() != crate::device::Device::Cpu
+        || !matches!(dst.dtype(), DType::F32 | DType::F64 | DType::I64 | DType::Bool)
+        || dst.0.offset != 0 || !dst.is_contiguous() || dst.storage_len() != dst.numel() {
+        return Err(Error::Unsupported { op: "checkpoint_load", msg: "transaction requires whole contiguous CPU F32/F64/I64/Bool destinations; device commit protocol not implemented".into() });
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_destination(dst: &Tensor, src: &Tensor) -> Result<()> {
+    if dst.shape() != src.shape() || dst.dtype() != src.dtype() { return Err(format_error("state shape/dtype mismatch")); }
+    validate_restore_target(dst)
+}
+
+fn state_bytes(tensor: &Tensor) -> Result<Vec<u8>> {
+    use crate::dtype::DType;
+    Ok(match tensor.dtype() {
+        DType::F32 => tensor.to_vec().into_iter().flat_map(f32::to_le_bytes).collect(),
+        DType::F64 => tensor.to_vec_f64().into_iter().flat_map(f64::to_le_bytes).collect(),
+        DType::I64 => tensor.to_vec_i64().into_iter().flat_map(i64::to_le_bytes).collect(),
+        DType::Bool => tensor.to_vec_bool().into_iter().map(u8::from).collect(),
+        _ => return Err(format_error("unsupported transaction tensor dtype")),
+    })
 }
 
 // Accidental corruption detection, not cryptographic authentication.

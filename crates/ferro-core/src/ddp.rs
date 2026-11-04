@@ -76,7 +76,7 @@ impl Ddp {
     fn replica_params(&self, dev: Device) -> Result<Vec<Tensor>> {
         self.params
             .iter()
-            .map(|(_, p)| p.tensor().to_device(dev)?.requires_grad_(true))
+            .map(|(_, p)| p.tensor().to_device(dev)?.detach().requires_grad_(true))
             .collect()
     }
 

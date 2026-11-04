@@ -13,6 +13,8 @@ use crate::tensor::{raw_row_softmax, Tensor};
 
 impl Tensor {
     pub fn softmax(&self, dim: usize) -> Result<Tensor> {
+        if self.dtype() == crate::DType::F64 { return crate::typed_math::softmax(self, dim, false); }
+        crate::tensor::check_f32("softmax", self)?;
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {
@@ -22,7 +24,7 @@ impl Tensor {
         }
         let shape = self.shape().to_vec();
         if let Some(out) = raw_row_softmax(self, dim, false) {
-            if !self.requires_grad() {
+            if !self.requires_grad() && !crate::forward_ad::is_active() {
                 return Ok(if crate::capture::is_recording() {
                     out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), |_| unreachable!("inference node has no backward"))
                 } else { out });
@@ -33,7 +35,7 @@ impl Tensor {
                 let gy = g.mul(&y).unwrap();
                 let s = gy.sum_dim(dim, true).unwrap();
                 vec![g.sub(&s).unwrap().mul(&y).unwrap()]
-            }));
+            }).save_output_version());
         }
         let cpu = crate::dispatch::backend_for(crate::Device::Cpu)?;
         let rows = shape[..dim].iter().product();
@@ -41,7 +43,7 @@ impl Tensor {
         // Host-composed op: return to the input's device so chained
         // device-resident ops stay on-device.
         let out = Tensor::from_vec(y_data, &shape)?.to_device(self.device())?;
-        if !self.requires_grad() {
+        if !self.requires_grad() && !crate::forward_ad::is_active() {
             return Ok(if crate::capture::is_recording() {
                 out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), |_| unreachable!("inference node has no backward"))
             } else { out });
@@ -50,7 +52,7 @@ impl Tensor {
         Ok(out.record_fn_forward(vec![self.clone()], crate::autograd::ForwardOp::Softmax(dim), move |g| {
             let dx = softmax_backward(&g.to_vec(), &y.to_vec(), &shape, dim);
             vec![Tensor::from_vec(dx, &shape).unwrap()]
-        }))
+        }).save_output_version())
     }
 }
 

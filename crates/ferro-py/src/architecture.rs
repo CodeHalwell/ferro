@@ -1,5 +1,94 @@
 use super::*;
 
+/// Directed integer topology; tensor conversion keeps trailing isolated nodes explicit.
+#[pyclass(name = "EdgeIndex", module = "ferro.graph", frozen)]
+struct PyEdgeIndex { inner: ferro_core::gnn::EdgeIndex }
+
+#[pymethods]
+impl PyEdgeIndex {
+    #[new]
+    fn new(num_nodes: usize, src: Vec<i64>, dst: Vec<i64>) -> PyResult<Self> {
+        let convert = |ids: Vec<i64>| ids.into_iter().map(|id| usize::try_from(id)
+            .map_err(|_| PyValueError::new_err("node ids must be nonnegative i64 integers")))
+            .collect::<PyResult<Vec<_>>>();
+        ferro_core::gnn::EdgeIndex::new(num_nodes, convert(src)?, convert(dst)?)
+            .map(|inner| Self { inner }).map_err(map_err)
+    }
+
+    #[staticmethod]
+    fn from_tensor(edge_index: &PyTensor, num_nodes: usize) -> PyResult<Self> {
+        if edge_index.inner.device() != Device::Cpu {
+            return Err(PyValueError::new_err("EdgeIndex requires CPU topology; move it explicitly"));
+        }
+        ferro_core::gnn::EdgeIndex::from_tensor(&edge_index.inner, num_nodes)
+            .map(|inner| Self { inner }).map_err(map_err)
+    }
+
+    fn to_tensor(&self) -> PyTensor { PyTensor::wrap(self.inner.to_tensor()) }
+
+    #[getter]
+    fn num_nodes(&self) -> usize { self.inner.num_nodes() }
+    #[getter]
+    fn num_edges(&self) -> usize { self.inner.num_edges() }
+    #[getter]
+    fn src(&self) -> Vec<usize> { self.inner.src().to_vec() }
+    #[getter]
+    fn dst(&self) -> Vec<usize> { self.inner.dst().to_vec() }
+
+    fn add_remaining_self_loops(&self) -> Self { Self { inner: self.inner.add_remaining_self_loops() } }
+    fn in_degree(&self) -> Vec<usize> { self.inner.in_degree() }
+    fn gcn_norm(&self) -> PyTensor { PyTensor::wrap(self.inner.gcn_norm()) }
+
+    #[staticmethod]
+    fn batch(graphs: Vec<PyRef<'_, PyEdgeIndex>>) -> PyResult<(Self, Vec<usize>)> {
+        let graphs: Vec<_> = graphs.iter().map(|g| g.inner.clone()).collect();
+        let (inner, owner) = ferro_core::gnn::EdgeIndex::try_batch(&graphs).map_err(map_err)?;
+        Ok((Self { inner }, owner))
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (src, index, dim_size, reduce="sum"))]
+fn scatter(src: &PyTensor, index: Vec<usize>, dim_size: usize, reduce: &str) -> PyResult<PyTensor> {
+    use ferro_core::gnn::Aggr;
+    let reduce = match reduce {
+        "sum" => Aggr::Sum, "mean" => Aggr::Mean, "max" => Aggr::Max, "min" => Aggr::Min,
+        _ => return Err(PyValueError::new_err("reduce must be sum, mean, max or min")),
+    };
+    if src.inner.device() != Device::Cpu || src.inner.dtype() != ferro_core::DType::F32 {
+        return Err(PyValueError::new_err("scatter requires CPU f32 input"));
+    }
+    ferro_core::gnn::scatter(&src.inner, &index, dim_size, reduce).map(PyTensor::wrap).map_err(map_err)
+}
+
+#[pyfunction]
+#[pyo3(signature = (q, k, v, edges, edge_bias=None))]
+fn edge_attention(q: &PyTensor, k: &PyTensor, v: &PyTensor, edges: &PyEdgeIndex, edge_bias: Option<&PyTensor>) -> PyResult<PyTensor> {
+    ferro_core::gnn::edge_attention(&q.inner, &k.inner, &v.inner, &edges.inner, edge_bias.map(|b| &b.inner))
+        .map(PyTensor::wrap).map_err(map_err)
+}
+
+#[pyfunction]
+fn _gcn_conv(x: &PyTensor, weight: &PyTensor, bias: &PyTensor, edges: &PyEdgeIndex, self_loops: bool) -> PyResult<PyTensor> {
+    let (x, weight, bias) = (&x.inner, &weight.inner, &bias.inner);
+    if [x, weight, bias].iter().any(|t| t.device() != Device::Cpu || t.dtype() != ferro_core::DType::F32) {
+        return Err(PyValueError::new_err("GcnConv requires CPU f32 features and parameters"));
+    }
+    if x.ndim() != 2 || weight.ndim() != 2 || bias.ndim() != 1 ||
+        x.shape()[0] != edges.inner.num_nodes() || x.shape()[1] != weight.shape()[0] || bias.shape()[0] != weight.shape()[1] {
+        return Err(PyValueError::new_err("GcnConv expects [nodes, in] features, [in, out] weight and [out] bias"));
+    }
+    let looped;
+    let edges = if self_loops { looped = edges.inner.add_remaining_self_loops(); &looped } else { &edges.inner };
+    let out = (|| -> ferro_core::Result<CoreTensor> {
+        let h = x.matmul(weight)?;
+        let norm = edges.gcn_norm().reshape(&[edges.num_edges(), 1])?;
+        let messages = h.index_select(0, edges.src())?.mul(&norm)?;
+        ferro_core::gnn::scatter(&messages, edges.dst(), edges.num_nodes(), ferro_core::gnn::Aggr::Sum)?.add(bias)
+    })();
+    out.map(PyTensor::wrap).map_err(map_err)
+}
+
 /// Immutable integer topology for reusable first-order sum/softmax.
 /// Device backends retain their original topology allocations and stream owner.
 #[pyclass(name = "PreparedSegments", module = "ferro.graph")]
@@ -90,6 +179,10 @@ impl PyCSR {
 }
 
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyEdgeIndex>()?;
+    m.add_function(wrap_pyfunction!(scatter, m)?)?;
+    m.add_function(wrap_pyfunction!(edge_attention, m)?)?;
+    m.add_function(wrap_pyfunction!(_gcn_conv, m)?)?;
     m.add_function(wrap_pyfunction!(segment_sum, m)?)?;
     m.add_function(wrap_pyfunction!(segment_mean, m)?)?;
     m.add_function(wrap_pyfunction!(segment_max, m)?)?;

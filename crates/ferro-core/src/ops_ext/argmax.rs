@@ -23,6 +23,7 @@ fn arg_reduce(
     keepdim: bool,
     better: impl Fn(f32, f32) -> bool,
 ) -> Result<Tensor> {
+    crate::tensor::check_f32(op, t)?;
     let ndim = t.ndim();
     if dim >= ndim {
         return Err(Error::InvalidShape {

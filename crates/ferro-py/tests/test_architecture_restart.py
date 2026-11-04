@@ -37,8 +37,15 @@ class ArchitectureRestart(unittest.TestCase):
                        fr.Tensor.from_i64([0], [1]), fr.Tensor.from_i64([0, 2**40], [2])):
             with self.assertRaises(ValueError):
                 fr.nn.functional.cross_entropy(x, target)
-        with self.assertRaises(ValueError):
-            fr.nn.functional.cross_entropy(fr.Tensor([], [0, 2]), fr.Tensor.from_i64([], [0]))
+        empty = fr.Tensor([], [0, 2]).requires_grad_(True)
+        loss = fr.nn.functional.cross_entropy(empty, fr.Tensor.from_i64([], [0]))
+        expected_input = torch.empty(0, 2, requires_grad=True)
+        expected = torch.nn.functional.cross_entropy(expected_input, torch.empty(0, dtype=torch.int64))
+        loss.backward()
+        expected.backward()
+        torch.testing.assert_close(torch.tensor(loss.item()), expected.detach(), equal_nan=True)
+        self.assertEqual(empty.grad.shape, [0, 2])
+        torch.testing.assert_close(torch.tensor(empty.grad.tolist()).reshape(0, 2), expected_input.grad)
 
 
 if __name__ == '__main__':

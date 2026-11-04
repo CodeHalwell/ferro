@@ -539,6 +539,20 @@ impl CompiledChain {
             let mut inputs: Vec<_> = effective_inputs(run).iter().map(|id| slots[id]).collect();
             let mut static_shape = run.shape.clone();
             let op = match &run.forward {
+                Some(crate::autograd::ForwardOp::SigmoidBackward | crate::autograd::ForwardOp::TanhBackward) => return Err(unsupported("static activation backward is not supported")),
+                Some(crate::autograd::ForwardOp::Prelu) => return Err(unsupported("static PReLU is not supported")),
+                Some(crate::autograd::ForwardOp::WhereConditional) => return Err(unsupported("static conditional selection is not supported")),
+                Some(crate::autograd::ForwardOp::IndexedGather { .. } | crate::autograd::ForwardOp::IndexedScatter { .. } | crate::autograd::ForwardOp::CumExtrema { .. }) => return Err(unsupported("static indexed selection is not supported")),
+                Some(crate::autograd::ForwardOp::Celu(_)) => return Err(unsupported("static CELU is not supported")),
+                Some(crate::autograd::ForwardOp::Rounding(_) | crate::autograd::ForwardOp::Frac | crate::autograd::ForwardOp::Rsqrt) => return Err(unsupported("static rounding and reciprocal square root are not supported")),
+                Some(crate::autograd::ForwardOp::RoundedDiv(_) | crate::autograd::ForwardOp::FloorDivide) => return Err(unsupported("static rounded division is not supported")),
+                Some(crate::autograd::ForwardOp::CumSum { .. } | crate::autograd::ForwardOp::CumProd { .. } | crate::autograd::ForwardOp::Prod { .. }) => return Err(unsupported("static cumulative operations are not supported")),
+                Some(crate::autograd::ForwardOp::Square) => return Err(unsupported("static square is not supported")),
+                Some(crate::autograd::ForwardOp::ScalarPower(power)) => {
+                    if *power != *power as f32 as f64 { return Err(unsupported("non-f32 scalar power requires its host fallback")); }
+                    crate::dispatch::StaticOp::Pointwise(vec![crate::dispatch::ChainStepRef::Unary(crate::dispatch::UnaryKind::Powf(*power as f32))])
+                },
+                Some(crate::autograd::ForwardOp::AddAlpha { .. }) => return Err(unsupported("static alpha arithmetic is not supported")),
                 Some(crate::autograd::ForwardOp::Sum | crate::autograd::ForwardOp::Mean) => return Err(unsupported("static scalar reduction is not supported")),
                 Some(crate::autograd::ForwardOp::MatMul) => {
                     let a = &shapes[inputs[0]];
@@ -551,7 +565,11 @@ impl CompiledChain {
                     if a.len()!=3 || b.len()!=3 || a[0]!=b[0] || a[2]!=b[1] { return Err(unsupported("invalid static bmm shape")); }
                     crate::dispatch::StaticOp::Bmm { batch:a[0],m:a[1],k:a[2],n:b[2] }
                 },
-                Some(crate::autograd::ForwardOp::Reshape(_)) => crate::dispatch::StaticOp::Layout { strides: crate::shape::default_strides(&run.shape) },
+                Some(crate::autograd::ForwardOp::CopyDualLayout { .. } | crate::autograd::ForwardOp::Clone { .. } | crate::autograd::ForwardOp::View(_)) => return Err(unsupported("static owning copy and shape-only view are not supported")),
+                Some(crate::autograd::ForwardOp::Permute(_) | crate::autograd::ForwardOp::Expand(_) | crate::autograd::ForwardOp::Cast(_)) => return Err(unsupported("static permutation, expansion and casts are not supported")),
+                Some(crate::autograd::ForwardOp::Sin | crate::autograd::ForwardOp::Cos) => return Err(unsupported("static trigonometric operations are not supported")),
+                Some(crate::autograd::ForwardOp::Cat(_) | crate::autograd::ForwardOp::Slice { .. } | crate::autograd::ForwardOp::SliceAdjoint { .. }) => return Err(unsupported("static concatenation and slicing are not supported")),
+                Some(crate::autograd::ForwardOp::Reshape(_) | crate::autograd::ForwardOp::Squeeze(_) | crate::autograd::ForwardOp::Unsqueeze(_)) => crate::dispatch::StaticOp::Layout { strides: crate::shape::default_strides(&run.shape) },
                 Some(crate::autograd::ForwardOp::Transpose(a,b)) => {
                     let mut strides = crate::shape::default_strides(&shapes[inputs[0]]);
                     strides.swap(*a,*b);
@@ -746,7 +764,7 @@ pub fn _dbg_op_present(t: &Tensor) -> bool {
 
 #[doc(hidden)]
 pub fn _dbg_requires_grad(t: &Tensor) -> bool {
-    t.0.requires_grad
+    t.requires_grad()
 }
 
 #[doc(hidden)]
@@ -754,7 +772,7 @@ pub fn _dbg_graph_shape(t: &Tensor) -> (bool, bool, usize) {
     // (root has op, root requires_grad, inputs of root's op)
     (
         t.0.op.is_some(),
-        t.0.requires_grad,
+        t.requires_grad(),
         t.0.op.as_ref().map(|o| o.inputs().len()).unwrap_or(0),
     )
 }
@@ -763,6 +781,6 @@ pub fn _dbg_graph_shape(t: &Tensor) -> (bool, bool, usize) {
 pub fn _dbg_uses_grad(t: &Tensor) -> usize {
     // count how many tensors in the local chain have requires_grad
     if let Some(op) = &t.0.op {
-        op.inputs().iter().filter(|i| i.0.requires_grad).count() * 100 + op.inputs().len()
+        op.inputs().iter().filter(|i| i.requires_grad()).count() * 100 + op.inputs().len()
     } else { 0 }
 }

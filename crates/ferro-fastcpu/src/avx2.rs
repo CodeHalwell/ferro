@@ -443,9 +443,9 @@ fn softmax_chunk(x: &[f32], out: &mut [f32], cols: usize, log: bool) {
         map8(xr, yr, |v| exp(_mm256_sub_ps(v, mv)));
         let sum = psum(yr);
         if log {
-            let lse = m + sum.ln();
+            let log_sum = sum.ln();
             for (y, &v) in yr.iter_mut().zip(xr) {
-                *y = v - lse;
+                *y = (v - m) - log_sum;
             }
             continue;
         }

@@ -1,7 +1,7 @@
 use super::*;
 use ferro_core::basis::{self, BSplineBasis, OutsideDomain};
 
-#[pyclass(name = "BSplineBasis", module = "ferro.basis")]
+#[pyclass(name = "BSplineBasis", module = "ferro.basis", frozen)]
 struct PyBasis { inner: BSplineBasis }
 #[pymethods]
 impl PyBasis {
@@ -16,6 +16,10 @@ impl PyBasis {
     #[getter]
     fn degree(&self) -> usize { self.inner.degree() }
     #[getter]
+    fn outside(&self) -> &'static str {
+        match self.inner.outside() { OutsideDomain::Zero => "zero", OutsideDomain::Error => "error" }
+    }
+    #[getter]
     fn num_basis(&self) -> usize { self.inner.num_basis() }
     #[getter]
     fn domain(&self) -> (f32,f32) { self.inner.domain() }
@@ -26,9 +30,9 @@ fn kan(x: &PyTensor, coefficients: &PyTensor, basis: &PyBasis) -> PyResult<PyTen
     basis::kan(&x.inner,&coefficients.inner,&basis.inner).map(PyTensor::wrap).map_err(map_err)
 }
 #[pyfunction]
-fn _kan_parameter(basis: &PyBasis, coefficients: &PyTensor) -> PyResult<PyParameter> {
+fn _kan_parameter(py: Python<'_>, basis: &PyBasis, coefficients: &PyTensor) -> PyResult<Py<PyParameter>> {
     basis::KanLayer::from_coefficients(basis.inner.clone(),coefficients.inner.clone())
-        .map(|layer| PyParameter { inner:layer.coefficients() }).map_err(map_err)
+        .map_err(map_err).and_then(|layer| PyParameter::wrap(py, layer.coefficients()))
 }
 pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBasis>()?;

@@ -91,7 +91,7 @@ impl Tensor {
                 if t.device() != self.device() { return Err(Error::DeviceMismatch { op, lhs: self.device(), rhs: t.device() }); }
             }
             if [weight, bias].into_iter().flatten().all(|t| t.device_resident_whole()) {
-                let needs_grad = self.requires_grad() || weight.is_some_and(|t| t.requires_grad()) || bias.is_some_and(|t| t.requires_grad());
+                let needs_grad = crate::forward_ad::is_active() || self.requires_grad() || weight.is_some_and(|t| t.requires_grad()) || bias.is_some_and(|t| t.requires_grad());
                 let fused = (|| -> Result<(Tensor, Option<(Tensor, Tensor)>)> {
                     let backend = crate::dispatch::backend_for(self.device())?;
                     // Deduplicate aliases and use the same address order as PairGuard.
@@ -152,8 +152,8 @@ impl Tensor {
                 let std = crate::tensor::raw_unary_k(&v, crate::dispatch::UnaryKind::Sqrt)?;
                 let saved = std.detach_copy();
                 let std = std.record_fn_tagged(vec![v], crate::OpTag::Unary(crate::dispatch::UnaryKind::Sqrt), move |g| {
-                    vec![crate::tensor::raw_binary("sqrt_bw", g, &saved, |gg, yy| gg * 0.5 / yy).unwrap()]
-                });
+                    vec![crate::tensor::raw_binary("sqrt_bw", g, &saved, |gg, yy| gg / (2.0 * yy)).unwrap()]
+                }).save_output_version();
                 let mut out = centered.div(&std)?;
                 if let Some(w) = weight { out = out.mul(w)?; }
                 if let Some(b) = bias { out = out.add(b)?; }
@@ -201,7 +201,7 @@ impl Tensor {
             })
             .collect();
         let out = Tensor::from_vec(y, &shape)?;
-        let needs_grad = self.requires_grad()
+        let needs_grad = crate::forward_ad::is_active() || self.requires_grad()
             || weight.map_or(false, |t| t.requires_grad())
             || bias.map_or(false, |t| t.requires_grad());
         if !needs_grad && !crate::capture::is_recording() {

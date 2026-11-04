@@ -70,20 +70,22 @@ impl Tensor {
         out_shape[dim] = idx.len();
         crate::shape::checked_numel("index_select", &out_shape)?;
 
-        // Resident fast path: whole contiguous f32 weight + i64 index buffer
+        // Resident fast path: whole contiguous f32 weight + whole i64 index buffer
         // on the same non-CPU device whose backend implements the gather.
         // Requires outer == 1 (the embedding/index-select-dim0 shape).
         let outer: usize = self.shape()[..dim].iter().product();
         if self.dtype() == DType::F32
             && self.device() != Device::Cpu
             && self.device_resident_whole()
+            && indices.0.offset == 0
+            && indices.is_contiguous()
         {
             // Distinct cells by construction (f32 weight vs i64 indices), so
             // two plain read guards cannot self-deadlock here.
             let gw = self.0.storage.read();
             let gi = indices.0.storage.read();
             if let (Storage::Device(wbuf), Storage::DeviceI64(ibuf)) = (&*gw, &*gi) {
-                if outer == 1 {
+                if outer == 1 && ibuf.len() == indices.numel() {
                     let backend = backend_for(self.0.device)?;
                     match backend.gather_rows_dev(wbuf.as_ref(), ibuf.as_ref(), dim_size, inner) {
                         Ok(out) => {
@@ -106,12 +108,9 @@ impl Tensor {
                                 vec![Tensor::from_vec(gx, &in_shape).unwrap()]
                             }));
                         }
-                        // A backend without a gather kernel falls through to
-                        // the host path below rather than failing the op.
-                        Err(crate::error::Error::Unsupported {
-                            op: "gather_rows_dev",
-                            ..
-                        }) => {}
+                        // Only an explicit no-work capability decline permits
+                        // host fallback; ownership and execution errors propagate.
+                        Err(Error::GatherUnavailable) => {}
                         Err(e) => return Err(e),
                     }
                 }
@@ -121,6 +120,7 @@ impl Tensor {
     }
 
     pub fn index_select(&self, dim: usize, indices: &[usize]) -> Result<Tensor> {
+        if self.dtype() == DType::F64 { crate::typed_math::check("index_select", &[self], DType::F64)?; }
         let ndim = self.ndim();
         if dim >= ndim {
             return Err(Error::InvalidShape {
@@ -170,9 +170,26 @@ impl Tensor {
             DType::F32 => select!(self.to_vec(), from_vec),
             DType::F64 => select!(self.to_vec_f64(), from_vec_f64),
             DType::I64 => select!(self.to_vec_i64(), from_vec_i64),
+            DType::Bool => select!(self.to_vec_bool(), from_vec_bool),
             DType::F16 => select!(self.to_vec_f16_bits()?, from_vec_f16_bits),
             DType::BF16 => select!(self.to_vec_bf16_bits()?, from_vec_bf16_bits),
         };
+        if self.dtype() == DType::F64 {
+            let indices = indices.to_vec();
+            return Ok(out.record_fn(vec![self.clone()], move |g| {
+                let gd = g.to_vec_f64();
+                let mut gx = crate::typed_math::filled("index_select backward", &in_shape, 0.0f64).unwrap();
+                if !gd.is_empty() {
+                    let mut src = 0;
+                    for o in 0..outer { for &idx in &indices {
+                        let dst = (o * dim_size + idx) * inner;
+                        for j in 0..inner { gx[dst + j] += gd[src + j]; }
+                        src += inner;
+                    } }
+                }
+                vec![Tensor::from_vec_f64(gx, &in_shape).unwrap()]
+            }));
+        }
         if self.dtype() != DType::F32 {
             return Ok(out);
         }

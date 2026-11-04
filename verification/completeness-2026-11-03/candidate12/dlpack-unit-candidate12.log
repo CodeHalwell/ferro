@@ -1,0 +1,65 @@
+   Compiling target-lexicon v0.13.5
+   Compiling once_cell v1.21.4
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.46
+   Compiling pyo3-build-config v0.24.2
+   Compiling libc v0.2.186
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.4
+   Compiling pyo3-macros-backend v0.24.2
+   Compiling pyo3-ffi v0.24.2
+   Compiling memoffset v0.9.1
+   Compiling syn v2.0.118
+   Compiling heck v0.5.0
+   Compiling cudarc v0.19.9
+   Compiling libloading v0.9.0
+   Compiling pyo3 v0.24.2
+   Compiling ferro-core v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-core)
+warning: unused variable: `name`
+   --> /workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-core/src/ops_ext/layer_norm.rs:168:14
+    |
+168 |         for (name, v) in [("weight", &w), ("bias", &b)] {
+    |              ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling pyo3-macros v0.24.2
+warning: `ferro-core` (lib) generated 1 warning (run `cargo fix --lib -p ferro-core` to apply 1 suggestion)
+   Compiling indoc v2.0.7
+   Compiling unindent v0.2.4
+   Compiling ferro-cuda v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-cuda)
+warning: method `is_enabled` is never used
+   --> /workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-cuda/src/alloc.rs:324:12
+    |
+145 | impl CachingAllocator {
+    | --------------------- method in this implementation
+...
+324 |     pub fn is_enabled(&self) -> bool {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling ferro-fastcpu v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-fastcpu)
+warning: `ferro-cuda` (lib) generated 1 warning
+   Compiling ferro-py v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-py)
+    Finished `test` profile [unoptimized] target(s) in 20.58s
+     Running unittests src/lib.rs (work/completeness-2026-11-03/binding-unit-target-candidate12/debug/deps/_native-3844413f77355de7)
+
+running 12 tests
+test dlpack::tests::cuda_dl_tensor_fields_on_fake_buffer ... ok
+test dlpack::tests::empty_explicit_strides_have_no_reachable_address ... ok
+test dlpack::tests::empty_descriptor_validation_is_not_short_circuited ... ok
+test dlpack::tests::contiguous_round_trip ... ok
+test dlpack::tests::gathers_with_strides ... ok
+test dlpack::tests::rejects_bad_device_dtype_and_null_data ... ok
+test dlpack::tests::rejects_numel_overflow ... ok
+test dlpack::tests::empty_capsule_deleter_runs_once_on_success_and_failure ... ok
+test dlpack::tests::rejects_negative_ndim_and_dims ... ok
+test dlpack::tests::view_byte_offset_is_f32_scaled_and_overflow_free ... ok
+skipping raw DLPack GPU test: CUDA driver library (libcuda) not found; no GPU driver installed
+test dlpack::tests::gpu_export_borrows_and_import_htod ... ok
+test dlpack::tests::rejects_strides_reaching_outside_buffer ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.02s
+

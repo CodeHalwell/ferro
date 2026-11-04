@@ -88,6 +88,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let out = data(a)
             .iter()
@@ -111,6 +112,7 @@ impl Backend for FakeDevice {
             BinaryKind::Sub => x - y,
             BinaryKind::Mul => x * y,
             BinaryKind::Div => x / y,
+            BinaryKind::ReluBackward => if y <= 0.0 { 0.0 } else { x },
         };
         let n: usize = out_shape.iter().product();
         let idx = |flat: usize, shape: &[usize]| -> usize {
@@ -237,8 +239,9 @@ impl Backend for FakeDevice {
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn setup() -> MutexGuard<'static, ()> {
+    let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     register_backend(DEV, Arc::new(FakeDevice));
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    serial
 }
 
 fn counts() -> (usize, usize) {

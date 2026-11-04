@@ -1,0 +1,51 @@
+    Checking cfg-if v1.0.5
+    Checking ferro-core v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-core)
+    Checking libloading v0.9.0
+    Checking cudarc v0.19.10
+warning: unused variable: `name`
+   --> crates/ferro-core/src/ops_ext/layer_norm.rs:168:14
+    |
+168 |         for (name, v) in [("weight", &w), ("bias", &b)] {
+    |              ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-core` (lib) generated 1 warning (run `cargo fix --lib -p ferro-core` to apply 1 suggestion)
+    Checking ferro-cuda v0.0.1 (/workspace/work/completeness-2026-11-03/build-source-candidate12/crates/ferro-cuda)
+warning: method `is_enabled` is never used
+   --> crates/ferro-cuda/src/alloc.rs:324:12
+    |
+145 | impl CachingAllocator {
+    | --------------------- method in this implementation
+...
+324 |     pub fn is_enabled(&self) -> bool {
+    |            ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-cuda` (lib) generated 1 warning
+warning: unused variable: `captured_early`
+  --> crates/ferro-cuda/examples/bench_chain.rs:45:9
+   |
+45 |     let captured_early = match b.capture_chain(&steps, &[xd.as_ref(), yd.as_ref(), zd.as_ref()]) {
+   |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_captured_early`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ferro-cuda` (example "bench_chain") generated 1 warning (run `cargo fix --example "bench_chain" -p ferro-cuda` to apply 1 suggestion)
+warning: unused variable: `ta`
+    --> crates/ferro-cuda/src/lib.rs:2109:13
+     |
+2109 |             ta: bool,
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_ta`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `tb`
+    --> crates/ferro-cuda/src/lib.rs:2110:13
+     |
+2110 |             tb: bool,
+     |             ^^ help: if this is intentional, prefix it with an underscore: `_tb`
+
+warning: `ferro-cuda` (lib test) generated 3 warnings (1 duplicate) (run `cargo fix --lib -p ferro-cuda --tests` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized] target(s) in 6.72s

@@ -9,11 +9,14 @@ fn no_grad_suppresses_all_recording_seams_without_changing_inputs() {
     with_grad_enabled(false, || {
         assert!(!is_grad_enabled());
         let custom = Tensor::scalar(3.0).record_fn(vec![x.clone()], |g| vec![g.clone()]);
-        for y in [custom, x.mul(&x).unwrap(), x.sum(), x.mean(), x.reshape(&[1]).unwrap()] {
+        for y in [custom, x.mul(&x).unwrap(), x.sum(), x.mean()] {
             assert!(!y.requires_grad());
             assert!(y.requires_grad_(true).is_ok(), "no hidden autograd history");
             assert_eq!(y.grad_wrt(&[&x], false).unwrap()[0].item(), 0.0);
         }
+        let view = x.reshape(&[1]).unwrap();
+        assert!(view.requires_grad(), "no-grad views retain the public flag without a gradient edge");
+        assert!(view.grad_wrt(&[&x], false).is_err());
         assert!(x.requires_grad());
         assert!(leaf().requires_grad(), "explicit factories are unaffected");
     });
@@ -54,7 +57,7 @@ fn explicit_capture_remains_independent_of_grad_mode() {
 fn create_graph_overrides_no_grad_and_restores_mode_on_error() {
     let x = leaf();
     let y = x.mul(&x).unwrap().mul(&x).unwrap().mean();
-    let unsupported = x.relu();
+    let unsupported = x.gelu_erf();
     with_grad_enabled(false, || {
         let g = y.grad_wrt(&[&x], true).unwrap().remove(0);
         assert!(g.requires_grad());

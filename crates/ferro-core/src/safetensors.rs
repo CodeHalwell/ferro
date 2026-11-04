@@ -5,7 +5,7 @@
 //! then the raw little-endian tensor bytes. The header parser is a minimal
 //! from-scratch JSON reader because ferro-core takes no dependencies; it
 //! accepts the full format (strings with escapes, nested arrays/objects,
-//! unsigned integers) and ignores `__metadata__`. F32/F64/I64/F16/BF16
+//! unsigned integers) and ignores `__metadata__`. F32/F64/I64/F16/BF16/BOOL
 //! tensors are supported; half dtypes move raw u16 bit patterns in and out of
 //! `Storage::F16`/`Storage::BF16` with no float round trip, so load -> save
 //! reproduces a checkpoint's bytes exactly. Other dtypes error.
@@ -45,6 +45,7 @@ pub fn to_safetensors_bytes(tensors: &[(&str, &Tensor)]) -> Result<Vec<u8>> {
         }
         let start = data.len();
         match t.dtype() {
+            DType::Bool => data.extend(t.to_vec_bool().into_iter().map(u8::from)),
             DType::F32 => t
                 .to_vec()
                 .iter()
@@ -98,14 +99,16 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
     if bytes.len() < 8 {
         return Err(ferr("shorter than the 8-byte header length".into()));
     }
-    let hlen = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
-    if bytes.len() < 8 + hlen {
+    let hlen = usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+        .map_err(|_| ferr("header length exceeds usize capacity".into()))?;
+    let data_start = hlen.checked_add(8).ok_or_else(|| ferr("header length overflows usize".into()))?;
+    if bytes.len() < data_start {
         return Err(ferr(format!(
             "header length {hlen} exceeds file size {}",
             bytes.len()
         )));
     }
-    let data = &bytes[8 + hlen..];
+    let data = &bytes[data_start..];
 
     let header = Json::parse(&bytes[8..8 + hlen]).map_err(ferr)?;
     let Json::Obj(entries) = header else {
@@ -134,7 +137,7 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
             Json::Arr(dims) => dims
                 .iter()
                 .map(|d| match d {
-                    Json::Num(n) => Ok(*n as usize),
+                    Json::Num(n) => usize::try_from(*n).map_err(|_| ferr(format!("entry {name:?}: dimension exceeds usize capacity"))),
                     _ => Err(ferr(format!("entry {name:?}: non-integer dim"))),
                 })
                 .collect::<Result<Vec<usize>>>()?,
@@ -142,7 +145,10 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
         };
         let (start, end) = match field("data_offsets")? {
             Json::Arr(o) => match o.as_slice() {
-                [Json::Num(s), Json::Num(e)] => (*s as usize, *e as usize),
+                [Json::Num(s), Json::Num(e)] => (
+                    usize::try_from(*s).map_err(|_| ferr(format!("entry {name:?}: start offset exceeds usize capacity")))?,
+                    usize::try_from(*e).map_err(|_| ferr(format!("entry {name:?}: end offset exceeds usize capacity")))?,
+                ),
                 _ => {
                     return Err(ferr(format!(
                         "entry {name:?}: data_offsets is not [start, end]"
@@ -157,6 +163,7 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
         };
 
         let dt = match dtype.as_str() {
+            "BOOL" => DType::Bool,
             "F32" => DType::F32,
             "F64" => DType::F64,
             "I64" => DType::I64,
@@ -169,13 +176,15 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
                 })
             }
         };
-        let numel: usize = shape.iter().product();
+        let numel = crate::shape::checked_numel(OP, &shape).map_err(|e| ferr(e.to_string()))?;
         let width = match dt {
+            DType::Bool => 1,
             DType::F32 => 4,
             DType::F64 | DType::I64 => 8,
             DType::F16 | DType::BF16 => 2,
         };
-        if end < start || end - start != numel * width || end > data.len() {
+        let expected = numel.checked_mul(width).ok_or_else(|| ferr(format!("entry {name:?}: byte count overflows usize")))?;
+        if end < start || end - start != expected || end > data.len() {
             return Err(ferr(format!(
                 "entry {name:?}: offsets [{start}, {end}] do not fit shape {shape:?} ({} dtype, {} data bytes)",
                 dtype,
@@ -185,6 +194,7 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
 
         let raw = &data[start..end];
         let t = match dt {
+            DType::Bool => Tensor::from_vec_bool(raw.iter().map(|&value| value != 0).collect(), &shape)?,
             DType::F32 => Tensor::from_vec(
                 raw.chunks_exact(4)
                     .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -223,6 +233,7 @@ pub fn from_safetensors_bytes(bytes: &[u8]) -> Result<Vec<(String, Tensor)>> {
 
 fn dtype_tag(dt: DType) -> &'static str {
     match dt {
+        DType::Bool => "BOOL",
         DType::F32 => "F32",
         DType::F64 => "F64",
         DType::I64 => "I64",
