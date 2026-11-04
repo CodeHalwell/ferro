@@ -209,8 +209,11 @@ fn backward(s: &Saved, seeds: &[Option<Tensor>], x: &Tensor, wi: &Tensor, wh: &T
     }
     let rows = time * batch;
     let side = if s.kind == CellKind::Gru { &db } else { &da };
+    // Ended rows have zero gate cotangents, but their carried state may be nonfinite: 0 * NaN must not reach W_hh.
+    let mut h_in = s.h_in.clone();
+    for t in 0..time { for b in (0..batch).filter(|&b| t >= s.lengths[b]) { h_in[t * bh_len + b * width..][..width].fill(0.); } }
     with_grad_enabled(false, || {
-        let dwh = Tensor::from_vec(mm_tn(side, &s.h_in, rows, gates, width)?, &[gates, width])?;
+        let dwh = Tensor::from_vec(mm_tn(side, &h_in, rows, gates, width)?, &[gates, width])?;
         let dbh = Tensor::from_vec(column_sums(side, gates), &[gates])?;
         let dwi = Tensor::from_vec(mm_tn(&da, &x.to_vec(), rows, gates, features)?, &[gates, features])?;
         let dbi = Tensor::from_vec(column_sums(&da, gates), &[gates])?;

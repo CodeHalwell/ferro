@@ -81,3 +81,32 @@ fn fused_sequence_is_first_order_and_records_without_grad_mode() {
     assert!(!frozen.outputs.requires_grad());
     assert_eq!(frozen.outputs.to_vec(), out.outputs.to_vec());
 }
+
+#[test]
+fn ended_rows_with_nonfinite_state_keep_weight_gradients_finite() {
+    for (kind, gates) in [(CellKind::Rnn, 1), (CellKind::Gru, 3), (CellKind::Lstm, 4)] {
+        let x = leaf(3 * 2 * 2, 1, &[3, 2, 2]);
+        let w = [leaf(gates * 4, 2, &[gates * 2, 2]), leaf(gates * 4, 3, &[gates * 2, 2])];
+        let init = RecurrentState { h: t(&[0.1, -0.2, f32::NAN, f32::INFINITY], &[2, 2]), c: (kind == CellKind::Lstm).then(|| t(&[0.3, 0.1, f32::NAN, 0.2], &[2, 2])) };
+        let grads = |fused: bool| {
+            let out = if fused { unroll_cell(kind, &x, &init, &w[0], &w[1], None, None, &[3, 0], None, None).unwrap() } else { composed(kind, &x, &init, &w, [None, None], &[3, 0], None) };
+            out.outputs.sum().backward();
+            w.iter().map(|p| { let g = p.grad().unwrap().to_vec(); p.zero_grad(); g }).collect::<Vec<_>>()
+        };
+        let (fused, reference) = (grads(true), grads(false));
+        for (a, b) in fused.iter().zip(&reference) {
+            assert!(a.iter().all(|v| v.is_finite()), "{kind:?}: {a:?}");
+            for (p, q) in a.iter().zip(b) { assert!((p - q).abs() < 2e-5, "{kind:?}: {p} != {q}"); }
+        }
+    }
+}
+
+#[test]
+fn fused_path_keeps_unroll_argument_validation() {
+    let x = Tensor::zeros(&[2, 1, 2]);
+    let init = RecurrentState { h: Tensor::zeros(&[1, 2]), c: None };
+    let (wi, wh) = (Tensor::zeros(&[2, 2]), Tensor::zeros(&[2, 2]));
+    assert!(unroll_cell(CellKind::Rnn, &x, &init, &wi, &wh, None, None, &[2], None, Some(0)).is_err());
+    assert!(unroll_cell(CellKind::Rnn, &x, &init, &wi, &wh, None, None, &[2], Some(&[false]), None).is_err());
+    assert!(unroll_cell(CellKind::Rnn, &x, &init, &wi, &wh, None, None, &[2], Some(&[false, false]), None).is_ok());
+}

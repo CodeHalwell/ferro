@@ -45,14 +45,8 @@ pub struct UnrollOutput { pub outputs: Tensor, pub state: RecurrentState }
 /// outputs retain their graphs until the caller releases them.
 pub fn unroll<F>(input: &Tensor, initial: &RecurrentState, lengths: &[usize], reset: Option<&[bool]>, truncate: Option<usize>, mut cell: F) -> Result<UnrollOutput>
 where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
-    check(input)?; initial.validate()?;
-    if input.shape().len()!=3 { return Err(invalid("input must be [T,B,I]")); }
+    validate_run(input,initial,lengths,reset,truncate)?;
     let (time,batch,width)=(input.shape()[0],input.shape()[1],initial.h.shape()[1]);
-    if initial.h.shape()[0]!=batch || lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
-    let count=time.checked_mul(batch).ok_or_else(|| invalid("T*B overflow"))?;
-    if reset.is_some_and(|r| r.len()!=count) || truncate==Some(0) { return Err(invalid("reset must have T*B entries; truncation must be positive")); }
-    let elements=crate::shape::checked_numel("recurrent", &[time,batch,width])?;
-    if elements>isize::MAX as usize/std::mem::size_of::<f32>() { return Err(invalid("output buffer byte length overflow")); }
     if time==0 || batch==0 { return Ok(UnrollOutput { outputs:Tensor::zeros(&[time,batch,width]), state:initial.clone() }); }
     let mut outputs=Vec::new();
     outputs.try_reserve_exact(time).map_err(|e| invalid(&format!("cannot reserve timestep outputs: {e}")))?;
@@ -81,6 +75,18 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
         state=state.zip(&next,|a,b| Tensor::cat(&[a.clone(),b.clone()],0)?.index_select(0,&pick))?;
     }
     Ok(UnrollOutput { outputs:Tensor::cat(&outputs,0)?.reshape(&[time,batch,width])?, state })
+}
+
+fn validate_run(input: &Tensor, initial: &RecurrentState, lengths: &[usize], reset: Option<&[bool]>, truncate: Option<usize>) -> Result<()> {
+    check(input)?; initial.validate()?;
+    if input.shape().len()!=3 { return Err(invalid("input must be [T,B,I]")); }
+    let (time,batch,width)=(input.shape()[0],input.shape()[1],initial.h.shape()[1]);
+    if initial.h.shape()[0]!=batch || lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
+    let count=time.checked_mul(batch).ok_or_else(|| invalid("T*B overflow"))?;
+    if reset.is_some_and(|r| r.len()!=count) || truncate==Some(0) { return Err(invalid("reset must have T*B entries; truncation must be positive")); }
+    let elements=crate::shape::checked_numel("recurrent", &[time,batch,width])?;
+    if elements>isize::MAX as usize/std::mem::size_of::<f32>() { return Err(invalid("output buffer byte length overflow")); }
+    Ok(())
 }
 
 fn discards_history(time: usize, lengths: &[usize], reset: Option<&[bool]>, truncate: Option<usize>) -> bool {
@@ -157,7 +163,7 @@ pub fn unroll_cell(kind: CellKind, input: &Tensor, initial: &RecurrentState, wi:
     let gates=width.checked_mul(match kind { CellKind::Rnn => 1, CellKind::Gru => 3, CellKind::Lstm => 4 }).ok_or_else(|| invalid("gate width overflow"))?;
     if wi.shape()!=[gates,features] || wh.shape()!=[gates,width] { return Err(invalid("weights must be [G*H,I] and [G*H,H]")); }
     if [bi,bh].into_iter().flatten().any(|b| b.shape()!=[gates]) { return Err(invalid("bias must be [G*H]")); }
-    if lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
+    validate_run(input,initial,lengths,reset,truncate)?;
     // A shared projection would carry discarded timesteps into W_ih's gradient.
     if discards_history(time,lengths,reset,truncate) {
         return unroll(input,initial,lengths,reset,truncate,|x,s| Ok(match kind {
