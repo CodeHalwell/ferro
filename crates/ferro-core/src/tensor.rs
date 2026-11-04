@@ -474,6 +474,10 @@ impl Tensor {
             return vec![data[inner.offset]];
         }
         let mut out = Vec::with_capacity(n);
+        if let Some(row) = self.unit_stride_row() {
+            self.for_each_row_offset(row, |off| out.extend_from_slice(&data[off..off + row]));
+            return out;
+        }
         let mut idx = vec![0usize; ndim];
         for _ in 0..n {
             let mut off = inner.offset;
@@ -492,6 +496,28 @@ impl Tensor {
         out
     }
 
+    /// Innermost run length when the last axis is unit-stride, so strided
+    /// views copy whole rows instead of single elements.
+    fn unit_stride_row(&self) -> Option<usize> {
+        let inner = &self.0;
+        let last = inner.shape.len().checked_sub(1)?;
+        (inner.stride[last] == 1 && inner.shape[last] > 1).then_some(inner.shape[last])
+    }
+
+    fn for_each_row_offset(&self, row: usize, mut f: impl FnMut(usize)) {
+        let inner = &self.0;
+        let outer = inner.shape.len() - 1;
+        let mut idx = vec![0usize; outer];
+        for _ in 0..self.numel() / row {
+            f(inner.offset + idx.iter().zip(&inner.stride).map(|(i, s)| i * s).sum::<usize>());
+            for d in (0..outer).rev() {
+                idx[d] += 1;
+                if idx[d] < inner.shape[d] { break; }
+                idx[d] = 0;
+            }
+        }
+    }
+
     /// `gather_view` writing into a caller-provided buffer instead of
     /// allocating: the pooled-temporary path of `to_vec_pooled`.
     fn gather_into(&self, data: &[f32], out: &mut [f32]) {
@@ -505,6 +531,11 @@ impl Tensor {
         let ndim = inner.shape.len();
         if ndim == 0 {
             out[0] = data[inner.offset];
+            return;
+        }
+        if let Some(row) = self.unit_stride_row() {
+            let mut start = 0;
+            self.for_each_row_offset(row, |off| { out[start..start + row].copy_from_slice(&data[off..off + row]); start += row; });
             return;
         }
         let mut idx = vec![0usize; ndim];

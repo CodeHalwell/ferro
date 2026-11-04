@@ -116,3 +116,97 @@ fn rnn_explicit_affines_and_gradients() {
     close(&rnn_cell(&x,&h,&wi,&wh,Some(&bi),Some(&bh)).unwrap(), &[0.03f32.tanh()]);
     ferro_core::testkit::grad_check(&[x,h,wi,wh,bi,bh], |a| rnn_cell(&a[0],&a[1],&a[2],&a[3],Some(&a[4]),Some(&a[5])).unwrap());
 }
+
+#[test]
+fn batched_unroll_matches_per_row_reference_and_steps_once_per_time() {
+    let (time,batch,width)=(5,3,2);
+    let data=(0..time*batch*2).map(|i| ((i*7%11) as f32-5.0)*0.1).collect::<Vec<_>>();
+    let mut with_reset=vec![false;time*batch]; with_reset[2*batch]=true; with_reset[3*batch+1]=true;
+    let w=t(&[0.3,-0.2,0.1,0.4,-0.5,0.2,0.6,-0.1,0.2,0.3,-0.4,0.1,0.5,-0.3,0.2,0.1], &[8,2]);
+    let u=t(&[0.2,0.1,-0.3,0.4,0.1,-0.2,0.3,0.5,-0.1,0.2,0.4,-0.3,0.2,0.1,-0.2,0.3], &[8,2]);
+    for (lengths,reset,trunc,batched) in [([5,3,1],vec![false;time*batch],None,true),([5,5,5],vec![false;time*batch],Some(2),true),([5,3,1],with_reset.clone(),Some(2),false),([5,3,1],vec![false;time*batch],Some(2),false)] {
+        let x=t(&data,&[time,batch,2]).requires_grad_(true).unwrap();
+        let h0=t(&[0.1,-0.2,0.3,0.4,-0.1,0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let c0=t(&[0.2,0.1,-0.3,0.1,0.4,-0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let mut calls=0;
+        let out=unroll(&x,&RecurrentState { h:h0.clone(), c:Some(c0.clone()) },&lengths,Some(&reset),trunc,|x,s| {
+            calls+=1; let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().unwrap(),&w,&u,None,None)?; Ok(RecurrentState { h,c:Some(c) })
+        }).unwrap();
+        assert_eq!(calls,if batched { time } else { lengths.iter().sum() });
+        out.outputs.sum().add(&out.state.c.as_ref().unwrap().sum()).unwrap().backward();
+        let (gx,gh,gc)=(x.grad().unwrap().to_vec(),h0.grad().unwrap().to_vec(),c0.grad().unwrap().to_vec());
+        x.zero_grad(); h0.zero_grad(); c0.zero_grad();
+        let mut loss=Tensor::zeros(&[]); let mut outs=vec![0.0;time*batch*width];
+        for b in 0..batch {
+            let (h0b,c0b)=(h0.index_select(0,&[b]).unwrap(),c0.index_select(0,&[b]).unwrap());
+            let (mut h,mut c)=(h0b.clone(),c0b.clone());
+            for i in 0..lengths[b] {
+                if reset[i*batch+b] { h=h0b.clone(); c=c0b.clone(); }
+                if trunc.is_some_and(|k| i>0 && i%k==0) { h=h.detach_copy(); c=c.detach_copy(); }
+                let xi=x.index_select(0,&[i]).unwrap().reshape(&[batch,2]).unwrap().index_select(0,&[b]).unwrap();
+                (h,c)=lstm_cell(&xi,&h,&c,&w,&u,None,None).unwrap();
+                for (j,v) in h.to_vec().into_iter().enumerate() { outs[(i*batch+b)*width+j]=v; }
+                loss=loss.add(&h.sum()).unwrap();
+            }
+            loss=loss.add(&c.sum()).unwrap();
+        }
+        close(&out.outputs,&outs);
+        loss.backward();
+        close(&x.grad().unwrap(),&gx); close(&h0.grad().unwrap(),&gh); close(&c0.grad().unwrap(),&gc);
+        x.zero_grad(); h0.zero_grad(); c0.zero_grad();
+    }
+}
+
+#[test]
+fn hoisted_cell_unroll_matches_closure_unroll_and_ignores_nan_padding() {
+    let (time,batch,width)=(4,3,2);
+    let lengths=[4,2,3];
+    let mut data=(0..time*batch*2).map(|i| ((i*5%13) as f32-6.0)*0.1).collect::<Vec<_>>();
+    for t in 0..time { for b in 0..batch { if t>=lengths[b] { data[(t*batch+b)*2]=f32::NAN; } } }
+    let mut reset=vec![false;time*batch]; reset[batch+2]=true;
+    for ((kind,gates),(resets,trunc)) in [(CellKind::Rnn,1),(CellKind::Gru,3),(CellKind::Lstm,4)].into_iter().flat_map(|k| [(k,(true,Some(3))),(k,(false,None))]) {
+        let resets=resets.then_some(&reset[..]);
+        let param=|seed: usize, n: usize| t(&(0..n).map(|i| (((i+seed)*7%17) as f32-8.0)*0.05).collect::<Vec<_>>(), &[n]).requires_grad_(true).unwrap();
+        let (wi,wh)=(param(1,gates*width*2).reshape(&[gates*width,2]).unwrap(),param(2,gates*width*width).reshape(&[gates*width,width]).unwrap());
+        let (bi,bh)=(param(3,gates*width),param(4,gates*width));
+        let leaves=[wi.clone(),wh.clone(),bi.clone(),bh.clone()];
+        let x=t(&data,&[time,batch,2]).requires_grad_(true).unwrap();
+        let h0=t(&[0.1,-0.2,0.3,0.4,-0.1,0.2], &[batch,width]).requires_grad_(true).unwrap();
+        let c0=(kind==CellKind::Lstm).then(|| t(&[0.2,0.1,-0.3,0.1,0.4,-0.2], &[batch,width]));
+        let init=RecurrentState { h:h0.clone(), c:c0 };
+        let run=|hoisted: bool| {
+            let out=if hoisted { unroll_cell(kind,&x,&init,&wi,&wh,Some(&bi),Some(&bh),&lengths,resets,trunc).unwrap() } else {
+                unroll(&x,&init,&lengths,resets,trunc,|x,s| Ok(match kind {
+                    CellKind::Rnn => RecurrentState { h:rnn_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
+                    CellKind::Gru => RecurrentState { h:gru_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
+                    CellKind::Lstm => { let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().unwrap(),&wi,&wh,Some(&bi),Some(&bh))?; RecurrentState { h,c:Some(c) } }
+                })).unwrap()
+            };
+            out.outputs.sum().add(&out.state.h.sum()).unwrap().backward();
+            let grads=leaves.iter().chain([&x,&h0]).map(|p| { let g=p.grad().unwrap().to_vec(); p.zero_grad(); g }).collect::<Vec<_>>();
+            (out.outputs.to_vec(),grads)
+        };
+        let (hoisted,hg)=run(true); let (reference,rg)=run(false);
+        close(&t(&hoisted,&[hoisted.len()]),&reference);
+        for (a,b) in hg.iter().zip(&rg) { assert!(a.iter().all(|v| v.is_finite())); close(&t(a,&[a.len()]),b); }
+    }
+    let x=Tensor::zeros(&[2,1,3]); let init=RecurrentState { h:Tensor::zeros(&[1,2]), c:None };
+    assert!(unroll_cell(CellKind::Lstm,&x,&init,&Tensor::zeros(&[8,3]),&Tensor::zeros(&[8,2]),None,None,&[2],None,None).is_err());
+    assert!(unroll_cell(CellKind::Gru,&x,&init,&Tensor::zeros(&[6,2]),&Tensor::zeros(&[6,2]),None,None,&[2],None,None).is_err());
+    assert!(unroll_cell(CellKind::Rnn,&x,&init,&Tensor::zeros(&[2,3]),&Tensor::zeros(&[2,2]),None,None,&[3],None,None).is_err());
+}
+
+#[test]
+fn reset_after_nonfinite_history_keeps_weight_gradients_finite() {
+    let w=t(&[1.0], &[1,1]).requires_grad_(true).unwrap(); let u=t(&[1.0], &[1,1]).requires_grad_(true).unwrap();
+    let x=t(&[f32::NAN,1.0, 0.5,0.5], &[2,2,1]);
+    let init=RecurrentState { h:Tensor::zeros(&[2,1]), c:None };
+    let out=unroll(&x,&init,&[2,2],Some(&[false,false,true,false]),None,|x,s| Ok(RecurrentState { h:rnn_cell(x,&s.h,&w,&u,None,None)?, c:None })).unwrap();
+    out.state.h.index_select(0,&[0]).unwrap().sum().backward();
+    let (gw,gu)=(w.grad().unwrap().to_vec()[0],u.grad().unwrap().to_vec()[0]);
+    assert!(gw.is_finite() && gu.is_finite());
+    w.zero_grad(); u.zero_grad();
+    let out=unroll_cell(CellKind::Rnn,&x,&init,&w,&u,None,None,&[2,2],Some(&[false,false,true,false]),None).unwrap();
+    out.state.h.index_select(0,&[0]).unwrap().sum().backward();
+    assert_eq!((w.grad().unwrap().to_vec()[0],u.grad().unwrap().to_vec()[0]),(gw,gu));
+}
