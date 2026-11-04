@@ -57,7 +57,7 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
     // batch-mates keep theirs. In a batched graph that row still receives a
     // zero cotangent, and 0 * a nonfinite local derivative poisons the shared
     // weights, so those runs keep separate per-row graphs.
-    if reset.is_some_and(|r| r.contains(&true)) || (truncate.is_some() && lengths.iter().any(|&n| n!=time)) {
+    if discards_history(time,lengths,reset,truncate) {
         return unroll_rows(input,initial,lengths,reset,truncate,cell);
     }
     let mut state=initial.clone();
@@ -78,6 +78,10 @@ where F: FnMut(&Tensor, &RecurrentState) -> Result<RecurrentState> {
         state=state.zip(&next,|a,b| Tensor::cat(&[a.clone(),b.clone()],0)?.index_select(0,&pick))?;
     }
     Ok(UnrollOutput { outputs:Tensor::cat(&outputs,0)?.reshape(&[time,batch,width])?, state })
+}
+
+fn discards_history(time: usize, lengths: &[usize], reset: Option<&[bool]>, truncate: Option<usize>) -> bool {
+    reset.is_some_and(|r| r.contains(&true)) || (truncate.is_some() && lengths.iter().any(|&n| n!=time))
 }
 
 /// Row-wise unroll with an independent graph per row; inputs are validated by `unroll`.
@@ -151,6 +155,14 @@ pub fn unroll_cell(kind: CellKind, input: &Tensor, initial: &RecurrentState, wi:
     if wi.shape()!=[gates,features] || wh.shape()!=[gates,width] { return Err(invalid("weights must be [G*H,I] and [G*H,H]")); }
     if [bi,bh].into_iter().flatten().any(|b| b.shape()!=[gates]) { return Err(invalid("bias must be [G*H]")); }
     if lengths.len()!=batch || lengths.iter().any(|&n| n>time) { return Err(invalid("batch/lengths mismatch or length exceeds T")); }
+    // A shared projection would carry discarded timesteps into W_ih's gradient.
+    if discards_history(time,lengths,reset,truncate) {
+        return unroll(input,initial,lengths,reset,truncate,|x,s| Ok(match kind {
+            CellKind::Rnn => RecurrentState { h:rnn_cell(x,&s.h,wi,wh,bi,bh)?, c:None },
+            CellKind::Gru => RecurrentState { h:gru_cell(x,&s.h,wi,wh,bi,bh)?, c:None },
+            CellKind::Lstm => { let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().expect("validated LSTM state"),wi,wh,bi,bh)?; RecurrentState { h,c:Some(c) } }
+        }));
+    }
     let x=if lengths.iter().all(|&n| n==time) { input.clone() } else {
         let keep=(0..time).flat_map(|t| lengths.iter().map(move |&n| t<n)).collect();
         Tensor::where_cond(&Tensor::from_vec_bool(keep,&[time,batch,1])?,input,&Tensor::zeros(&[1]))?

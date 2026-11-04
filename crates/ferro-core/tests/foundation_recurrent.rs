@@ -164,7 +164,8 @@ fn hoisted_cell_unroll_matches_closure_unroll_and_ignores_nan_padding() {
     let mut data=(0..time*batch*2).map(|i| ((i*5%13) as f32-6.0)*0.1).collect::<Vec<_>>();
     for t in 0..time { for b in 0..batch { if t>=lengths[b] { data[(t*batch+b)*2]=f32::NAN; } } }
     let mut reset=vec![false;time*batch]; reset[batch+2]=true;
-    for (kind,gates) in [(CellKind::Rnn,1),(CellKind::Gru,3),(CellKind::Lstm,4)] {
+    for ((kind,gates),(resets,trunc)) in [(CellKind::Rnn,1),(CellKind::Gru,3),(CellKind::Lstm,4)].into_iter().flat_map(|k| [(k,(true,Some(3))),(k,(false,None))]) {
+        let resets=resets.then_some(&reset[..]);
         let param=|seed: usize, n: usize| t(&(0..n).map(|i| (((i+seed)*7%17) as f32-8.0)*0.05).collect::<Vec<_>>(), &[n]).requires_grad_(true).unwrap();
         let (wi,wh)=(param(1,gates*width*2).reshape(&[gates*width,2]).unwrap(),param(2,gates*width*width).reshape(&[gates*width,width]).unwrap());
         let (bi,bh)=(param(3,gates*width),param(4,gates*width));
@@ -174,8 +175,8 @@ fn hoisted_cell_unroll_matches_closure_unroll_and_ignores_nan_padding() {
         let c0=(kind==CellKind::Lstm).then(|| t(&[0.2,0.1,-0.3,0.1,0.4,-0.2], &[batch,width]));
         let init=RecurrentState { h:h0.clone(), c:c0 };
         let run=|hoisted: bool| {
-            let out=if hoisted { unroll_cell(kind,&x,&init,&wi,&wh,Some(&bi),Some(&bh),&lengths,Some(&reset),Some(3)).unwrap() } else {
-                unroll(&x,&init,&lengths,Some(&reset),Some(3),|x,s| Ok(match kind {
+            let out=if hoisted { unroll_cell(kind,&x,&init,&wi,&wh,Some(&bi),Some(&bh),&lengths,resets,trunc).unwrap() } else {
+                unroll(&x,&init,&lengths,resets,trunc,|x,s| Ok(match kind {
                     CellKind::Rnn => RecurrentState { h:rnn_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
                     CellKind::Gru => RecurrentState { h:gru_cell(x,&s.h,&wi,&wh,Some(&bi),Some(&bh))?, c:None },
                     CellKind::Lstm => { let (h,c)=lstm_cell(x,&s.h,s.c.as_ref().unwrap(),&wi,&wh,Some(&bi),Some(&bh))?; RecurrentState { h,c:Some(c) } }
@@ -202,5 +203,10 @@ fn reset_after_nonfinite_history_keeps_weight_gradients_finite() {
     let init=RecurrentState { h:Tensor::zeros(&[2,1]), c:None };
     let out=unroll(&x,&init,&[2,2],Some(&[false,false,true,false]),None,|x,s| Ok(RecurrentState { h:rnn_cell(x,&s.h,&w,&u,None,None)?, c:None })).unwrap();
     out.state.h.index_select(0,&[0]).unwrap().sum().backward();
-    assert!(w.grad().unwrap().to_vec()[0].is_finite() && u.grad().unwrap().to_vec()[0].is_finite());
+    let (gw,gu)=(w.grad().unwrap().to_vec()[0],u.grad().unwrap().to_vec()[0]);
+    assert!(gw.is_finite() && gu.is_finite());
+    w.zero_grad(); u.zero_grad();
+    let out=unroll_cell(CellKind::Rnn,&x,&init,&w,&u,None,None,&[2,2],Some(&[false,false,true,false]),None).unwrap();
+    out.state.h.index_select(0,&[0]).unwrap().sum().backward();
+    assert_eq!((w.grad().unwrap().to_vec()[0],u.grad().unwrap().to_vec()[0]),(gw,gu));
 }
