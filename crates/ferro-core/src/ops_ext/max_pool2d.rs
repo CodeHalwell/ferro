@@ -4,7 +4,8 @@
 //! the output grad at those indices so overlapping windows accumulate.
 
 use crate::error::{Error, Result};
-use crate::tensor::Tensor;
+use super::window::{resident, whole_on, Window2d};
+use crate::tensor::{device_leaf, Tensor};
 
 impl Tensor {
     pub fn max_pool2d(&self, kernel: usize, stride: usize) -> Result<Tensor> {
@@ -31,6 +32,23 @@ impl Tensor {
         let out_h = (h - kernel) / stride + 1;
         let out_w = (w - kernel) / stride + 1;
 
+        if n * c > 0 && self.device_resident_whole() {
+            let g = Window2d::new([h, w], [kernel; 2], [stride; 2], [0; 2], [1; 2])?.device(n, c);
+            if let Some(r) = resident(self, |b, buf| b.max_pool2d_dev(buf, &g)) {
+                let (out, arg) = r?;
+                let dev = self.device();
+                let arg = device_leaf(arg, &[g.output_len()], dev);
+                return Ok(device_leaf(out, &[n, c, out_h, out_w], dev).record_fn(vec![self.clone()], move |gy| {
+                    let gy = whole_on(gy, dev);
+                    let gx = resident(&gy, |b, buf| {
+                        let s = arg.0.storage.read();
+                        let crate::tensor::Storage::Device(a) = &*s else { unreachable!() };
+                        b.max_pool2d_backward_dev(buf, a.as_ref(), &g)
+                    });
+                    vec![device_leaf(gx.expect("max_pool2d_backward_dev seam missing").expect("max_pool2d_backward_dev"), &[n, c, h, w], dev)]
+                }));
+            }
+        }
         let data = self.to_vec();
         let mut out_data = Vec::with_capacity(n * c * out_h * out_w);
         let mut argmax = Vec::with_capacity(n * c * out_h * out_w);

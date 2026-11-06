@@ -48,6 +48,12 @@ With those in place, device tensors support broadcasting binaries,
 reductions (`sum`/`mean`/`sum_dim`), and full autograd: a training loop
 (forward, MSE, backward, tensor-op SGD) runs entirely resident on the GPU.
 
+- Spatial kernels (`src/spatial.cu`): im2col (`unfold2d_dev`), its
+  adjoint (`fold2d_dev`), and max-pool forward/backward. With cuBLAS these
+  keep conv2d (groups = 1), max_pool2d and batch_norm resident through
+  forward and backward. See [the GPU runbook](../../docs/GPU_RUNBOOK.md) for
+  how to check and benchmark them on a card.
+
 ## Host-slice fallback
 
 The host-slice `Backend` methods (`unary`/`binary`/`matmul` over `&[f32]`)

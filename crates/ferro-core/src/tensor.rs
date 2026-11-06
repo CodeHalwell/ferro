@@ -2035,6 +2035,18 @@ pub(crate) fn raw_matmul_t(a: &Tensor, b: &Tensor, ta: bool, tb: bool) -> Result
         let out = backend.matmul_dev(ba.as_ref(), bb.as_ref(), m, k, n, ta, tb)?;
         return Ok(device_leaf(out, &[m, n], a.0.device));
     }
+    if (ta || tb) && a.ndim() == 2 && b.ndim() == 2 && a.dtype() == DType::F32 && b.dtype() == DType::F32 && a.0.device == Device::Cpu && b.0.device == Device::Cpu {
+        let (m, k) = if ta { (a.0.shape[1], a.0.shape[0]) } else { (a.0.shape[0], a.0.shape[1]) };
+        let (k2, n) = if tb { (b.0.shape[1], b.0.shape[0]) } else { (b.0.shape[0], b.0.shape[1]) };
+        if k != k2 {
+            return Err(Error::ShapeMismatch { op: "matmul", lhs: a.0.shape.clone(), rhs: b.0.shape.clone() });
+        }
+        let (va, vb) = (a.to_vec_pooled(), b.to_vec_pooled());
+        let out = backend_for(Device::Cpu)?.matmul_t(&va, &vb, m, k, n, ta, tb);
+        crate::pool::give(va);
+        crate::pool::give(vb);
+        return Tensor::from_vec(out, &[m, n]);
+    }
     let av = if ta {
         a.transpose_view(0, 1)?
     } else {

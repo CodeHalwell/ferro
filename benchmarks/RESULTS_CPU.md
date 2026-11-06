@@ -30,6 +30,22 @@ into this branch at 369f503). Above 1.00x ferro is faster.
 | cnn_train_step | 0.23x | 0.44x |
 | transformer_train_step | 0.13x | 0.35x |
 
+## Effect of transposed-operand GEMM (2026-11-06)
+
+Backward passes used to materialise `B^T` and `A^T` before every GEMM; the
+packed SGEMM now reads transposed operands while packing, with bitwise the
+same results. Same VM class, torch 2.15.0 CPU, medians (this VM is noisy, so
+read these as approximate):
+
+| case | threads | ferro before | ferro after | torch | after / torch speed |
+|---|---:|---:|---:|---:|---:|
+| mlp_train_step | 1 | 7.8-8.1 ms | 5.7-6.5 ms | 4.8 ms | 0.75x |
+| mlp_train_step | 4 | 7.2-8.9 ms | 3.8-4.5 ms | 2.2 ms | 0.51x |
+
+conv2d backward also drops its two explicit transposes, but its time is
+dominated by the col2im fold, so conv and CNN-step changes are inside this
+VM's run-to-run noise. The tables below are the earlier full runs.
+
 ## 4 threads
 
 2026-10-07T18:25Z | ferro 369f503 (fast backend) | torch 2.14.1+cu130 | Intel(R) Xeon(R) Processor @ 2.10GHz, 4 threads (cpus: all (4)) | warmup=5 iters=30 (transformer: 20 steps, core backend)

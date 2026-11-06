@@ -206,6 +206,14 @@ pub trait Backend: Send + Sync {
     /// Row-major (m,k) @ (k,n) -> (m,n).
     fn matmul(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32>;
 
+    /// op(a) @ op(b) where a flagged operand is stored as its transpose (a
+    /// is (k,m) when `ta`, b is (n,k) when `tb`). The default materializes the
+    /// transposes and calls `matmul`; an override must return those bits.
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_t(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32> {
+        materialized_matmul(self, a, b, m, k, n, ta, tb)
+    }
+
     /// Broadcasting binary over unmaterialized whole-buffer operands: `a`/`b`
     /// are contiguous row-major buffers of shapes `sa`/`sb`, which broadcast
     /// (numpy rules) to `out_shape`. The default walks the output index space
@@ -662,6 +670,66 @@ pub trait Backend: Send + Sync {
     ) -> Result<Box<dyn DeviceBuffer>> {
         Err(Error::GatherUnavailable)
     }
+
+    // --- spatial kernels ----------------------------------------------------
+    // Whole contiguous NCHW f32 buffers. The defaults decline with the
+    // missing-seam sentinel, which (only) authorizes core's host fallback.
+
+    /// im2col: [n, c, h, w] -> [c*kh*kw, n*oh*ow]; row (ci*kh + r)*kw + q,
+    /// column img*oh*ow + y*ow + x; padded taps are zero.
+    fn unfold2d_dev(&self, _x: &dyn DeviceBuffer, _g: &Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("unfold2d_dev")
+    }
+
+    /// Adjoint of `unfold2d_dev`: [c*kh*kw, n*oh*ow] -> [n, c, h, w], each
+    /// pixel summing the columns that read it.
+    fn fold2d_dev(&self, _col: &dyn DeviceBuffer, _g: &Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("fold2d_dev")
+    }
+
+    /// Max pooling without padding or dilation: returns the [n, c, oh, ow]
+    /// output and, per cell, the in-plane offset (y*w + x) of its argmax as
+    /// an exact f32 (first NaN wins, ties go to the lowest offset).
+    fn max_pool2d_dev(&self, _x: &dyn DeviceBuffer, _g: &Window2dDev) -> Result<(Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>)> {
+        not_resident("max_pool2d_dev")
+    }
+
+    /// [n, c, h, w] gradient of `max_pool2d_dev` from the [n, c, oh, ow]
+    /// cotangent and its saved argmax offsets.
+    fn max_pool2d_backward_dev(&self, _gy: &dyn DeviceBuffer, _argmax: &dyn DeviceBuffer, _g: &Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        not_resident("max_pool2d_backward_dev")
+    }
+}
+
+/// NCHW sliding-window geometry for the spatial device kernels. Padding is
+/// symmetric; `oh`/`ow` are the derived output sizes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window2dDev {
+    pub n: usize,
+    pub c: usize,
+    pub h: usize,
+    pub w: usize,
+    pub kernel: [usize; 2],
+    pub stride: [usize; 2],
+    pub padding: [usize; 2],
+    pub dilation: [usize; 2],
+    pub oh: usize,
+    pub ow: usize,
+}
+
+impl Window2dDev {
+    pub fn taps(&self) -> usize {
+        self.c * self.kernel[0] * self.kernel[1]
+    }
+    pub fn positions(&self) -> usize {
+        self.n * self.oh * self.ow
+    }
+    pub fn image_len(&self) -> usize {
+        self.n * self.c * self.h * self.w
+    }
+    pub fn output_len(&self) -> usize {
+        self.n * self.c * self.oh * self.ow
+    }
 }
 
 /// Reference CPU backend; pre-registered for `Device::Cpu`.
@@ -737,6 +805,35 @@ impl Backend for CpuBackend {
         // Consult the swappable pointer so set_matmul_kernel keeps working.
         (MATMUL.read().unwrap())(a, b, m, k, n)
     }
+
+    fn matmul_t(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32> {
+        if let Some(kernel) = *MATMUL_T.read().unwrap() { return kernel(a, b, m, k, n, ta, tb); }
+        materialized_matmul(self, a, b, m, k, n, ta, tb)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialized_matmul<B: Backend + ?Sized>(be: &B, a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32> {
+    let (a, b) = (transposed(a, m, k, ta), transposed(b, k, n, tb));
+    let out = be.matmul(&a, &b, m, k, n);
+    for t in [a, b] {
+        if let std::borrow::Cow::Owned(v) = t { crate::pool::give(v); }
+    }
+    out
+}
+
+/// The logical (rows, cols) row-major matrix of `x`, which holds its
+/// transpose when `t`. Pool-backed; borrows nothing when `t` is false.
+pub fn transposed(x: &[f32], rows: usize, cols: usize, t: bool) -> std::borrow::Cow<'_, [f32]> {
+    if !t { return std::borrow::Cow::Borrowed(x); }
+    if rows == 0 || cols == 0 { return std::borrow::Cow::Owned(Vec::new()); }
+    let mut out = crate::pool::take_uninit(rows * cols);
+    for (j, src) in x.chunks_exact(rows).take(cols).enumerate() {
+        for (i, &v) in src.iter().enumerate() {
+            out[i * cols + j] = v;
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 static BACKENDS: LazyLock<RwLock<HashMap<Device, Arc<dyn Backend>>>> = LazyLock::new(|| {
@@ -779,8 +876,21 @@ static MATMUL: RwLock<MatmulKernel> = RwLock::new(naive_matmul);
 
 /// Install a replacement matmul kernel (e.g. a blocked/threaded backend).
 /// Applies process-wide to all CPU tensors from the next call onward.
+/// Clears any transposed-operand kernel, which must agree with this one.
 pub fn set_matmul_kernel(kernel: MatmulKernel) {
     *MATMUL.write().unwrap() = kernel;
+    *MATMUL_T.write().unwrap() = None;
+}
+
+/// `matmul_t` contract: op(a) @ op(b), flagged operands stored transposed.
+pub type MatmulTKernel = fn(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32>;
+
+static MATMUL_T: RwLock<Option<MatmulTKernel>> = RwLock::new(None);
+
+/// Install the transposed-operand twin of the current matmul kernel; it must
+/// return exactly the bits that kernel gives on materialized transposes.
+pub fn set_matmul_t_kernel(kernel: MatmulTKernel) {
+    *MATMUL_T.write().unwrap() = Some(kernel);
 }
 
 /// Reference implementation: ikj loop order with a zero-skip for finite RHS

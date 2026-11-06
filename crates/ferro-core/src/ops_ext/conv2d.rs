@@ -5,25 +5,17 @@
 //! large GEMM the backend can block and thread. Unfold runs across channels
 //! and fold across images on scoped threads when the chunk is large. Copies
 //! and per-pixel fold order do not depend on the thread count.
-use super::window::{checked_len, invalid, require_f32, Window2d};
+use super::window::{checked_len, invalid, require_f32, resident, whole_on, Window2d};
 use crate::device::Device;
-use crate::dispatch::backend_for;
+use crate::dispatch::{backend_for, Window2dDev};
 use crate::error::{Error, Result};
 use crate::pool;
-use crate::tensor::Tensor;
+use crate::tensor::{device_leaf, raw_matmul_t, Tensor};
 
 /// Column-matrix floats per chunk (16 MiB).
 const CHUNK: usize = 1 << 19;
 /// Column-matrix floats below which unfold/fold stay on the calling thread.
 const PAR_MIN: usize = 1 << 20;
-
-fn transpose(src: &[f32], dst: &mut [f32], rows: usize, cols: usize) {
-    for r in 0..rows {
-        for c in 0..cols {
-            dst[c * rows + r] = src[r * cols + c];
-        }
-    }
-}
 
 fn threads(len: usize, units: usize) -> usize {
     if len < PAR_MIN {
@@ -72,7 +64,8 @@ impl Tensor {
 
     /// Weight is [Cout, Cin/groups, KH, KW]. Padding is symmetric per axis.
     /// Supports depthwise multipliers (groups=Cin, Cout a multiple of Cin).
-    /// Host fallback: output is CPU, not a device-resident convolution kernel.
+    /// Device tensors stay resident (groups = 1) on backends with the spatial
+    /// seams; otherwise this is a host fallback returning a CPU tensor.
     pub fn conv2d_with_options(
         &self,
         weight: &Tensor,
@@ -125,6 +118,11 @@ impl Tensor {
         checked_len("conv2d", &[groups, output_group])?;
         checked_len("conv2d", &[n, groups, image])?;
         checked_len("conv2d", &[groups, weight_group])?;
+        if groups == 1 && n > 0 && self.device_resident_whole() && weight.device_resident_whole() {
+            if let Some(out) = conv_resident(self, weight, win.device(n, cin), cout) {
+                return out;
+            }
+        }
         let (x, wt) = (self.to_vec(), weight.to_vec());
         let backend = backend_for(Device::Cpu)?;
         let nb = if n == 0 { 0 } else { n.div_ceil(n.div_ceil((CHUNK / col_len).max(1))) };
@@ -156,12 +154,9 @@ impl Tensor {
                 let mut dw = vec![0.; wt.len()];
                 let mut col = vec![0.; nb * col_len];
                 let mut gyc = vec![0.; nb * output_group];
-                let mut gyt = vec![0.; nb * output_group];
-                let mut wtt = vec![0.; weight_group];
                 let rows = win.kernel_area();
                 for group in 0..groups {
                     let wo = group * weight_group;
-                    transpose(&wt[wo..wo + weight_group], &mut wtt, oc, taps);
                     for i0 in (0..n).step_by(nb.max(1)) {
                         let cnt = nb.min(n - i0);
                         let ld = cnt * pos;
@@ -173,16 +168,13 @@ impl Tensor {
                                 gyc[o * ld + j * pos..][..pos].copy_from_slice(&gd[yo + o * pos..][..pos]);
                             }
                         }
-                        transpose(&gyc[..oc * ld], &mut gyt[..oc * ld], oc, ld);
-                        // dW^T = col @ gy^T: K runs over every position of the chunk.
-                        let dwt = backend.matmul(&col[..taps * ld], &gyt[..oc * ld], taps, ld, oc);
-                        for o in 0..oc {
-                            for t in 0..taps {
-                                dw[wo + o * taps + t] += dwt[t * oc + o];
-                            }
+                        // dW = gy @ col^T: K runs over every position of the chunk.
+                        let dwc = backend.matmul_t(&gyc[..oc * ld], &col[..taps * ld], oc, ld, taps, false, true);
+                        for (d, v) in dw[wo..wo + weight_group].iter_mut().zip(&dwc) {
+                            *d += v;
                         }
-                        pool::give(dwt);
-                        let dc = backend.matmul(&wtt, &gyc[..oc * ld], taps, oc, ld);
+                        pool::give(dwc);
+                        let dc = backend.matmul_t(&wt[wo..wo + weight_group], &gyc[..oc * ld], taps, oc, ld, true, false);
                         let mut dst: Vec<&mut [f32]> = dx.chunks_mut(image).skip(i0 * groups + group).step_by(groups).take(cnt).collect();
                         par(&mut dst, threads(taps * ld, cnt), |j0, part| {
                             for (k, img) in part.iter_mut().enumerate() {
@@ -201,4 +193,34 @@ impl Tensor {
             },
         ))
     }
+}
+
+fn unfold_resident(x: &Tensor, g: &Window2dDev) -> Option<Result<Tensor>> {
+    resident(x, |b, buf| b.unfold2d_dev(buf, g)).map(|r| r.map(|col| device_leaf(col, &[g.taps(), g.positions()], x.device())))
+}
+
+/// Resident im2col convolution: one unfold kernel, one GEMM over every
+/// image, and a [Cout, N, P] -> [N, Cout, P] layout copy. Backward
+/// recomputes the columns instead of holding them across the step.
+fn conv_resident(x: &Tensor, weight: &Tensor, g: Window2dDev, cout: usize) -> Option<Result<Tensor>> {
+    let col = match unfold_resident(x, &g)? { Ok(c) => c, Err(e) => return Some(Err(e)) };
+    let (dev, taps, pos) = (x.device(), g.taps(), g.oh * g.ow);
+    let forward = || -> Result<Tensor> {
+        let wm = weight.detach().reshape(&[cout, taps])?;
+        let y = raw_matmul_t(&wm, &col, false, false)?.reshape(&[cout, g.n, pos])?;
+        y.permute(&[1, 0, 2])?.detach_copy().reshape(&[g.n, cout, g.oh, g.ow])
+    };
+    let y = match forward() { Ok(y) => y, Err(e) => return Some(Err(e)) };
+    let (xs, ws) = (x.detach(), weight.detach());
+    let wshape = weight.shape().to_vec();
+    Some(Ok(y.record_fn(vec![x.clone(), weight.clone()], move |gy| {
+        let gy = whole_on(gy, dev).reshape(&[g.n, cout, pos]).unwrap();
+        let gcat = gy.permute(&[1, 0, 2]).unwrap().detach_copy().reshape(&[cout, g.positions()]).unwrap();
+        let col = unfold_resident(&xs, &g).expect("unfold2d_dev seam vanished").expect("unfold2d_dev");
+        let wm = ws.reshape(&[cout, taps]).unwrap();
+        let dw = raw_matmul_t(&gcat, &col, false, true).unwrap().reshape(&wshape).unwrap();
+        let dcol = raw_matmul_t(&wm, &gcat, true, false).unwrap();
+        let dx = resident(&dcol, |b, buf| b.fold2d_dev(buf, &g)).expect("fold2d_dev seam missing").expect("fold2d_dev");
+        vec![device_leaf(dx, &[g.n, g.c, g.h, g.w], dev), dw]
+    })))
 }

@@ -23,6 +23,24 @@ pub(crate) fn checked_len(op: &'static str, dims: &[usize]) -> Result<usize> {
     Ok(len)
 }
 
+/// Run a spatial device seam on `t`'s whole resident buffer. None means the
+/// backend lacks the seam (the only case that permits the host fallback).
+pub(crate) fn resident<T>(t: &Tensor, f: impl FnOnce(&dyn crate::dispatch::Backend, &dyn crate::dispatch::DeviceBuffer) -> Result<T>) -> Option<Result<T>> {
+    let backend = match crate::dispatch::backend_for(t.device()) { Ok(b) => b, Err(e) => return Some(Err(e)) };
+    let storage = t.0.storage.read();
+    let crate::tensor::Storage::Device(buf) = &*storage else { return None };
+    match f(backend.as_ref(), buf.as_ref()) {
+        Err(Error::Unsupported { ref msg, .. }) if msg == "backend does not implement device-resident storage" => None,
+        r => Some(r),
+    }
+}
+
+/// `t` on `device` as a whole contiguous buffer (cotangents may arrive strided or on the host).
+pub(crate) fn whole_on(t: &Tensor, device: crate::Device) -> Tensor {
+    let t = if t.device() == device { t.clone() } else { t.to_device(device).expect("cotangent transfer") };
+    if t.device_resident_whole() { t } else { t.detach_copy() }
+}
+
 pub(crate) fn require_f32(t: &Tensor, op: &'static str) -> Result<()> {
     if t.dtype() != DType::F32 {
         return Err(Error::DtypeMismatch {
@@ -91,6 +109,11 @@ impl Window2d {
 
     pub fn output_size(&self) -> [usize; 2] {
         self.output
+    }
+    pub(crate) fn device(&self, n: usize, c: usize) -> crate::dispatch::Window2dDev {
+        let [h, w] = self.input;
+        let [oh, ow] = self.output;
+        crate::dispatch::Window2dDev { n, c, h, w, kernel: self.kernel, stride: self.stride, padding: self.padding, dilation: self.dilation, oh, ow }
     }
     pub(crate) fn positions(&self) -> usize {
         self.output[0] * self.output[1]
@@ -183,7 +206,11 @@ impl Window2d {
         let dst = &mut image[ci * plane..(ci + 1) * plane];
         self.rows(|t, src, d, len| {
             let s = &col[t * ld + src..][..len];
-            dst[d..].iter_mut().step_by(sw).zip(s).for_each(|(o, &v)| *o += v);
+            if sw == 1 {
+                dst[d..d + len].iter_mut().zip(s).for_each(|(o, &v)| *o += v);
+            } else {
+                dst[d..].iter_mut().step_by(sw).zip(s).for_each(|(o, &v)| *o += v);
+            }
         });
     }
 

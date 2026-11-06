@@ -52,6 +52,10 @@ impl Backend for FastCpuBackend {
         crate::matmul(a, b, m, k, n)
     }
 
+    fn matmul_t(&self, a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32> {
+        crate::matmul_t(a, b, m, k, n, ta, tb)
+    }
+
     fn matmul_batch(&self, a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
         crate::matmul_batch(a, b, batch, m, k, n)
     }
