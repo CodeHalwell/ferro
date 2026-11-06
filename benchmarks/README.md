@@ -47,6 +47,21 @@ Methodology:
 Results land in `results/` as JSON. `RESULTS_CPU.md` holds the current
 tables.
 
+## GPU suite (CUDA)
+
+`examples/bench_gpu.rs` and its twin `examples/bench_gpu_torch.py` cover
+matmul, conv2d forward and backward, max_pool2d, batch_norm and a CNN
+training step on cuda:0, syncing the device around every timed iteration.
+`compare_gpu.py` builds the Rust side with the `cuda` feature, runs both and
+prints the table; torch runs with TF32 off unless `--tf32`.
+
+```
+python3 benchmarks/compare_gpu.py --python .venv/bin/python --json benchmarks/results/gpu.json
+```
+
+`scripts/gpu_check.sh` runs the GPU correctness suite first and then this;
+see [docs/GPU_RUNBOOK.md](../docs/GPU_RUNBOOK.md).
+
 ## Transformer training step
 
 

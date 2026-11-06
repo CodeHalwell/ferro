@@ -99,8 +99,42 @@ pub fn sgemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usize, 
     sgemm_isa(Isa::detect(), a, b, c, m, k, n, threads)
 }
 
+/// C = op(A) @ op(B) where a transposed operand is stored as its transpose
+/// (A as k x m when `ta`, B as n x k when `tb`). Only packing reads the
+/// operands, so results are bitwise those of `sgemm` on materialized copies.
+#[allow(clippy::too_many_arguments)]
+pub fn sgemm_t(a: &[f32], ta: bool, b: &[f32], tb: bool, c: &mut [f32], m: usize, k: usize, n: usize, threads: usize) {
+    sgemm_isa_t(Isa::detect(), a, ta, b, tb, c, m, k, n, threads)
+}
+
 /// `sgemm` with an explicit ISA. Panics if the CPU does not support it.
 pub fn sgemm_isa(isa: Isa, a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usize, n: usize, threads: usize) {
+    sgemm_isa_t(isa, a, false, b, false, c, m, k, n, threads)
+}
+
+/// Logical rows x cols matrix; element (i, j) is d[i*ld + j], or d[j*ld + i]
+/// when `t` (the buffer holds the transpose).
+#[derive(Clone, Copy)]
+struct View<'a> {
+    d: &'a [f32],
+    ld: usize,
+    t: bool,
+}
+
+impl<'a> View<'a> {
+    fn at(self, i: usize, j: usize) -> View<'a> {
+        View { d: &self.d[if self.t { j * self.ld + i } else { i * self.ld + j }..], ..self }
+    }
+
+    fn spans(self, rows: usize, cols: usize) -> bool {
+        let (r, c) = if self.t { (cols, rows) } else { (rows, cols) };
+        self.d.len() >= (r - 1) * self.ld + c
+    }
+}
+
+/// `sgemm_t` with an explicit ISA. Panics if the CPU does not support it.
+#[allow(clippy::too_many_arguments)]
+pub fn sgemm_isa_t(isa: Isa, a: &[f32], ta: bool, b: &[f32], tb: bool, c: &mut [f32], m: usize, k: usize, n: usize, threads: usize) {
     assert!(isa.supported(), "{isa:?} not supported by this CPU");
     let (mk, kn, mn) = (m.checked_mul(k), k.checked_mul(n), m.checked_mul(n));
     let (Some(mk), Some(kn), Some(mn)) = (mk, kn, mn) else { panic!("sgemm size overflow") };
@@ -113,6 +147,8 @@ pub fn sgemm_isa(isa: Isa, a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usi
         c.fill(0.0);
         return;
     }
+    let a = View { d: a, ld: if ta { m } else { k }, t: ta };
+    let b = View { d: b, ld: if tb { k } else { n }, t: tb };
     let p = isa.params();
     let threads = threads.max(1);
     // Split rows while every task still gets several MR slivers; otherwise
@@ -123,14 +159,14 @@ pub fn sgemm_isa(isa: Isa, a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usi
     if threads == 1 || row_threads == threads || n < p.nr * 2 {
         let rows = m.div_ceil(row_threads).next_multiple_of(p.mr);
         if rows >= m {
-            serial(&p, a, k, b, n, c, n, m, k, n);
+            serial(&p, a, b, c, n, m, k, n);
             return;
         }
         let parts: Vec<Mutex<&mut [f32]>> = c.chunks_mut(rows * n).map(Mutex::new).collect();
         workers::run(parts.len(), &|t| {
             let mut part = parts[t].lock().unwrap_or_else(|e| e.into_inner());
             let r = part.len() / n;
-            serial(&p, &a[t * rows * k..], k, b, n, &mut part, n, r, k, n);
+            serial(&p, a.at(t * rows, 0), b, &mut part, n, r, k, n);
         });
         return;
     }
@@ -140,7 +176,7 @@ pub fn sgemm_isa(isa: Isa, a: &[f32], b: &[f32], c: &mut [f32], m: usize, k: usi
     workers::run(ranges.len(), &|t| {
         let (j, w) = ranges[t];
         let mut buf = bufs[t].lock().unwrap_or_else(|e| e.into_inner());
-        serial(&p, a, k, &b[j..], n, &mut buf, w, m, k, w);
+        serial(&p, a, b.at(0, j), &mut buf, w, m, k, w);
     });
     for (&(j, w), buf) in ranges.iter().zip(bufs) {
         let buf = buf.into_inner().unwrap_or_else(|e| e.into_inner());
@@ -178,14 +214,13 @@ pub fn sgemm_batch(a: &[f32], b: &[f32], c: &mut [f32], batch: usize, m: usize, 
     });
 }
 
-/// Single-threaded blocked GEMM on a sub-problem: A rows with stride lda,
-/// B rows with stride ldb (B may be a column window), C rows with stride ldc.
+/// Single-threaded blocked GEMM on a sub-problem; C rows have stride ldc.
 #[allow(clippy::too_many_arguments)]
-fn serial(p: &Params, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32], ldc: usize, m: usize, k: usize, n: usize) {
+fn serial(p: &Params, a: View, b: View, c: &mut [f32], ldc: usize, m: usize, k: usize, n: usize) {
     if m == 0 || n == 0 {
         return;
     }
-    assert!(a.len() >= (m - 1) * lda + k && b.len() >= (k - 1) * ldb + n && c.len() >= (m - 1) * ldc + n);
+    assert!(a.spans(m, k) && b.spans(k, n) && c.len() >= (m - 1) * ldc + n);
     let (mr, nr) = (p.mr, p.nr);
     let nc_max = p.nc.min(n.next_multiple_of(nr));
     let mc_max = p.mc.min(m.next_multiple_of(mr));
@@ -197,7 +232,7 @@ fn serial(p: &Params, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32
             buf.resize(nc_max * kc_max + mc_max * KA, 0.0);
         }
         let (pb, pa) = buf.split_at_mut(nc_max * kc_max);
-        blocked(p, a, lda, b, ldb, c, ldc, m, k, n, kc_max, pa, pb);
+        blocked(p, a, b, c, ldc, m, k, n, kc_max, pa, pb);
     });
 }
 
@@ -214,19 +249,17 @@ pub(crate) fn poison_scratch() {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn blocked(p: &Params, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f32], ldc: usize, m: usize, k: usize, n: usize, kcb: usize, pa: &mut [f32], pb: &mut [f32]) {
+fn blocked(p: &Params, a: View, b: View, c: &mut [f32], ldc: usize, m: usize, k: usize, n: usize, kcb: usize, pa: &mut [f32], pb: &mut [f32]) {
     let (mr, nr) = (p.mr, p.nr);
     let mut tile = [0.0f32; MAX_TILE];
     for jc in (0..n).step_by(p.nc) {
         let nc = p.nc.min(n - jc);
         for pc in (0..k).step_by(kcb) {
             let kc = kcb.min(k - pc);
-            pack_b(pb, &b[pc * ldb + jc..], ldb, kc, nc, nr);
+            pack_b(pb, b.at(pc, jc), kc, nc, nr);
             for ic in (0..m).step_by(p.mc) {
                 let mc = p.mc.min(m - ic);
-                for (r, row) in pa.chunks_exact_mut(KA).take(mc).enumerate() {
-                    row[..kc].copy_from_slice(&a[(ic + r) * lda + pc..][..kc]);
-                }
+                pack_a(pa, a.at(ic, pc), mc, kc);
                 for jr in (0..nc).step_by(nr) {
                     let nw = nr.min(nc - jr);
                     let bp = pb[jr * kc..][..kc * nr].as_ptr();
@@ -263,13 +296,40 @@ fn blocked(p: &Params, a: &[f32], lda: usize, b: &[f32], ldb: usize, c: &mut [f3
     }
 }
 
+/// Row r of the mc x kc window at stride KA. A transposed source is read
+/// along its contiguous rows (one per p) and scattered into the KA rows.
+fn pack_a(dst: &mut [f32], a: View, mc: usize, kc: usize) {
+    if !a.t {
+        for (r, row) in dst.chunks_exact_mut(KA).take(mc).enumerate() {
+            row[..kc].copy_from_slice(&a.d[r * a.ld..][..kc]);
+        }
+        return;
+    }
+    for p in 0..kc {
+        for (r, &v) in a.d[p * a.ld..][..mc].iter().enumerate() {
+            dst[r * KA + p] = v;
+        }
+    }
+}
+
 /// dst[q][p][j] = B[p][q*nr + j] for the kc x nc window, tail cols zeroed.
-fn pack_b(dst: &mut [f32], b: &[f32], ldb: usize, kc: usize, nc: usize, nr: usize) {
+fn pack_b(dst: &mut [f32], b: View, kc: usize, nc: usize, nr: usize) {
     for (q, panel) in dst.chunks_exact_mut(kc * nr).take(nc.div_ceil(nr)).enumerate() {
         let j0 = q * nr;
         let w = nr.min(nc - j0);
+        if b.t {
+            for j in 0..w {
+                for (p, &v) in b.d[(j0 + j) * b.ld..][..kc].iter().enumerate() {
+                    panel[p * nr + j] = v;
+                }
+            }
+            for row in panel.chunks_exact_mut(nr) {
+                row[w..].fill(0.0);
+            }
+            continue;
+        }
         for (p, row) in panel.chunks_exact_mut(nr).enumerate() {
-            row[..w].copy_from_slice(&b[p * ldb + j0..][..w]);
+            row[..w].copy_from_slice(&b.d[p * b.ld + j0..][..w]);
             row[w..].fill(0.0);
         }
     }

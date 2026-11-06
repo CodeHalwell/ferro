@@ -2,7 +2,7 @@
 //! one ascending-p fused chain per output, so `f32::mul_add` in a plain loop
 //! is a bitwise oracle for them; f64 with the gamma(k) bound checks accuracy.
 use super::*;
-use crate::gemm::{sgemm_batch, sgemm_isa, Isa};
+use crate::gemm::{sgemm_batch, sgemm_isa, sgemm_isa_t, Isa};
 use ferro_core::dispatch::Backend;
 
 fn fill(seed: u64, len: usize, scale: f32) -> Vec<f32> {
@@ -206,4 +206,41 @@ fn install_routes_default_backend_bmm_through_fast_gemm() {
     let a = fill(8, batch * m * k, 4.0);
     let b = fill(9, batch * k * n, 4.0);
     same(&ferro_core::CpuBackend.matmul_batch(&a, &b, batch, m, k, n), &matmul_batch(&a, &b, batch, m, k, n), "installed");
+}
+
+#[test]
+fn transposed_operands_match_materialized_transposes_bitwise() {
+    // Row split, column split (B window offsets), K blocking and tile edges.
+    for (m, k, n) in [(203, 300, 77), (5, 129, 1000), (13, 700, 33), (64, 288, 1024), (1, 513, 33), (97, 1, 16)] {
+        let a = fill(m as u64 + 11, m * k, 4.0);
+        let b = fill(n as u64 + 13, k * n, 4.0);
+        let at = ferro_core::dispatch::transposed(&a, k, m, true).into_owned();
+        let bt = ferro_core::dispatch::transposed(&b, n, k, true).into_owned();
+        for isa in isas() {
+            let want = oracle(isa, &a, &b, m, k, n);
+            for (ta, tb) in [(false, false), (true, false), (false, true), (true, true)] {
+                for threads in [1, 3, 4] {
+                    crate::gemm::poison_scratch();
+                    let mut c = vec![f32::NAN; m * n];
+                    sgemm_isa_t(isa, if ta { &at } else { &a }, ta, if tb { &bt } else { &b }, tb, &mut c, m, k, n, threads);
+                    same(&c, &want, &format!("{isa:?} {m}x{k}x{n} ta={ta} tb={tb} threads={threads}"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn install_routes_default_backend_matmul_t_through_fast_gemm() {
+    let _registry = crate::registry_tests::lock();
+    install();
+    let (m, k, n) = (37, 130, 45);
+    let a = fill(21, m * k, 4.0);
+    let b = fill(22, k * n, 4.0);
+    let want = matmul(&a, &b, m, k, n);
+    let at = ferro_core::dispatch::transposed(&a, k, m, true).into_owned();
+    let bt = ferro_core::dispatch::transposed(&b, n, k, true).into_owned();
+    same(&ferro_core::CpuBackend.matmul_t(&at, &b, m, k, n, true, false), &want, "installed ta");
+    same(&ferro_core::CpuBackend.matmul_t(&a, &bt, m, k, n, false, true), &want, "installed tb");
+    same(&elementwise::FastCpuBackend.matmul_t(&at, &bt, m, k, n, true, true), &want, "backend");
 }

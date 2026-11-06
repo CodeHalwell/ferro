@@ -99,6 +99,12 @@ impl Tensor {
             return Ok(BatchNormOut { output, running_mean: running_mean.owned_detach_copy(), running_var: running_var.owned_detach_copy() });
         }
 
+        let dev = self.device();
+        if self.device_resident_whole() && [weight, bias, running_mean, running_var].iter().all(|t| t.device() == dev && t.device_resident_whole()) {
+            if let Ok(out) = resident(self, weight, bias, running_mean, running_var, eps, train, momentum) {
+                return Ok(out);
+            }
+        }
         let outer = shape[0];
         let spatial: usize = shape[2..].iter().product();
         let x = self.to_vec();
@@ -261,4 +267,34 @@ impl Tensor {
             })
         }
     }
+}
+
+/// Device composition of resident kernels (channel sums via two sum_dim
+/// passes, broadcast arithmetic); autograd follows from the ops themselves.
+#[allow(clippy::too_many_arguments)]
+fn resident(x: &Tensor, weight: &Tensor, bias: &Tensor, running_mean: &Tensor, running_var: &Tensor, eps: f32, train: bool, momentum: f32) -> Result<BatchNormOut> {
+    let (shape, dev) = (x.shape().to_vec(), x.device());
+    let c = shape[1];
+    let m = x.numel() / c;
+    let x3 = x.reshape(&[shape[0], c, m / shape[0]])?;
+    let scalar = |v: f32| Tensor::full_on(&[], v, dev);
+    let channel_mean = |t: &Tensor| -> Result<Tensor> { t.sum_dim(2, true)?.sum_dim(0, true)?.mul(&scalar(1.0 / m as f32)?) };
+    let col = |t: &Tensor| t.reshape(&[1, c, 1]);
+    let (mean, var) = if train {
+        let mean = channel_mean(&x3)?;
+        let centered = x3.sub(&mean)?;
+        (mean, channel_mean(&centered.mul(&centered)?)?)
+    } else {
+        (col(running_mean)?, col(running_var)?)
+    };
+    let xhat = x3.sub(&mean)?.mul(&var.add(&scalar(eps)?)?.pow_scalar(-0.5)?)?;
+    let output = xhat.mul(&col(weight)?)?.add(&col(bias)?)?.reshape(&shape)?;
+    if !train {
+        return Ok(BatchNormOut { output, running_mean: running_mean.owned_detach_copy(), running_var: running_var.owned_detach_copy() });
+    }
+    let blend = |old: &Tensor, new: &Tensor| -> Result<Tensor> {
+        old.mul(&scalar(1.0 - momentum)?)?.add(&new.detach().reshape(&[c])?.mul(&scalar(momentum)?)?)
+    };
+    let unbiased = var.detach().mul(&scalar(m as f32 / (m - 1) as f32)?)?;
+    Ok(BatchNormOut { output, running_mean: blend(&running_mean.detach(), &mean)?.detach(), running_var: blend(&running_var.detach(), &unbiased)?.detach() })
 }

@@ -28,6 +28,20 @@ pub fn matmul_with_threads(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, t
     matmul_batch_with_threads(a, b, 1, m, k, n, threads)
 }
 
+/// op(a) @ op(b) with transposed operands stored as their transposes (a is
+/// k x m when `ta`, b is n x k when `tb`); never materializes a transpose.
+pub fn matmul_t(a: &[f32], b: &[f32], m: usize, k: usize, n: usize, ta: bool, tb: bool) -> Vec<f32> {
+    if m == 0 || n == 0 { return Vec::new(); }
+    let olen = m.checked_mul(n).expect("matmul output size overflow");
+    let mut out = ferro_core::pool::take_uninit(olen);
+    gemm::sgemm_t(a, ta, b, tb, &mut out, m, k, n, gemm::auto_threads(m.saturating_mul(k).saturating_mul(n)));
+    if check::enabled() {
+        let (a, b) = (ferro_core::dispatch::transposed(a, m, k, ta), ferro_core::dispatch::transposed(b, k, n, tb));
+        check::verify(&a, &b, &out, 1, m, k, n);
+    }
+    out
+}
+
 /// Row-major (batch,m,k) @ (batch,k,n) -> (batch,m,n).
 pub fn matmul_batch(a: &[f32], b: &[f32], batch: usize, m: usize, k: usize, n: usize) -> Vec<f32> {
     let work = [batch, m, k, n].iter().fold(1usize, |w, &d| w.saturating_mul(d));
@@ -52,6 +66,7 @@ fn matmul_batch_with_threads(a: &[f32], b: &[f32], batch: usize, m: usize, k: us
 /// once per slab).
 pub fn install() {
     ferro_core::dispatch::set_matmul_kernel(matmul);
+    ferro_core::dispatch::set_matmul_t_kernel(matmul_t);
 }
 
 /// Register the vectorized/threaded elementwise backend process-wide for

@@ -17,6 +17,7 @@
 mod kernels;
 mod alloc;
 mod segment;
+mod spatial;
 mod static_graph;
 pub use static_graph::{CapturedChain, StaticPointwiseGraph, StaticPointwiseRun};
 
@@ -1255,6 +1256,23 @@ impl Backend for CudaBackend {
                 .map_err(|e| cuda_err(OP, e))?;
         }
         Ok(self.wrap(out))
+    }
+
+    fn unfold2d_dev(&self, x: &dyn DeviceBuffer, g: &ferro_core::dispatch::Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(self.spatial("unfold2d_dev", 0, x, None, g, g.image_len(), g.taps() * g.positions(), false)?.0)
+    }
+
+    fn fold2d_dev(&self, col: &dyn DeviceBuffer, g: &ferro_core::dispatch::Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(self.spatial("fold2d_dev", 1, col, None, g, g.taps() * g.positions(), g.image_len(), false)?.0)
+    }
+
+    fn max_pool2d_dev(&self, x: &dyn DeviceBuffer, g: &ferro_core::dispatch::Window2dDev) -> Result<(Box<dyn DeviceBuffer>, Box<dyn DeviceBuffer>)> {
+        let (out, arg) = self.spatial("max_pool2d_dev", 2, x, None, g, g.image_len(), g.output_len(), true)?;
+        Ok((out, arg.expect("argmax buffer")))
+    }
+
+    fn max_pool2d_backward_dev(&self, gy: &dyn DeviceBuffer, argmax: &dyn DeviceBuffer, g: &ferro_core::dispatch::Window2dDev) -> Result<Box<dyn DeviceBuffer>> {
+        Ok(self.spatial("max_pool2d_backward_dev", 3, gy, Some(argmax), g, g.output_len(), g.image_len(), false)?.0)
     }
 
     fn layer_norm_dev(&self, x: &dyn DeviceBuffer, weight: Option<&dyn DeviceBuffer>,
