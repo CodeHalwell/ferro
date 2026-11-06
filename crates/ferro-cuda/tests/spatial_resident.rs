@@ -7,13 +7,17 @@ use ferro_core::{Device, Rng, Tensor};
 
 const GPU: Device = Device::Cuda(0);
 
-fn gpu() -> Option<std::sync::Arc<ferro_cuda::CudaBackend>> {
+/// install(0) replaces the process-wide backend, so each test holds this for
+/// its whole body: buffers from a replaced backend are rejected.
+fn gpu() -> Option<(std::sync::MutexGuard<'static, ()>, std::sync::Arc<ferro_cuda::CudaBackend>)> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Err(e) = ferro_cuda::install(0) {
         assert!(std::env::var_os("FERRO_REQUIRE_CUDA").is_none(), "CUDA required: {e}");
         eprintln!("SKIP CUDA: {e}");
         return None;
     }
-    ferro_cuda::cuda_backend()
+    Some((guard, ferro_cuda::cuda_backend()?))
 }
 
 fn downloads(b: &ferro_cuda::CudaBackend) -> usize {
@@ -33,7 +37,7 @@ fn leaf(t: &Tensor, d: Device) -> Tensor {
 
 #[test]
 fn conv2d_matches_cpu_and_stays_resident() {
-    let Some(b) = gpu() else { return };
+    let Some((_serial, b)) = gpu() else { return };
     let rng = Rng::new(1);
     let cases = [([4, 16, 32, 32], [32, 16, 3, 3], [1, 1], [1, 1], [1, 1]), ([2, 3, 17, 13], [8, 3, 5, 3], [2, 1], [2, 0], [1, 2]), ([8, 64, 8, 8], [64, 64, 1, 1], [1, 1], [0, 0], [1, 1])];
     for (xs, ws, s, p, d) in cases {
@@ -54,7 +58,7 @@ fn conv2d_matches_cpu_and_stays_resident() {
 
 #[test]
 fn max_pool2d_matches_cpu_bitwise_forward() {
-    let Some(b) = gpu() else { return };
+    let Some((_serial, b)) = gpu() else { return };
     let rng = Rng::new(2);
     for (k, s) in [(2, 2), (3, 2), (3, 1)] {
         let x = Tensor::randn(&[3, 5, 15, 16], &rng);
@@ -72,7 +76,7 @@ fn max_pool2d_matches_cpu_bitwise_forward() {
 
 #[test]
 fn batch_norm_matches_cpu() {
-    let Some(_) = gpu() else { return };
+    let Some((_serial, _)) = gpu() else { return };
     let rng = Rng::new(3);
     let x = Tensor::randn(&[8, 6, 9, 7], &rng);
     let (w, bias) = (Tensor::randn(&[6], &rng), Tensor::randn(&[6], &rng));
@@ -127,7 +131,7 @@ fn cnn_training_reference_learns_on_cpu() {
 
 #[test]
 fn cnn_training_step_is_resident_and_tracks_cpu() {
-    let Some(b) = gpu() else { return };
+    let Some((_serial, b)) = gpu() else { return };
     let mut last = downloads(&b);
     let losses = train(GPU, |step| {
         let now = downloads(&b);

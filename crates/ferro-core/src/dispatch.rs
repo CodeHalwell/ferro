@@ -826,6 +826,7 @@ fn materialized_matmul<B: Backend + ?Sized>(be: &B, a: &[f32], b: &[f32], m: usi
 /// transpose when `t`. Pool-backed; borrows nothing when `t` is false.
 pub fn transposed(x: &[f32], rows: usize, cols: usize, t: bool) -> std::borrow::Cow<'_, [f32]> {
     if !t { return std::borrow::Cow::Borrowed(x); }
+    if rows == 0 || cols == 0 { return std::borrow::Cow::Owned(Vec::new()); }
     let mut out = crate::pool::take_uninit(rows * cols);
     for (j, src) in x.chunks_exact(rows).take(cols).enumerate() {
         for (i, &v) in src.iter().enumerate() {

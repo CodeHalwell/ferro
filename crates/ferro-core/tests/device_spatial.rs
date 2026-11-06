@@ -252,3 +252,12 @@ fn backends_without_spatial_seams_keep_the_host_fallback() {
     assert_eq!(y.to_vec(), x.conv2d(&w, 1, 1).unwrap().to_vec());
     assert_eq!(x.to_device(BARE).unwrap().max_pool2d(2, 2).unwrap().device(), Device::Cpu);
 }
+
+#[test]
+fn zero_width_matmul_backward_on_cpu() {
+    let a = Tensor::zeros(&[2, 0]).requires_grad_(true).unwrap();
+    let b = Tensor::zeros(&[0, 3]).requires_grad_(true).unwrap();
+    a.matmul(&b).unwrap().sum().backward();
+    assert_eq!(a.grad().unwrap().shape(), &[2, 0]);
+    assert_eq!(b.grad().unwrap().shape(), &[0, 3]);
+}
